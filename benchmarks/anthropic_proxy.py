@@ -98,6 +98,7 @@ class _Handler(BaseHTTPRequestHandler):
     client = None
     model: str = ""
     max_tokens: int = 4096
+    parallel_tool_calls: bool = False   # see the tool_choice branch in do_POST
 
     def log_message(self, *a):       # quiet: the ledger is the interesting output
         pass
@@ -134,7 +135,32 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": {"message": "body is not JSON"}})
             return
 
+        if os.environ.get("PROXY_DEBUG_DUMP"):
+            try:
+                Path(os.environ["PROXY_DEBUG_DUMP"]).write_text(
+                    json.dumps(req, indent=2)[:20000], encoding="utf-8")
+            except OSError:
+                pass
         system, messages = _split_system(req.get("messages") or [])
+        kwargs = {}
+        tools = _translate_tools(req.get("tools"), req.get("functions"))
+        if tools:
+            kwargs["tools"] = tools
+            choice = _translate_tool_choice(req.get("tool_choice"))
+            if choice:
+                # `instructor` — the layer hackingBuddyGPT and many other harnesses
+                # drive the model through — asserts EXACTLY one tool call per response
+                # and raises otherwise. Claude legitimately emits several in parallel,
+                # which crashes the harness mid-run. Suppressing parallel calls is
+                # therefore what makes the competitor RUNNABLE; it is not a handicap on
+                # its capability, and it is disclosed in the comparison rather than
+                # applied quietly. A client that states its own preference wins.
+                parallel = req.get("parallel_tool_calls")
+                if parallel is None:
+                    parallel = self.parallel_tool_calls
+                if parallel is False:
+                    choice = dict(choice, disable_parallel_tool_use=True)
+                kwargs["tool_choice"] = choice
         started = time.monotonic()
         try:
             msg = self.client.messages.create(
@@ -146,6 +172,7 @@ class _Handler(BaseHTTPRequestHandler):
                 system=([{"type": "text", "text": system,
                           "cache_control": {"type": "ephemeral"}}] if system else []),
                 messages=messages or [{"role": "user", "content": "continue"}],
+                **kwargs,
             )
         except Exception as e:                       # surface upstream errors verbatim
             self._send(502, {"error": {"message": f"{type(e).__name__}: {e}"}})
@@ -164,6 +191,23 @@ class _Handler(BaseHTTPRequestHandler):
 
         text = "".join(b.text for b in msg.content
                        if getattr(b, "type", None) == "text")
+        # Anthropic returns tool calls as `tool_use` content blocks; an OpenAI client
+        # expects them on `message.tool_calls`, with the arguments as a JSON *string*
+        # rather than an object. Dropping them silently is not an option: a harness
+        # driven by function calling (instructor, LangChain, the OpenAI SDK's own
+        # helpers) sees an empty tool list and either asserts or loops doing nothing —
+        # which would look like the harness failing rather than the bridge.
+        tool_calls = [
+            {"id": getattr(b, "id", "") or f"call_{i}",
+             "type": "function",
+             "function": {"name": getattr(b, "name", ""),
+                          "arguments": json.dumps(getattr(b, "input", {}) or {})}}
+            for i, b in enumerate(msg.content)
+            if getattr(b, "type", None) == "tool_use"
+        ]
+        message = {"role": "assistant", "content": text or None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         total_in = usage.get("input", 0) + usage.get("cache_read", 0) \
             + usage.get("cache_write", 0)
         self._send(200, {
@@ -172,7 +216,7 @@ class _Handler(BaseHTTPRequestHandler):
             "created": int(time.time()),
             "model": self.model,
             "choices": [{"index": 0, "finish_reason": _finish(msg),
-                         "message": {"role": "assistant", "content": text}}],
+                         "message": message}],
             # Reported in the OpenAI convention the caller expects: prompt_tokens is
             # the TOTAL, with the cached portion nested underneath it.
             "usage": {"prompt_tokens": total_in,
@@ -188,6 +232,46 @@ def _finish(msg) -> str:
     return {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length",
             "tool_use": "tool_calls", "refusal": "content_filter"} \
         .get(getattr(msg, "stop_reason", "") or "", "stop")
+
+
+def _translate_tools(tools, functions=None):
+    """OpenAI tool declarations -> Anthropic's. `parameters` becomes `input_schema`;
+    the rest is the same shape. The legacy top-level `functions` field is accepted too,
+    because older clients still send it."""
+    out = []
+    for t in (tools or []):
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if t.get("type") == "function" else t
+        if not isinstance(fn, dict) or not fn.get("name"):
+            continue
+        out.append({"name": fn["name"],
+                    "description": fn.get("description", "") or "",
+                    "input_schema": fn.get("parameters")
+                    or {"type": "object", "properties": {}}})
+    for fn in (functions or []):
+        if isinstance(fn, dict) and fn.get("name"):
+            out.append({"name": fn["name"],
+                        "description": fn.get("description", "") or "",
+                        "input_schema": fn.get("parameters")
+                        or {"type": "object", "properties": {}}})
+    return out
+
+
+def _translate_tool_choice(choice):
+    """OpenAI tool_choice -> Anthropic's. `none` returns None and the caller drops the
+    tool list entirely, which is how Anthropic expresses "do not call a tool"."""
+    if choice in (None, "auto"):
+        return {"type": "auto"}
+    if choice == "required":
+        return {"type": "any"}
+    if choice == "none":
+        return None
+    if isinstance(choice, dict):
+        name = (choice.get("function") or {}).get("name") or choice.get("name")
+        if name:
+            return {"type": "tool", "name": name}
+    return {"type": "auto"}
 
 
 def _split_system(messages):
@@ -208,16 +292,67 @@ def _split_system(messages):
             content = "".join(p.get("text", "") for p in content
                               if isinstance(p, dict))
         content = (content or "").strip()
-        if not content:
-            continue
+
         if role == "system":
-            system_parts.append(content)
-        else:
-            out.append({"role": "assistant" if role == "assistant" else "user",
-                        "content": content})
-    while out and out[0]["role"] == "assistant":
+            if content:
+                system_parts.append(content)
+            continue
+
+        # A prior turn's tool result. OpenAI gives each its own `role: "tool"` message;
+        # Anthropic carries them as tool_result blocks inside a USER turn, and results
+        # answering the same assistant turn must be batched into one message. Appending
+        # them separately is rejected, and dropping them strands the tool_use they
+        # answer — which the API also rejects.
+        if role == "tool":
+            block = {"type": "tool_result",
+                     "tool_use_id": m.get("tool_call_id") or "",
+                     "content": content or "(no output)"}
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+            continue
+
+        if role == "assistant":
+            blocks = []
+            if content:
+                blocks.append({"type": "text", "text": content})
+            for tc in (m.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                raw = fn.get("arguments")
+                if isinstance(raw, str):
+                    try:
+                        args = json.loads(raw or "{}")
+                    except ValueError:
+                        args = {}            # a malformed replay must not 500 the bridge
+                else:
+                    args = raw or {}
+                if not isinstance(args, dict):
+                    args = {}
+                blocks.append({"type": "tool_use", "id": tc.get("id") or "call_0",
+                               "name": fn.get("name") or "", "input": args})
+            if blocks:
+                out.append({"role": "assistant", "content": blocks})
+            continue
+
+        if content:
+            out.append({"role": "user", "content": content})
+
+    # Anthropic requires the first message to be `user`, and a dangling tool_result
+    # whose tool_use was trimmed away is rejected too — so drop leading turns until the
+    # history starts somewhere valid.
+    while out and (out[0]["role"] == "assistant" or _is_tool_result_turn(out[0])):
         out.pop(0)
     return "\n\n".join(system_parts), out
+
+
+def _is_tool_result_turn(msg) -> bool:
+    content = msg.get("content")
+    return (isinstance(content, list) and bool(content)
+            and all(isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content))
 
 
 def main(argv=None) -> int:
@@ -229,6 +364,10 @@ def main(argv=None) -> int:
                     help="tag for this run in the ledger (e.g. pgpt-vampi-1)")
     ap.add_argument("--ledger", default="benchmarks/results/proxy_usage.jsonl")
     ap.add_argument("--max-tokens", type=int, default=4096)
+    ap.add_argument("--allow-parallel-tool-calls", action="store_true",
+                    help="permit Claude to emit several tool calls per response. Off by "
+                         "default because `instructor` (used by hackingBuddyGPT and "
+                         "others) asserts exactly one and crashes on more.")
     args = ap.parse_args(argv)
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -254,6 +393,7 @@ def main(argv=None) -> int:
     _Handler.client = Anthropic()
     _Handler.model = args.model
     _Handler.max_tokens = args.max_tokens
+    _Handler.parallel_tool_calls = args.allow_parallel_tool_calls
 
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
     in_rate, out_rate = _rate_for(args.model)

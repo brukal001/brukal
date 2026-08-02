@@ -1,0 +1,7 @@
+{"ts": "2026-08-02T10:46:52Z", "label": "hbg-vampi-toolfix", "model": "claude-sonnet-5", "latency_s": 2.225, "input": 200, "output": 115, "cache_read": 0, "cache_write": 1288, "cumulative_cost_usd": 0.007155}
+{"ts": "2026-08-02T10:46:55Z", "label": "hbg-vampi-toolfix", "model": "claude-sonnet-5", "latency_s": 2.379, "input": 200, "output": 129, "cache_read": 1288, "cache_write": 0, "cumulative_cost_usd": 0.0100764}
+{"ts": "2026-08-02T10:46:57Z", "label": "hbg-vampi-toolfix", "model": "claude-sonnet-5", "latency_s": 1.899, "input": 200, "output": 131, "cache_read": 1288, "cache_write": 0, "cumulative_cost_usd": 0.013027799999999999}
+{"ts": "2026-08-02T10:48:05Z", "label": "hbg-vampi-final", "model": "claude-sonnet-5", "latency_s": 1.549, "input": 578, "output": 39, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.002319}
+{"ts": "2026-08-02T10:48:15Z", "label": "hbg-vampi-final", "model": "claude-sonnet-5", "latency_s": 1.652, "input": 203, "output": 49, "cache_read": 1288, "cache_write": 0, "cumulative_cost_usd": 0.0040494}
+{"ts": "2026-08-02T10:48:17Z", "label": "hbg-vampi-final", "model": "claude-sonnet-5", "latency_s": 1.539, "input": 203, "output": 53, "cache_read": 1288, "cache_write": 0, "cumulative_cost_usd": 0.005839800000000001}
+{"ts": "2026-08-02T10:48:18Z", "label": "hbg-vampi-final", "model": "claude-sonnet-5", "latency_s": 1.696, "input": 203, "output": 49, "cache_read": 1288, "cache_write": 0, "cumulative_cost_usd": 0.0075702}

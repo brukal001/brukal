@@ -1,0 +1,8 @@
+{"ts": "2026-08-02T10:40:55Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 1.475, "input": 26, "output": 8, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.000198}
+{"ts": "2026-08-02T10:42:08Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 2.28, "input": 299, "output": 97, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.00255}
+{"ts": "2026-08-02T10:42:12Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 4.342, "input": 299, "output": 322, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.008277}
+{"ts": "2026-08-02T10:42:15Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 2.153, "input": 299, "output": 105, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.010749000000000002}
+{"ts": "2026-08-02T10:44:32Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 3.611, "input": 23, "output": 256, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.014658}
+{"ts": "2026-08-02T10:44:52Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 5.463, "input": 23, "output": 445, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.021401999999999997}
+{"ts": "2026-08-02T10:45:08Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 4.705, "input": 15, "output": 386, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.027237}
+{"ts": "2026-08-02T10:46:12Z", "label": "hbg-vampi-1", "model": "claude-sonnet-5", "latency_s": 1.506, "input": 558, "output": 41, "cache_read": 0, "cache_write": 0, "cumulative_cost_usd": 0.0022890000000000002}
