@@ -175,6 +175,10 @@ def to_json(findings, meta: dict | None = None) -> dict:
             "commands_executed": meta.get("executed"),
             "commands_blocked": meta.get("blocked"),
         },
+        # Measured token spend for this run. A cost comparison between tools is only
+        # worth reading if it cites what was metered rather than what was estimated,
+        # so the numbers travel with the findings they paid for.
+        "spend": meta.get("spend_detail") or {},
         "summary": {
             "total": len(items),
             "confirmed": len(confirmed),

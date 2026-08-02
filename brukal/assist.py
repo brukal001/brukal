@@ -3885,6 +3885,18 @@ def _spend_line(session) -> str:
     return f"  brain spend — {meter.summary()}"
 
 
+def _spend_detail(session) -> dict:
+    """The same tally as `_spend_line`, structured, for the interchange export.
+
+    A cost comparison between tools is only worth reading if it cites measured tokens
+    rather than an estimate, so every run persists its own meter alongside its
+    findings."""
+    try:
+        return session.strategist._llm.usage.as_dict()
+    except AttributeError:
+        return {}
+
+
 def _ensure_key_env(var: str, label: str) -> bool:
     """Ensure an API-key env var is set; prompt (hidden) if interactive."""
     if os.environ.get(var):
@@ -4302,6 +4314,7 @@ def _write_session_report(session, result, cage, audit, spend=""):
             "audit_chain_intact": bool(audit.verify()) if audit is not None else False,
             "audit_log": str(getattr(audit, "path", "")) if audit is not None else "",
             "spend": spend,
+            "spend_detail": _spend_detail(session),
             "surface": session.surface.summary() if session.surface else "",
         }
         return write_reports(session.findings, meta, _session_vault(session))

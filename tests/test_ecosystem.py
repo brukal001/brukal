@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+import pytest
 import tempfile
 from pathlib import Path
 
@@ -248,3 +249,23 @@ def test_export_carries_the_governance_fields_the_run_records():
     assert doc["governance"]["audit_chain_intact"] is True
     assert doc["governance"]["audit_log"] == "runs/a.jsonl"
     assert doc["governance"]["commands_executed"] == 7
+
+
+def test_export_carries_measured_spend_so_a_cost_claim_is_citable():
+    """A benchmark that compares cost must be able to cite metered tokens from the run
+    that produced the findings, not a figure typed in afterwards."""
+    from brukal import export
+    from brukal.llm import UsageMeter
+    meter = UsageMeter("claude-opus-5")
+    meter.add({"input": 150_000, "output": 5_000, "cache_read": 90_000,
+               "cache_write": 0})
+    doc = export.to_json([], {"target": "10.0.0.5",
+                              "spend_detail": meter.as_dict()})
+    spend = doc["spend"]
+    assert spend["model"] == "claude-opus-5" and spend["calls"] == 1
+    assert spend["input_tokens"] == 150_000 and spend["cache_read_tokens"] == 90_000
+    assert spend["cost_usd"] == pytest.approx(150_000 / 1e6 * 5.0
+                                              + 90_000 / 1e6 * 0.5
+                                              + 5_000 / 1e6 * 25.0)
+    # A deterministic run that never called a model still exports a well-formed block.
+    assert export.to_json([], {"target": "10.0.0.5"})["spend"] == {}

@@ -81,8 +81,16 @@ _ANTHROPIC_DEFAULT = "claude-sonnet-5"
 # key first, so "claude-opus-4-8" wins over a hypothetical "claude-opus". Models not
 # listed here (local Ollama/LM Studio, or a provider we haven't priced) meter their
 # tokens but report cost as unknown rather than guessing. Update as prices move.
+#
+# These are LIST prices. Promotional/introductory rates are deliberately NOT modelled:
+# a discount has an expiry date, and a pricing table that silently flips on a hardcoded
+# date is a time bomb. Quoting list means the number is an UPPER BOUND — the safe
+# direction for a spend cap (you stop early, never late) and a defensible figure to
+# publish in a benchmark.
 _PRICING = {
     "claude-fable-5":    (10.00, 50.00),
+    "claude-mythos-5":   (10.00, 50.00),
+    "claude-opus-5":     (5.00, 25.00),
     "claude-opus-4-8":   (5.00, 25.00),
     "claude-opus-4-7":   (5.00, 25.00),
     "claude-opus-4-6":   (5.00, 25.00),
@@ -110,6 +118,13 @@ _PRICING = {
 }
 
 
+# Providers that run on the operator's own hardware. Spend against these is $0 by
+# construction, which is a DIFFERENT thing from "we have no price on file": one is a
+# known-zero cost, the other is an unknown non-zero one. Collapsing the two is what let
+# a spend cap silently evaporate on an unpriced cloud model, so they stay distinct.
+_LOCAL_PROVIDERS = frozenset({"ollama", "lmstudio"})
+
+
 def _rate_for(model: str):
     """(input, output) $/1M for a model id, or None if we have no price on file."""
     m = (model or "").lower()
@@ -121,14 +136,24 @@ def _rate_for(model: str):
 
 class UsageMeter:
     """Accumulates token usage across every propose() call and prices it. One meter
-    per LLMClient, so `client.usage.summary()` is the per-hunt cost line."""
+    per LLMClient, so `client.usage.summary()` is the per-hunt cost line.
 
-    def __init__(self, model: str):
+    `input_tokens` here means tokens billed at the FULL input rate — cache reads and
+    cache writes are counted separately because they bill differently (~0.1x and
+    ~1.25x). Normalising to that meaning is each backend's job, because the two
+    providers report it the opposite way round: Anthropic's `input_tokens` already
+    EXCLUDES cached tokens, while an OpenAI-compatible `prompt_tokens` INCLUDES them.
+    Getting that backwards silently understates spend on one provider and overstates
+    it on the other, so the meter takes pre-normalised numbers and never guesses."""
+
+    def __init__(self, model: str, free: bool = False):
         self.model = model
+        self.free = free             # local provider: spend is $0, not merely unknown
         self.calls = 0
-        self.input_tokens = 0
+        self.input_tokens = 0        # billed at the full input rate
         self.output_tokens = 0
-        self.cache_read_tokens = 0   # billed at ~0.1x input where the provider reports it
+        self.cache_read_tokens = 0   # billed at ~0.1x input
+        self.cache_write_tokens = 0  # billed at ~1.25x input (5-minute TTL)
 
     def add(self, usage: dict) -> None:
         if not usage:
@@ -137,24 +162,53 @@ class UsageMeter:
         self.input_tokens += int(usage.get("input", 0) or 0)
         self.output_tokens += int(usage.get("output", 0) or 0)
         self.cache_read_tokens += int(usage.get("cache_read", 0) or 0)
+        self.cache_write_tokens += int(usage.get("cache_write", 0) or 0)
+
+    @property
+    def prompt_tokens(self) -> int:
+        """Every token sent, however it was billed — the number to compare against a
+        context window, as opposed to the number to compare against a budget."""
+        return self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
 
     @property
     def cost(self):
-        """USD spent so far, or None if the model has no price on file (e.g. local)."""
+        """USD spent so far. 0.0 for a local provider (free by construction), and None
+        only when the spend is genuinely UNKNOWN — a paid provider whose model is not in
+        the price table. A caller enforcing a cap must treat those two differently: 0.0
+        can never breach a ceiling, None means the ceiling is unenforceable."""
+        if self.free:
+            return 0.0
         rate = _rate_for(self.model)
         if rate is None:
             return None
         in_rate, out_rate = rate
-        billed_in = max(self.input_tokens - self.cache_read_tokens, 0)
-        return (billed_in / 1e6) * in_rate \
+        return (self.input_tokens / 1e6) * in_rate \
             + (self.cache_read_tokens / 1e6) * in_rate * 0.1 \
+            + (self.cache_write_tokens / 1e6) * in_rate * 1.25 \
             + (self.output_tokens / 1e6) * out_rate
+
+    def as_dict(self) -> dict:
+        """The machine-readable tally, for the run vault and the benchmark harness.
+        Measured spend beats an estimate, so this is what a cost comparison cites."""
+        return {
+            "model": self.model,
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "prompt_tokens": self.prompt_tokens,
+            "cost_usd": self.cost,
+            "priced": self.free or _rate_for(self.model) is not None,
+            "free": self.free,
+        }
 
     def summary(self) -> str:
         toks = (f"{self.calls} call(s) · "
                 f"{self.input_tokens:,} in / {self.output_tokens:,} out tokens")
-        if self.cache_read_tokens:
-            toks += f" ({self.cache_read_tokens:,} cached)"
+        if self.cache_read_tokens or self.cache_write_tokens:
+            toks += (f" (+{self.cache_read_tokens:,} cached read"
+                     f", {self.cache_write_tokens:,} written)")
         cost = self.cost
         if cost is None:
             return f"{self.model}: {toks} · cost: n/a (no price on file — local/free?)"
@@ -169,14 +223,27 @@ class _AnthropicBackend:
         self.last_usage: dict = {}
 
     def propose(self, system: str, user: str, max_tokens: int) -> str:
+        # The system prompt is the stable prefix of every turn in an engagement — the
+        # methodology, the schema, the rules — while only the user turn changes. Marking
+        # it cacheable bills it at ~0.1x on every call after the first, which on a long
+        # hunt is most of the input spend. Caching is a prefix match, so this is only
+        # sound because the system prompt is frozen for the engagement's lifetime.
+        system_blocks = [{"type": "text", "text": system,
+                          "cache_control": {"type": "ephemeral"}}] if system else []
         msg = self._client.messages.create(
-            model=self.model, max_tokens=max_tokens, system=system,
+            model=self.model, max_tokens=max_tokens,
+            system=system_blocks or system,
             messages=[{"role": "user", "content": user}])
         u = getattr(msg, "usage", None)
+        # Anthropic's `input_tokens` is the UNCACHED remainder — cache reads and writes
+        # are reported separately and are NOT included in it. So it maps straight onto
+        # the meter's "billed at full rate" with no subtraction. (The OpenAI-compatible
+        # backend below has to subtract, because there the convention is inverted.)
         self.last_usage = {
-            "input": getattr(u, "input_tokens", 0),
-            "output": getattr(u, "output_tokens", 0),
+            "input": getattr(u, "input_tokens", 0) or 0,
+            "output": getattr(u, "output_tokens", 0) or 0,
             "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+            "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
         } if u is not None else {}
         text = "".join(b.text for b in msg.content
                        if getattr(b, "type", None) == "text")
@@ -247,11 +314,18 @@ class _OpenAICompatBackend:
         }).encode()
         data = self._post(body)
         u = data.get("usage") or {}
+        # Inverted convention from Anthropic's: here `prompt_tokens` is the TOTAL and
+        # `cached_tokens` is a subset of it, so the cached portion must be subtracted to
+        # leave what is billed at the full rate. Feeding the raw total to the meter
+        # would double-count the cached tokens and overstate spend.
+        prompt = int(u.get("prompt_tokens", 0) or 0)
+        cached = int((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
+        cached = min(cached, prompt)          # a provider reporting nonsense can't go negative
         self.last_usage = {
-            "input": u.get("prompt_tokens", 0),
-            "output": u.get("completion_tokens", 0),
-            # some OpenAI-compatible providers report cached input here
-            "cache_read": (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+            "input": prompt - cached,
+            "output": int(u.get("completion_tokens", 0) or 0),
+            "cache_read": cached,
+            "cache_write": 0,                 # not separately billed/reported here
         }
         message = (data.get("choices") or [{}])[0].get("message") or {}
         return _strip_think(self._message_text(message))
@@ -280,7 +354,7 @@ class LLMClient:
         url = base_url or os.environ.get("BRUKAL_BASE_URL") or preset_url
         key = api_key or os.environ.get(key_env) or os.environ.get("OPENAI_API_KEY", "")
         self._backend = _OpenAICompatBackend(self.model, url, key)
-        self.usage = UsageMeter(self.model)
+        self.usage = UsageMeter(self.model, free=self.provider in _LOCAL_PROVIDERS)
 
     def propose(self, system: str, user: str, max_tokens: int = 1024) -> str:
         text = self._backend.propose(system, user, max_tokens)

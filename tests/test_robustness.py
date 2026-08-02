@@ -82,8 +82,13 @@ def test_budget_exceeded_arithmetic():
     assert "spend" in b.exceeded(cost=1.5, steps=0)
     assert "step cap" in b.exceeded(steps=5)
     assert "research" in b.exceeded(fetches=3)
-    # a None dimension is simply not checked (local model -> no cost cap fires)
-    assert b.exceeded(cost=None, steps=1, fetches=0) is None
+    # An OMITTED dimension is simply not checked...
+    assert b.exceeded(steps=1, fetches=0) is None
+    # ...but an explicit cost=None means "spend is unmeasurable", which is NOT the same
+    # as "under budget": a cap the operator asked for cannot silently evaporate.
+    assert "cannot be enforced" in b.exceeded(cost=None, steps=1)
+    # A local model reports 0.0, not None — free by construction, so the cap holds.
+    assert b.exceeded(cost=0.0, steps=1, fetches=0) is None
 
 
 def test_budget_wall_clock_cap_fires():
