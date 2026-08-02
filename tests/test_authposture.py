@@ -183,3 +183,40 @@ def test_rate_limit_probe_is_skipped_without_authorisation():
     sess.confirm_user_enumeration = lambda *a, **k: called.add("enum") is None and False
     sess.confirm_surface()
     assert "rate" not in called and "enum" in called   # read-only one still runs
+
+
+# -- the live-run regression: a 200 is not a successful login ------------------
+
+class _AlwaysTwoHundred:
+    """VAmPI's real shape: HTTP 200 for BOTH failure modes, differing only in the
+    message. The first version of this check assumed 200 meant a successful login and
+    so skipped every API that answers this way — nine green unit tests missed it
+    because the fixture returned 401/404, which was self-consistent but not
+    reality-consistent."""
+
+    def run(self, action):
+        user = json.loads(action.body or "{}").get("username", "")
+        msg = ("Password is not correct for the given username."
+               if user == "realuser" else "Username does not exist")
+        return WebResult(status=200, url=action.url,
+                         body=json.dumps({"status": "fail", "message": msg}))
+
+
+def test_enumeration_is_found_when_failures_answer_http_200():
+    sess = _session(_AlwaysTwoHundred())
+    assert sess.confirm_user_enumeration(LOGIN, "realuser") is True
+    assert "does not exist" in sess.findings.all()[0].evidence
+
+
+class _RealLogin:
+    """Answers 200 WITH a token — the password was not wrong after all."""
+
+    def run(self, action):
+        return WebResult(status=200, url=action.url,
+                         body=json.dumps({"auth_token": "eyJhbGciOi.payload.signature"}))
+
+
+def test_a_response_carrying_a_session_is_not_treated_as_a_failed_login():
+    sess = _session(_RealLogin())
+    assert sess.confirm_user_enumeration(LOGIN, "realuser") is False
+    assert not sess.findings.all()

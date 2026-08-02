@@ -154,6 +154,19 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
     return hits
 
 
+def _issued_session(body: str) -> bool:
+    """Whether a login response actually handed back a credential.
+
+    The status code cannot answer this: an API returning 200 with
+    {"status": "fail"} is common, and so is 401 with a token in a redirect body. What
+    settles it is the presence of something session-shaped."""
+    text = (body or "")[:2000]
+    if re.search(r'"(?:auth_token|access_token|id_token|token|jwt|session)"\s*:\s*"[^"]{8,}"',
+                 text, re.I):
+        return True
+    return bool(re.search(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.", text))
+
+
 def _norm_body(text: str, *drop: str) -> str:
     """A response body reduced to what is COMPARABLE between two probes.
 
@@ -2663,8 +2676,12 @@ class AssistSession:
         real, fake = attempt(known_user), attempt(absent)
         if real is None or fake is None:
             return False
-        # A successful login means the "wrong" password was not wrong; prove nothing.
-        if real.status == 200 or fake.status == 200:
+        # A successful login means the "wrong" password was not wrong, and the two
+        # answers are no longer comparable. Detect that by whether a SESSION was
+        # issued, not by the status code: plenty of APIs answer a failed login with
+        # HTTP 200 and a message in the body, and treating 200 as success made this
+        # check silently skip every one of them.
+        if _issued_session(real.body) or _issued_session(fake.body):
             return False
         rb, fb = (real.body or "")[:400], (fake.body or "")[:400]
         if (real.status == fake.status
