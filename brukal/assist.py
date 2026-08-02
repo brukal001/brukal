@@ -207,6 +207,7 @@ class AssistSession:
         self._seen_jwts: set = set()   # tokens already analysed (once each, offline)
         self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
         self.identity: str = ""        # the principal we authenticated as (authz tests)
+        self._login_password: str = ""  # that principal's password (session-revocation check)
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
         self._cors_checked = False     # the CORS question is per-host, asked once
@@ -1297,6 +1298,7 @@ class AssistSession:
         if token:
             self.browser.auth_header = f"Bearer {token}"
             self.identity = username          # whose objects are "ours" for authz tests
+            self._login_password = password    # the revocation check must re-authenticate
             # The token the app just handed us is itself evidence: its header names the
             # algorithm and its signature exposes a weak key. Reading it costs nothing
             # and needs no further request.
@@ -2606,6 +2608,160 @@ class AssistSession:
                     f"{{\"{pass_field}\": \"...\"}}, then POST {login_url} as {victim}")))
         return True
 
+    def confirm_destructive_endpoint_exposed(self, url: str,
+                                             protected_url: str) -> bool:
+        """A STATE-DESTROYING endpoint answers strangers — proved without invoking it.
+
+        This closes a blind spot Brukal created for itself. `_is_destructive_path()`
+        makes the unauthenticated-access check refuse `/createdb`, `/reset`, `/drop`
+        and friends, because Brukal once wiped its own target by fetching one as an
+        ordinary listing. The guard is right, and the cost of it was silence: a
+        competing tool reported "unauthenticated database reset" on the same host while
+        Brukal, which had the route in its map the whole time, said nothing. Safety and
+        coverage are genuinely in tension here, and refusing to look was resolving it
+        entirely one way.
+
+        The way out is to ask a question the framework answers *before* the view runs.
+        OPTIONS is dispatched by the routing layer, so it cannot reinitialise anything —
+        but a bare 200 proves nothing on its own, because most applications never
+        authenticate preflight. So it is a DIFFERENTIAL against a route the app itself
+        says is protected: if the protected route refuses an anonymous OPTIONS and the
+        destructive one does not, the difference is the app's own authorization talking.
+        When both answer alike the check yields nothing, which is the correct result —
+        an app that never guards OPTIONS cannot be interrogated this way.
+
+        HEAD is deliberately NOT used: Flask and friends satisfy it by running the view
+        and discarding the body, which is exactly the invocation being avoided."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not url or not protected_url:
+            return False
+        if not self._is_destructive_path(url):
+            return False                      # ordinary routes go through the normal check
+
+        def anonymous_options(target: str):
+            saved_header = getattr(self.browser, "auth_header", "")
+            saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+            try:
+                self.browser.auth_header = ""
+                if hasattr(self.browser, "_cookies"):
+                    self.browser._cookies = {}
+                _d, r = self.browser.run(WebAction("request", url=target,
+                                                   method="OPTIONS"))
+                return r
+            except Exception:
+                return None
+            finally:
+                self.browser.auth_header = saved_header
+                if hasattr(self.browser, "_cookies"):
+                    self.browser._cookies = saved_cookies
+
+        guarded = anonymous_options(protected_url)
+        exposed = anonymous_options(url)
+        if guarded is None or exposed is None:
+            return False
+        # The reference route must actually be refused, or there is no baseline and the
+        # comparison says nothing about authorization.
+        if guarded.status not in (401, 403):
+            return False
+        if exposed.status in (401, 403, 404):
+            return False
+
+        self.findings.add(Finding(
+            title="Unauthenticated access to a state-destroying endpoint",
+            severity="high", category="api",
+            target=url, param="", confirmed=True,
+            evidence=(f"anonymous OPTIONS {url} answered HTTP {exposed.status} while the "
+                      f"same request to {protected_url} — which the app declares "
+                      f"protected — was refused with HTTP {guarded.status}. The endpoint "
+                      f"was NOT invoked: OPTIONS is dispatched before the handler runs, "
+                      f"so this proves reachability without triggering the operation"),
+            source=(f"OPTIONS {url} vs OPTIONS {protected_url}, both anonymous. "
+                    f"Deliberately never requested with a method that would execute it")))
+        return True
+
+    def confirm_no_session_revocation(self, change_url_template: str, login_url: str,
+                                      verify_url: str, user: str, password: str,
+                                      user_field: str = "username",
+                                      pass_field: str = "password") -> bool:
+        """A credential change does not invalidate sessions already issued (OWASP API2).
+
+        The finding is an ABSENCE, which is why it needs three observations rather than
+        one: a token works, the password behind it changes, and the SAME token still
+        works. Any two of those alone are unremarkable. Together they say the only
+        recovery action a user has after a compromise — change the password — does not
+        actually evict the attacker.
+
+        Runs on our OWN account and changes our OWN password, so nothing another
+        principal depends on is touched; still gated on allow_intrusive because it
+        writes a credential."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive:
+            return False
+        if "{" not in (change_url_template or "") or not user:
+            return False
+        import re as _re
+        rotated = "Brukal-Rotated-Pw1!"
+        change_url = _re.sub(r"\{[^}]*\}", user, change_url_template, count=1)
+
+        def login(pw: str):
+            _d, r = self.browser.run(WebAction(
+                "request", url=login_url, method="POST",
+                body=json.dumps({user_field: user, pass_field: pw}),
+                headers={"Content-Type": "application/json"}))
+            return r
+
+        first = login(password)
+        if first is None or not _issued_session(first.body):
+            return False
+        token = ""
+        m = _re.search(r'"(?:auth_token|access_token|token|jwt)"\s*:\s*"([^"]{8,})"',
+                       first.body or "")
+        if m:
+            token = m.group(1)
+        if not token:
+            return False
+
+        def whoami():
+            _d, r = self.browser.run(WebAction(
+                "request", url=verify_url, method="GET",
+                headers={"Authorization": f"Bearer {token}"}))
+            return r
+
+        before = whoami()
+        if before is None or before.status >= 400:
+            return False                       # the token was never usable; nothing to say
+
+        _d, changed = self.browser.run(WebAction(
+            "request", url=change_url, method="PUT",
+            body=json.dumps({pass_field: rotated}),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"}))
+        if changed is None or changed.status >= 400:
+            return False
+        # The password really did move — otherwise "the token still works" is trivial.
+        if not _issued_session((login(rotated).body if login(rotated) else "") or ""):
+            return False
+
+        after = whoami()
+        if after is None or after.status >= 400:
+            return False                       # correctly revoked: no finding
+
+        self.findings.add(Finding(
+            title="Session not revoked after credential change",
+            severity="medium", category="api",
+            target=verify_url, param="", confirmed=True,
+            evidence=(f"a token issued before the password change still authenticated "
+                      f"at {verify_url} (HTTP {after.status}) after the credential was "
+                      f"rotated and the new password verified by a fresh login — the "
+                      f"only remediation a compromised user has does not evict the "
+                      f"holder of a stolen token"),
+            source=(f"POST {login_url} -> token; GET {verify_url} OK; "
+                    f"PUT {change_url}; fresh login with the new password OK; "
+                    f"GET {verify_url} with the ORIGINAL token still OK")))
+        return True
+
     def confirm_debug_console(self, base_url: str) -> bool:
         """An INTERACTIVE debugger exposed to the network (Werkzeug/Flask debug mode).
 
@@ -3116,6 +3272,46 @@ class AssistSession:
                             confirmed += 1
                     except Exception:
                         pass
+
+                # 8b) A state-destroying endpoint that answers strangers. Proved by
+                #     OPTIONS differential, never by invoking it — see the method.
+                protected_ref = ""
+                for _m, spath in (getattr(self.surface, "protected_routes", []) or []):
+                    if "{" not in spath:
+                        protected_ref = (spath if spath.startswith("http")
+                                         else _urljoin(base_origin, spath))
+                        break
+                if protected_ref:
+                    for route in (getattr(self.surface, "api_routes", []) or []):
+                        if self._confirm_budget <= 0:
+                            break
+                        if not self._is_destructive_path(route):
+                            continue
+                        durl = (route if route.startswith("http")
+                                else _urljoin(base_origin, route))
+                        try:
+                            if self.confirm_destructive_endpoint_exposed(durl,
+                                                                        protected_ref):
+                                confirmed += 1
+                                break
+                        except Exception:
+                            pass
+
+                # 8c) Sessions surviving a credential change — an ABSENCE finding.
+                if bfla and self._confirm_budget > 0 and self.identity:
+                    change_tpl, login_url_, _victim = bfla
+                    verify = self._login_endpoint().replace("login", "me") \
+                        if self._login_endpoint() else ""
+                    for cand in ([verify] if verify else []) + [
+                            _urljoin(base_origin, "/me")]:
+                        try:
+                            if self.confirm_no_session_revocation(
+                                    change_tpl, login_url_, cand,
+                                    self.identity, self._login_password):
+                                confirmed += 1
+                                break
+                        except Exception:
+                            pass
 
                 # 9) Unthrottled credential brute-force. Intrusive by consequence rather
                 #    than by method: on a target with lockout, repeated failures deny
