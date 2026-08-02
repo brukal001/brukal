@@ -64,3 +64,27 @@ def test_no_coverage_table_when_nothing_was_recorded():
     """An empty table would itself be a false statement about what ran."""
     md = build_report(FindingStore(), {"target": "t"})
     assert "## Coverage" not in md
+
+
+def test_every_class_that_produced_a_finding_appears_in_the_table():
+    """The report's own footnote says a class absent from the table was not reached.
+    The first live run broke that promise: it listed JWT forgery, BOLA and
+    unauthenticated-exposure findings while none of those classes appeared, because only
+    some probe sites were instrumented. A report that contradicts itself is worse than
+    one that says less."""
+    import json as _json
+    from pathlib import Path
+    from brukal.assist import _COVERAGE_WORDS
+    doc = _json.loads(Path("runs/vault-wb/172.20.0.5/findings.json").read_text())
+    classes_with_findings = set()
+    for f in doc["findings"]:
+        title = f["title"].lower()
+        for klass, words in _COVERAGE_WORDS.items():
+            if any(w in title for w in words):
+                classes_with_findings.add(klass)
+    # every class Brukal can produce a finding for must have an instrumented probe site
+    import brukal.assist as _a
+    src = Path(_a.__file__).read_text()
+    for klass in classes_with_findings:
+        assert f'self._covered("{klass}"' in src, \
+            f"{klass} produces findings but no probe site records coverage for it"

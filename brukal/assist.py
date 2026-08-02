@@ -3143,6 +3143,8 @@ class AssistSession:
                 url = _urljoin(getattr(self.surface, "seed", "")
                                or f"http://{self.target}/", probe_path)
                 try:
+                    self._covered("Unauthenticated exposure",
+                                  note="spec-declared protected routes, asked anonymously")
                     if self.confirm_unauth_access(url, spec_path=spath):
                         confirmed += 1
                         continue
@@ -3152,6 +3154,8 @@ class AssistSession:
                 # could MINT would be accepted instead.
                 if self.last_jwt:
                     try:
+                        self._covered("JWT / token handling",
+                                      note="offline key recovery, then a minted token")
                         if self.confirm_jwt_forgery(url, self.last_jwt):
                             confirmed += 1
                     except Exception:
@@ -3185,6 +3189,7 @@ class AssistSession:
             if not self._cors_checked:
                 self._cors_checked = True
                 try:
+                    self._covered("Transport / browser hygiene")
                     if self.confirm_cors(base_origin):
                         confirmed += 1
                 except Exception:
@@ -3198,6 +3203,7 @@ class AssistSession:
                     if self._confirm_budget <= 0 or self._rate_limited:
                         break
                     try:
+                        self._covered("GraphQL", note="introspection query")
                         introspects = self.confirm_graphql_introspection(gurl)
                     except Exception:
                         continue
@@ -3233,6 +3239,8 @@ class AssistSession:
                     continue
                 exposure_checked.add(url)
                 try:
+                    self._covered("Unauthenticated exposure",
+                                  note="collection endpoints, asked anonymously")
                     if self.confirm_data_exposure(url):
                         confirmed += 1
                 except Exception:
@@ -3284,6 +3292,8 @@ class AssistSession:
                 if token and confirmed_bola[0] is False:
                     collection = url.split(m.group(0))[0].rstrip("/")
                     try:
+                        self._covered("Object-level authz (BOLA)",
+                                      note="another principal's object, from the listing")
                         if self.confirm_bola_from_collection(
                                 collection, url, m.group(0), token, self.identity):
                             confirmed += 1
@@ -3302,6 +3312,7 @@ class AssistSession:
                     if self._confirm_budget <= 0:
                         break
                     try:
+                        self._covered("Prompt injection (LLM)", note="two-canary probe")
                         if self.confirm_prompt_injection(url, field, method="JSON"):
                             confirmed += 1
                             break
