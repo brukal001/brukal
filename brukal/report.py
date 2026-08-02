@@ -75,7 +75,27 @@ def build_report(store: FindingStore, meta: dict) -> str:
     badges = "  ".join(f"**{counts[s]}** {s}" for s in SEVERITIES if counts[s])
     out.append(f"{total} finding(s): {badges or 'none'}."
                f"  ({len(store.confirmed())} confirmed, {len(store.candidates())} candidate.)")
+    # What the findings ADD UP TO, before the list of what they are. A reader deciding
+    # how urgent this is needs to know that one flaw alone hands over the application;
+    # that sentence cannot be recovered from a severity histogram.
+    try:
+        from . import chains as _chains
+        _composed = _chains.compose(store.confirmed())
+        _headline = _chains.summarise(_composed)
+        if _headline:
+            out.append("")
+            out.append(_headline)
+    except Exception:
+        _composed = []
     out.append("")
+
+    # --- attack chains --------------------------------------------------------
+    if _composed:
+        try:
+            out.append(_chains.render(_composed))
+            out.append("")
+        except Exception:
+            pass
 
     # --- findings, ranked -----------------------------------------------------
     confirmed, candidates = store.confirmed(), store.candidates()
