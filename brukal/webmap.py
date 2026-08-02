@@ -441,6 +441,8 @@ class AttackSurface:
     techs: set = field(default_factory=set)          # tech fingerprints noticed
     api_routes: list = field(default_factory=list)   # API route paths mined from JS/HTML
     protected_routes: list = field(default_factory=list)  # (METHOD, path) the spec says need auth
+    write_operations: list = field(default_factory=list)  # (METHOD, templated path) that mutate state
+    privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set
     soft_404: bool = False                           # host answers 200 for missing paths
 
     def add_page(self, url: str, links, forms, params) -> None:
@@ -535,3 +537,97 @@ def principals(text: str, cap: int = 40) -> list[str]:
         if len(out) >= cap:
             break
     return out
+
+
+# Names a client should not be able to set on itself. Substring-matched against the
+# fields a spec DECLARES, so this selects from the app's own vocabulary rather than
+# guessing at one — an app whose privileged flag is `account_tier` is invisible to a
+# fixed list, but its spec names the field.
+_PRIVILEGE_HINTS = ("admin", "role", "staff", "superuser", "is_super", "permission",
+                    "privilege", "scope", "grant", "verified", "confirmed", "active",
+                    "enabled", "balance", "credit", "quota", "tier", "plan", "owner")
+
+# Methods that change server state. A templated path under one of these is where
+# function-level authorization is decided, which is exactly where BFLA lives.
+_WRITE_METHODS = ("put", "patch", "delete", "post")
+
+
+def _spec_paths(text: str):
+    """(paths_object, base_prefix) from an OpenAPI/Swagger document, or (None, "")."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return None, ""
+    if not isinstance(doc, dict):
+        return None, ""
+    paths = doc.get("paths")
+    if not isinstance(paths, dict):
+        return None, ""
+    base = doc.get("basePath") if isinstance(doc.get("basePath"), str) else ""
+    return paths, (base or "").rstrip("/")
+
+
+def state_changing_operations(text: str, max_ops: int = 60):
+    """(METHOD, path) for spec operations that mutate a TEMPLATED resource.
+
+    This is where broken function-level authorization lives: `PUT /users/{username}/
+    password` is a privileged action addressed by whose it is. Reading it from the spec
+    generalises what a name heuristic cannot — matching routes that merely end in
+    'password' finds VAmPI and misses every app that calls it something else."""
+    paths, base = _spec_paths(text)
+    if paths is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for path, ops in paths.items():
+        if not isinstance(path, str) or "{" not in path or not isinstance(ops, dict):
+            continue
+        for method, op in ops.items():
+            if not isinstance(method, str) or method.lower() not in _WRITE_METHODS:
+                continue
+            if not isinstance(op, dict):
+                continue
+            entry = (method.upper(), base + path)
+            if entry not in out:
+                out.append(entry)
+            if len(out) >= max_ops:
+                return out
+    return out
+
+
+def writable_privileged_fields(text: str, max_fields: int = 20) -> list[str]:
+    """Request-body properties a spec declares that a client should not control.
+
+    Mass assignment is only detectable if you know which field to try. A fixed list of
+    guesses ('admin', 'role', ...) covers the common cases and silently misses the rest;
+    the document already enumerates every property each endpoint accepts, so the
+    candidates can come from the target instead of from us. Selection only — whether the
+    field is actually assignable is still settled by the differential proof."""
+    paths, _base = _spec_paths(text)
+    if paths is None:
+        return []
+    found: list[str] = []
+
+    def harvest(node, depth=0):
+        if depth > 6 or len(found) >= max_fields:
+            return
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                for name in props:
+                    low = str(name).lower()
+                    if (any(h in low for h in _PRIVILEGE_HINTS)
+                            and name not in found):
+                        found.append(str(name))
+            for value in node.values():
+                harvest(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                harvest(item, depth + 1)
+
+    for _path, ops in paths.items():
+        if not isinstance(ops, dict):
+            continue
+        for _m, op in ops.items():
+            if isinstance(op, dict):
+                harvest(op.get("requestBody") or op.get("parameters"))
+    return found[:max_fields]

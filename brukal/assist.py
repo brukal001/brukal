@@ -1157,6 +1157,16 @@ class AssistSession:
                         for entry in webmap.protected_operations(sr.body or ""):
                             if entry not in surface.protected_routes:
                                 surface.protected_routes.append(entry)
+                        # The spec also names WHICH operations mutate a resource
+                        # addressed by whose it is, and WHICH body fields a client is
+                        # able to set. Both are what the authorization checks would
+                        # otherwise have to guess, so take them from the app itself.
+                        for entry in webmap.state_changing_operations(sr.body or ""):
+                            if entry not in surface.write_operations:
+                                surface.write_operations.append(entry)
+                        for fname in webmap.writable_privileged_fields(sr.body or ""):
+                            if fname not in surface.privileged_fields:
+                                surface.privileged_fields.append(fname)
                         self.notes.append(
                             f"[api-spec] {spec} declared {len(spec_routes)} endpoint(s)")
                         break
@@ -2746,8 +2756,20 @@ class AssistSession:
         def absolute(r):
             return r if r.startswith("http") else _urljoin(base, r)
 
-        change = next((absolute(r) for r in routes
-                       if "{" in r and r.lower().rstrip("/").endswith("password")), None)
+        # Prefer the app's own contract. A spec that declares `PUT /users/{u}/password`
+        # says outright "this mutates a resource addressed by whose it is" — which is
+        # the definition of the surface BFLA lives on. The name heuristic below only
+        # ever matched routes literally ending in 'password': it finds VAmPI and misses
+        # every application that calls the same operation something else.
+        change = None
+        for method, spath in (getattr(surface, "write_operations", []) or []):
+            if method in ("PUT", "PATCH") and "{" in spath:
+                change = absolute(spath)
+                break
+        if change is None:
+            change = next((absolute(r) for r in routes
+                           if "{" in r and r.lower().rstrip("/").endswith("password")),
+                          None)
         login = next((absolute(r) for r in routes
                       if "{" not in r and "login" in r.lower()), None)
         if not (change and login):
