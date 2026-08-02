@@ -2778,11 +2778,18 @@ class AssistSession:
         # the definition of the surface BFLA lives on. The name heuristic below only
         # ever matched routes literally ending in 'password': it finds VAmPI and misses
         # every application that calls the same operation something else.
-        change = None
-        for method, spath in (getattr(surface, "write_operations", []) or []):
-            if method in ("PUT", "PATCH") and "{" in spath:
-                change = absolute(spath)
-                break
+        # RANK, don't just take the first. The spec lists every templated write, and
+        # `PUT /users/{u}/email` sorts before `PUT /users/{u}/password` in VAmPI's own
+        # document — taking the head aimed a password-takeover proof at the email
+        # endpoint and lost a critical finding that had already been confirmed live.
+        # Credential-shaped operations first, any other templated write after.
+        writes = [(m, p) for m, p in (getattr(surface, "write_operations", []) or [])
+                  if m in ("PUT", "PATCH") and "{" in p]
+        _CRED = ("password", "passwd", "credential", "secret", "pwd")
+        change = next((absolute(p) for _m, p in writes
+                       if any(w in p.lower() for w in _CRED)), None)
+        if change is None and writes:
+            change = absolute(writes[0][1])
         if change is None:
             change = next((absolute(r) for r in routes
                            if "{" in r and r.lower().rstrip("/").endswith("password")),

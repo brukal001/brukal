@@ -79,3 +79,36 @@ def test_bfla_discovery_prefers_the_spec_over_the_name_heuristic():
     sess._other_principal = lambda *a, **k: "victim"
     assert sess.bfla_targets() == ("http://t/accounts/{id}/credentials",
                                    "http://t/auth/login", "victim")
+
+
+def test_credential_operations_outrank_other_writes_in_the_spec():
+    """The live regression: VAmPI's own document lists PUT /users/{u}/email BEFORE
+    PUT /users/{u}/password. Taking the head of the list aimed the password-takeover
+    proof at the email endpoint and silently lost a confirmed critical finding.
+    Generalising the discovery must not cost the case it already handled."""
+    from brukal.assist import AssistSession
+    sess = AssistSession.__new__(AssistSession)
+    s = AttackSurface(seed="http://t/")
+    s.add_routes(["/users/v1", "/users/v1/login"])
+    s.write_operations = [("DELETE", "/users/v1/{username}"),
+                          ("PUT", "/users/v1/{username}/email"),
+                          ("PUT", "/users/v1/{username}/password")]
+    sess.surface, sess.last_jwt, sess.target = s, "tok", "t"
+    sess.identity, sess.browser = "me", None
+    sess._other_principal = lambda *a, **k: "victim"
+    change, _login, _victim = sess.bfla_targets()
+    assert change == "http://t/users/v1/{username}/password"
+
+
+def test_a_non_credential_write_is_still_used_when_that_is_all_there_is():
+    """The generalisation must survive: an app whose only templated write is
+    /accounts/{id}/credentials or /profile/{id} is still worth probing."""
+    from brukal.assist import AssistSession
+    sess = AssistSession.__new__(AssistSession)
+    s = AttackSurface(seed="http://t/")
+    s.add_routes(["/auth/login"])
+    s.write_operations = [("PUT", "/profile/{id}")]
+    sess.surface, sess.last_jwt, sess.target = s, "tok", "t"
+    sess.identity, sess.browser = "me", None
+    sess._other_principal = lambda *a, **k: "victim"
+    assert sess.bfla_targets()[0] == "http://t/profile/{id}"
