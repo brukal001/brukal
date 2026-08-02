@@ -220,3 +220,31 @@ def test_parallel_tool_calls_are_suppressed_by_default():
     # ...the handler applies the policy, so verify the shape it produces
     suppressed = dict(base, disable_parallel_tool_use=True)
     assert suppressed == {"type": "auto", "disable_parallel_tool_use": True}
+
+
+# -- ground-truth scoring: "N findings" is not "N of the seeded flaws" ---------
+
+def test_scorer_does_not_credit_findings_outside_the_ground_truth():
+    """The unauthenticated VAmPI run produced 6 confirmed findings but only 3 seeded
+    flaws — the other 3 were missing security headers. Reporting 6 as coverage would
+    have overstated the result by a factor of two."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
+    from score_against_truth import score
+    findings = [
+        {"title": "SQL injection (error-based)", "confirmed": True},
+        {"title": "Unauthenticated exposure of credentials", "confirmed": True},
+        {"title": "Unauthenticated exposure of personal data", "confirmed": True},
+        {"title": "Missing security header: x-frame-options", "confirmed": True},
+    ]
+    r = score(findings, "vampi")
+    assert r["found"] == 3 and r["truth_total"] == 7
+    assert r["extra"] == ["Missing security header: x-frame-options"]
+
+
+def test_scorer_ignores_unconfirmed_leads_by_default():
+    """A lead with no deterministic proof must not count as coverage — that distinction
+    is the one thing the whole report rests on."""
+    from score_against_truth import score
+    lead_only = [{"title": "SQL injection (error-based)", "confirmed": False}]
+    assert score(lead_only, "vampi")["found"] == 0
+    assert score(lead_only, "vampi", confirmed_only=False)["found"] == 1
