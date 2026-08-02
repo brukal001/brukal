@@ -265,7 +265,9 @@ def _cmd_auto(args) -> int:
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
         full_send=args.full_send, mode=getattr(args, "mode", None),
-        packs_dir=getattr(args, "packs", None), fail_on=getattr(args, "fail_on", None),
+        packs_dir=getattr(args, "packs", None),
+        source_dir=getattr(args, "source", None),
+        fail_on=getattr(args, "fail_on", None),
         no_research=args.no_research,
         max_cost=getattr(args, "max_cost", None),
         max_research=getattr(args, "max_research", None),
@@ -609,6 +611,11 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--single-agent", action="store_true",
                     help="classic single-strategist loop; default is multi-agent "
                          "(strategist plans, recon/exploit/verify specialists execute)")
+    pa.add_argument("--source", default=None, metavar="DIR",
+                    help="path to the target's source tree. Mines LEADS only (candidate "
+                         "signing keys, debug flags, interpolated SQL) which still have "
+                         "to be proved against the running target — source is never "
+                         "itself evidence.")
     pa.add_argument("--full-send", action="store_true",
                     help="unleash: auto-approve ALL in-scope actions (incl. "
                          "irreversible/attack) instead of pausing. Scope wall stays — "

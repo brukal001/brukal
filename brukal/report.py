@@ -97,6 +97,25 @@ def build_report(store: FindingStore, meta: dict) -> str:
         except Exception:
             pass
 
+    # --- what was assessed ----------------------------------------------------
+    # A reader cannot tell an absent finding from an absent CHECK unless the report
+    # says which it is. Brukal already insists a rate-limited sweep declare its own
+    # incompleteness; reporting the classes that ran clean is the same duty, and it is
+    # what turns "no XSS listed" into "XSS was probed and none was found".
+    _cov = (m.get("coverage") or [])
+    if _cov:
+        out.append("## Coverage — what was assessed")
+        out.append("")
+        out.append("| Class | Probes | Result | Method |")
+        out.append("|---|---|---|---|")
+        for klass, probes, note, found in _cov:
+            verdict = "**finding**" if found else "none found"
+            out.append(f"| {klass} | {probes} | {verdict} | {note or '-'} |")
+        out.append("")
+        out.append("_A class listed here was exercised. A class absent from this table "
+                   "was not reached in this run, and its silence is not a clean result._")
+        out.append("")
+
     # --- findings, ranked -----------------------------------------------------
     confirmed, candidates = store.confirmed(), store.candidates()
     if confirmed:

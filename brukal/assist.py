@@ -154,6 +154,29 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
     return hits
 
 
+# Which finding titles belong to which assessed class, so "we probed X and found
+# nothing" can be distinguished from "we probed X and here it is".
+_COVERAGE_WORDS = {
+    "SQL injection": ("sql injection",),
+    "Command injection": ("command injection",),
+    "Path traversal / LFI": ("local file", "path traversal"),
+    "Template injection": ("template injection",),
+    "Cross-site scripting": ("cross-site scripting", "xss"),
+    "SSRF": ("server-side request",),
+    "Open redirect": ("open redirect",),
+    "Object-level authz (BOLA)": ("object-level authorization", "idor"),
+    "Function-level authz (BFLA)": ("function-level authorization",),
+    "Mass assignment": ("mass assignment",),
+    "JWT / token handling": ("jwt", "forged"),
+    "Authentication posture": ("rate limiting", "enumeration", "session not revoked"),
+    "Unauthenticated exposure": ("unauthenticated exposure", "unauthenticated access"),
+    "Prompt injection (LLM)": ("prompt injection",),
+    "GraphQL": ("graphql",),
+    "Transport / browser hygiene": ("security header", "cors"),
+    "Debug exposure": ("debug console",),
+}
+
+
 def _issued_session(body: str) -> bool:
     """Whether a login response actually handed back a credential.
 
@@ -208,6 +231,14 @@ class AssistSession:
         self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
         self.identity: str = ""        # the principal we authenticated as (authz tests)
         self._login_password: str = ""  # that principal's password (session-revocation check)
+        # What was actually ASSESSED, so a class with no finding can be reported as
+        # "checked and clean" rather than left to read as "never tested". Brukal already
+        # insists a rate-limited sweep declare its own incompleteness; staying silent
+        # about the classes that ran clean is the same omission from the other side.
+        self.coverage: dict = {}
+        # Leads mined from a supplied source tree. LEADS, never findings: they choose
+        # what to try, and the dynamic proof still decides what is true.
+        self.source_leads: list = []
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
         self._cors_checked = False     # the CORS question is per-host, asked once
@@ -1598,7 +1629,13 @@ class AssistSession:
         from .web import WebAction
         if self.browser is None:
             return False
-        secret = jwtscan.crack_hmac_secret(token)
+        # A key too long or odd to brute-force may sit in plain sight in the source, and
+        # trying it costs one offline signature check. If it does not reproduce the
+        # signature of a token the target actually issued there is no finding — which is
+        # exactly why reading the source cannot, by itself, produce one.
+        from . import sourcemap as _sourcemap
+        extra = tuple(_sourcemap.secrets_to_try(self.source_leads))
+        secret = jwtscan.crack_hmac_secret(token, extra_secrets=extra)
         parsed = jwtscan.decode(token)
         if not secret or parsed is None:
             return False
@@ -2982,6 +3019,26 @@ class AssistSession:
                 return n
         return ""
 
+    def _covered(self, klass: str, probes: int = 1, note: str = "") -> None:
+        """Record that a vulnerability class was exercised. Counts probes, not findings:
+        the useful statement to a reader is 'asked 14 times, nothing answered', which is
+        evidence of absence in a way that silence is not."""
+        entry = self.coverage.setdefault(klass, {"probes": 0, "note": ""})
+        entry["probes"] += max(0, int(probes))
+        if note and not entry["note"]:
+            entry["note"] = note
+
+    def coverage_summary(self) -> list:
+        """(class, probes, note, found) rows for the report, sorted for stable output."""
+        found = set()
+        for f in self.findings.all():
+            title = (getattr(f, "title", "") or "").lower()
+            for klass, words in _COVERAGE_WORDS.items():
+                if any(w in title for w in words):
+                    found.add(klass)
+        return sorted(((k, v["probes"], v["note"], k in found)
+                       for k, v in self.coverage.items()), key=lambda r: r[0])
+
     def mass_assignment_targets(self):
         """(register_url, login_url, verify_url) for the mass-assignment proof, or None.
 
@@ -3057,6 +3114,10 @@ class AssistSession:
                             return
                     except Exception:
                         pass
+            self._covered("SQL injection"); self._covered("Command injection")
+            self._covered("Path traversal / LFI"); self._covered("Template injection")
+            self._covered("Cross-site scripting"); self._covered("SSRF")
+            self._covered("Open redirect")
             for check in checks:
                 try:
                     if check(target, param, method=method, extra=extra):
@@ -3101,6 +3162,7 @@ class AssistSession:
             if not self._headers_checked:
                 self._headers_checked = True
                 try:
+                    self._covered("Transport / browser hygiene", note="one request per host")
                     self.confirm_security_headers(base_origin)
                 except Exception:
                     pass
@@ -3112,6 +3174,7 @@ class AssistSession:
                 if self._confirm_budget <= 0 or self._rate_limited:
                     break
                 try:
+                    self._covered("Debug exposure", note="framework debugger probe")
                     if self.confirm_debug_console(base_origin_):
                         confirmed += 1
                 except Exception:
@@ -3254,6 +3317,7 @@ class AssistSession:
                 targets = self.mass_assignment_targets()
                 if targets:
                     try:
+                        self._covered("Mass assignment", note="control-account differential")
                         if self.confirm_mass_assignment(*targets):
                             confirmed += 1
                     except Exception:
@@ -3267,6 +3331,8 @@ class AssistSession:
                 if bfla and self._confirm_budget > 0:
                     change_tpl, login_url, victim = bfla
                     try:
+                        self._covered("Function-level authz (BFLA)",
+                                      note="proof is a login as the victim")
                         if self.confirm_bfla_password_takeover(
                                 change_tpl, login_url, victim, self.last_jwt):
                             confirmed += 1
@@ -3331,6 +3397,8 @@ class AssistSession:
             if (login_url and self.identity and self._confirm_budget > 0
                     and not self._rate_limited):
                 try:
+                    self._covered("Authentication posture",
+                                  note="enumeration + throttling differentials")
                     if self.confirm_user_enumeration(login_url, self.identity):
                         confirmed += 1
                 except Exception:
@@ -4941,6 +5009,8 @@ def _write_session_report(session, result, cage, audit, spend=""):
             "audit_log": str(getattr(audit, "path", "")) if audit is not None else "",
             "spend": spend,
             "spend_detail": _spend_detail(session),
+            "coverage": (session.coverage_summary()
+                         if hasattr(session, "coverage_summary") else []),
             "surface": session.surface.summary() if session.surface else "",
         }
         return write_reports(session.findings, meta, _session_vault(session))
@@ -4953,7 +5023,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
              full_send=False, mode=None, no_research=False,
-             packs_dir=None, fail_on=None,
+             packs_dir=None, source_dir=None, fail_on=None,
              max_cost=None, max_research=None, max_time=None, resume=True,
              login=None) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
@@ -5054,6 +5124,22 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # it). The web door has no risk layer to escalate through, so that stays behind the
     # operator's explicit "unleash" rather than running by default.
     session.allow_intrusive = full
+    # Source leads, if the operator pointed at the target's tree. Mined once, up front,
+    # so a bad path is visible at start-up — and kept strictly as leads: they select what
+    # the dynamic provers try, and never appear as findings on their own.
+    if source_dir:
+        from . import sourcemap as _sourcemap
+        try:
+            session.source_leads = _sourcemap.scan(source_dir)
+            line = _sourcemap.summarise(session.source_leads)
+            if line:
+                session.notes.append(line)
+                print(f"  {line}")
+            elif not Path(source_dir).is_dir():
+                print(f"  ⚠ --source {source_dir} is not a directory — ignored")
+        except Exception:
+            pass
+
     # Contributed detections, if the operator pointed at a pack directory. Loaded here so
     # a malformed pack is visible at start-up rather than mid-engagement.
     if packs_dir:
