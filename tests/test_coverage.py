@@ -88,3 +88,53 @@ def test_every_class_that_produced_a_finding_appears_in_the_table():
     for klass in classes_with_findings:
         assert f'self._covered("{klass}"' in src, \
             f"{klass} produces findings but no probe site records coverage for it"
+
+
+# -- route parameter discovery: the SPA gap ------------------------------------
+
+class _Spa:
+    """An API route that honours `q` and ignores everything else — the shape a
+    single-page app presents, where the crawl finds no forms and no query params."""
+
+    def __init__(self):
+        self.seen = []
+
+    def run(self, action):
+        from brukal.web import WebResult
+        self.seen.append(action.url)
+        if "q=" in action.url:
+            return WebResult(status=200, url=action.url, body='{"results":["match"]}')
+        return WebResult(status=200, url=action.url, body='{"results":[]}')
+
+
+def _sess(cage):
+    import tempfile
+    from pathlib import Path
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.assist import AssistSession
+    from brukal.agents.strategist import StrategistAgent
+    from brukal.kali import FakeKali
+    from brukal.web import GovernedBrowser
+    scope = load_scope("tests/fixtures/scope_fast.json")
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    return AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                         StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                         browser=GovernedBrowser(scope, cage, audit))
+
+
+def test_a_parameter_the_route_honours_is_discovered():
+    """Guessing a name is cheap and usually wrong, so a guess only counts when it
+    measurably CHANGES the response against a control."""
+    sess = _sess(_Spa())
+    assert "q" in sess.discover_params("http://127.0.0.1:5000/rest/products/search")
+
+
+def test_parameters_the_route_ignores_are_not_reported():
+    sess = _sess(_Spa())
+    found = sess.discover_params("http://127.0.0.1:5000/rest/products/search")
+    assert found == ["q"]          # every other candidate left the body unchanged
+
+
+def test_discovery_is_skipped_for_urls_that_already_carry_parameters():
+    sess = _sess(_Spa())
+    assert sess.discover_params("http://127.0.0.1:5000/x?already=1") == []

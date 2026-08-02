@@ -2645,6 +2645,57 @@ class AssistSession:
                     f"{{\"{pass_field}\": \"...\"}}, then POST {login_url} as {victim}")))
         return True
 
+    # Query-parameter names an undocumented API is most likely to honour. Ordered by
+    # how often they carry user input straight into a query or template.
+    _PARAM_CANDIDATES = ("q", "search", "query", "id", "name", "filter", "email",
+                         "user", "username", "category", "sort", "order", "page",
+                         "file", "path", "url", "redirect")
+
+    def discover_params(self, url: str, budget: int = 8) -> list:
+        """Query parameters a route actually HONOURS, found by differential.
+
+        This closes a gap that only shows up off the target it was built on. Brukal's
+        injection sweep iterates crawled forms and query parameters; a single-page app
+        has neither — Juice Shop's crawl returned 0 forms and 0 parameterised endpoints
+        beside 60 mined API routes, so SQLi, XSS, LFI, SSTI and command injection never
+        ran at all and were absent from the coverage table rather than clean. Brukal's
+        own surface note had said "go after the API endpoints below, params, and
+        injection", advice it was structurally unable to follow.
+
+        Guessing a parameter name is cheap and wrong most of the time, so a guess is not
+        acted on: a candidate counts only when it measurably CHANGES the response
+        against a control request. That turns a wordlist into evidence about this
+        specific route, and keeps the expensive injection probes for parameters that
+        exist."""
+        from .web import WebAction
+        if self.browser is None or not url or "?" in url:
+            return []
+        try:
+            _d, base = self.browser.run(WebAction("request", url=url, method="GET"))
+        except Exception:
+            return []
+        if base is None or base.status >= 400:
+            return []
+        baseline = _norm_body((base.body or "")[:4000])
+        found: list = []
+        for name in self._PARAM_CANDIDATES[:max(1, budget)]:
+            # The sweep sets a budget; a standalone call has none. getattr rather than
+            # the attribute, so this method is usable outside confirm_surface.
+            remaining = getattr(self, "_confirm_budget", None)
+            if remaining is not None and remaining <= 0:
+                break
+            probe = f"{url}{'&' if '?' in url else '?'}{name}=brukalprobe1"
+            try:
+                _d, r = self.browser.run(WebAction("request", url=probe, method="GET"))
+            except Exception:
+                continue
+            if r is None:
+                continue
+            # A parameter the app ignores yields the same page; one it uses does not.
+            if r.status != base.status or _norm_body((r.body or "")[:4000]) != baseline:
+                found.append(name)
+        return found
+
     def confirm_destructive_endpoint_exposed(self, url: str,
                                              protected_url: str) -> bool:
         """A STATE-DESTROYING endpoint answers strangers — proved without invoking it.
@@ -3318,6 +3369,33 @@ class AssistSession:
                             break
                     except Exception:
                         pass
+
+            # 6b) MINED API ROUTES with no template and no known parameters. On a
+            #     single-page app this is the ENTIRE injection surface: the crawl finds
+            #     no forms and no query parameters, so without this the injection checks
+            #     never execute and their absence from the coverage table is the only
+            #     trace. Parameters are discovered by differential first, so the
+            #     expensive probes only run against parameters that exist.
+            #     Runs LAST of the probing passes: up to six discovery requests per
+            #     route is the most expensive thing here, and starving the one-request
+            #     prompt-injection check ahead of it lost findings in the e2e tests.
+            for route in (getattr(self.surface, "api_routes", []) or [])[:12]:
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                if "{" in route or "?" in route:
+                    continue          # templated routes are covered by the path sweep
+                url = route if route.startswith("http") else _urljoin(base_origin, route)
+                if url in probed or self._is_destructive_path(url):
+                    continue
+                try:
+                    names = self.discover_params(url, budget=6)
+                except Exception:
+                    continue
+                for name in names[:2]:
+                    if self._confirm_budget <= 0:
+                        break
+                    probed.add(url)
+                    probe(url, name, method="GET")
 
             # 7) MASS ASSIGNMENT — last, because it is the only proof that WRITES to the
             #    target, and so the only one an operator must opt into (--full-send sets
