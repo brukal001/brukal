@@ -489,3 +489,49 @@ class AttackSurface:
             if shown >= max_items:
                 break
         return "\n".join(lines)
+
+
+# Field names an API uses for the *principal* a row describes. Deliberately narrower
+# than _OWNER_FIELDS: there we are asking "whose is this object", here "who is this".
+_PRINCIPAL_FIELDS = ("username", "user", "login", "name", "email", "account")
+
+
+def principals(text: str, cap: int = 40) -> list[str]:
+    """Usernames an API discloses in a listing, in the order it returned them.
+
+    A tool that needs to act on somebody ELSE's account has to know a name that is not
+    its own, and guessing one is both unreliable and rude to the target. An API that
+    lists its users has already answered the question. Pure parsing of an UNTRUSTED
+    body: this only chooses WHICH principal to test against, never whether a finding
+    is real."""
+    try:
+        doc = json.loads(text or "")
+    except Exception:
+        return []
+    rows: list[dict] = []
+
+    def walk(node, depth=0):
+        if depth > 4 or len(rows) > 200:
+            return
+        if isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict):
+                    rows.append(item)
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value, depth + 1)
+
+    walk(doc)
+    out: list[str] = []
+    for row in rows:
+        lower = {str(k).lower(): v for k, v in row.items()}
+        for key in _PRINCIPAL_FIELDS:
+            value = lower.get(key)
+            if isinstance(value, str) and value.strip() and value not in out:
+                out.append(value.strip())
+                break
+        if len(out) >= cap:
+            break
+    return out

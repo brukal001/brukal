@@ -154,6 +154,21 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
     return hits
 
 
+def _norm_body(text: str, *drop: str) -> str:
+    """A response body reduced to what is COMPARABLE between two probes.
+
+    Collapses whitespace and removes the tokens we ourselves submitted. That second
+    part is load-bearing for the enumeration check: an API that echoes the attempted
+    username back ("no such user: bob") would otherwise differ on every pair of probes
+    and make every target look like an oracle. Removing the input leaves only the part
+    of the answer the SERVER chose."""
+    out = text or ""
+    for token in drop:
+        if token:
+            out = out.replace(token, "")
+    return re.sub(r"\s+", " ", out).strip()
+
+
 class AssistSession:
     def __init__(self, target, executor, strategist, skills=None, blackboard=None,
                  lessons=None, browser=None, research=None):
@@ -2500,6 +2515,312 @@ class AssistSession:
             return True
         return False
 
+    def confirm_bfla_password_takeover(self, change_url_template: str, login_url: str,
+                                       victim: str, token: str,
+                                       user_field: str = "username",
+                                       pass_field: str = "password") -> bool:
+        """Broken FUNCTION level authorization (OWASP API5): an authenticated principal
+        performs a privileged ACTION on somebody else's object.
+
+        BOLA — which Brukal already proves — is unauthorized *reading*. This is the
+        write: our own low-privilege token changes another account's password. It is a
+        strictly worse flaw and a different code path, which is why a target can pass
+        the BOLA check and still be trivially takeoverable. A competing tool proved
+        exactly this on a target where Brukal reported nothing.
+
+        The proof is a login, not a status code. A 200 from the change endpoint only
+        says the server accepted the request; it does not say the credential moved.
+        So: set a password we choose on an account we do not own, then authenticate as
+        that account with it. A session issued for the victim is not deniable.
+
+        Writes to the target (it changes a credential), so it runs only under
+        allow_intrusive — and it restores nothing, because it cannot: the original
+        password is not knowable. That irreversibility is precisely why it is gated."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive or not token or not victim:
+            return False
+        if "{" not in change_url_template:
+            return False
+        import re as _re
+        new_password = "Brukal-BFLA-Pr00f!"
+        target_url = _re.sub(r"\{[^}]*\}", victim, change_url_template, count=1)
+
+        def login_as(user: str, password: str):
+            _d, r = self.browser.run(WebAction(
+                "request", url=login_url, method="POST",
+                body=json.dumps({user_field: user, pass_field: password}),
+                headers={"Content-Type": "application/json"}))
+            return r
+
+        # Control: our chosen password must not ALREADY authenticate the victim, or the
+        # "proof" would be a coincidence rather than something we caused.
+        before = login_as(victim, new_password)
+        if before is not None and before.status == 200 and "token" in (before.body or ""):
+            return False
+
+        _d, changed = self.browser.run(WebAction(
+            "request", url=target_url, method="PUT",
+            body=json.dumps({pass_field: new_password}),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"}))
+        if changed is None or changed.status >= 400:
+            return False
+
+        after = login_as(victim, new_password)
+        if after is None or after.status != 200 or "token" not in (after.body or ""):
+            return False
+
+        self.findings.add(Finding(
+            title="Account takeover via broken function-level authorization",
+            severity="critical", category="api",
+            target=target_url, param=pass_field, confirmed=True,
+            evidence=(f"a token for '{self.identity or 'another user'}' set "
+                      f"'{victim}' password via PUT {target_url} (HTTP "
+                      f"{changed.status}); logging in as '{victim}' with that password "
+                      f"then succeeded, where it failed before the change"),
+            source=(f"PUT {target_url} with our own Bearer token and "
+                    f"{{\"{pass_field}\": \"...\"}}, then POST {login_url} as {victim}")))
+        return True
+
+    def confirm_debug_console(self, base_url: str) -> bool:
+        """An INTERACTIVE debugger exposed to the network (Werkzeug/Flask debug mode).
+
+        Brukal already flags a stack trace as `low` when one happens to appear in a
+        body. That is a different and much smaller thing than this: the Werkzeug console
+        is a remote Python REPL, PIN-gated at best, and the same debug pages disclose
+        the app's `SECRET` — which on a Flask app is usually the token-signing key, so
+        it chains straight into forgery. Reported critical because the consequence is
+        code execution, not information.
+
+        Read-only and one request: ask for the console and see whether the framework
+        answers with its own debugger, rather than provoking a crash on a live target."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None:
+            return False
+        from urllib.parse import urljoin as _urljoin
+        url = _urljoin(base_url if base_url.endswith("/") else base_url + "/", "console")
+        try:
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+        except Exception:
+            return False
+        body = (r.body if r else "") or ""
+        if r is None or r.status >= 400:
+            return False
+        # The console page identifies itself; a generic 200 must not be mistaken for it.
+        markers = ("werkzeug debugger", "__debugger__", "console.js", "debugger.js",
+                   "interactive console")
+        low = body.lower()
+        if not any(m in low for m in markers):
+            return False
+        secret = re.search(r'SECRET\s*=\s*["\']([^"\']{6,})["\']', body)
+        self.findings.add(Finding(
+            title="Interactive debug console exposed",
+            severity="critical", category="web",
+            target=url, param="", confirmed=True,
+            evidence=(f"GET {url} returned the framework's interactive debugger "
+                      f"(HTTP {r.status})"
+                      + (f"; the page also discloses SECRET={secret.group(1)[:12]}…"
+                         if secret else "")),
+            source=f"GET {url}"))
+        return True
+
+    def confirm_user_enumeration(self, login_url: str, known_user: str,
+                                 user_field: str = "username",
+                                 pass_field: str = "password") -> bool:
+        """The login tells a stranger which usernames exist (OWASP API2).
+
+        Differential and read-only: the SAME wrong password is sent for an account we
+        know exists and for one that cannot. If the answers differ, the endpoint is an
+        oracle. Comparing against a known-good account is what makes this sound — a
+        single request cannot distinguish "no such user" from "wrong password"."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not known_user:
+            return False
+        import uuid as _uuid
+        absent = f"brukal-absent-{_uuid.uuid4().hex[:10]}"
+        wrong = "Brukal-Wrong-Pw-000"
+
+        def attempt(user: str):
+            _d, r = self.browser.run(WebAction(
+                "request", url=login_url, method="POST",
+                body=json.dumps({user_field: user, pass_field: wrong}),
+                headers={"Content-Type": "application/json"}))
+            return r
+
+        real, fake = attempt(known_user), attempt(absent)
+        if real is None or fake is None:
+            return False
+        # A successful login means the "wrong" password was not wrong; prove nothing.
+        if real.status == 200 or fake.status == 200:
+            return False
+        rb, fb = (real.body or "")[:400], (fake.body or "")[:400]
+        if (real.status == fake.status
+                and _norm_body(rb, known_user) == _norm_body(fb, absent)):
+            return False                       # indistinguishable: the correct behaviour
+        self.findings.add(Finding(
+            title="Username enumeration via login response",
+            severity="medium", category="api",
+            target=login_url, param=user_field, confirmed=True,
+            evidence=(f"an existing account answered HTTP {real.status} "
+                      f"{_norm_body(rb, known_user)[:90]!r}; a non-existent one answered "
+                      f"HTTP {fake.status} {_norm_body(fb, absent)[:90]!r} — same password"),
+            source=(f"POST {login_url} with {user_field}={known_user} vs "
+                    f"{user_field}={absent}, identical wrong password")))
+        return True
+
+    def confirm_missing_rate_limit(self, login_url: str, known_user: str,
+                                   attempts: int = 8,
+                                   user_field: str = "username",
+                                   pass_field: str = "password") -> bool:
+        """Credential brute-force is unthrottled (OWASP API4).
+
+        Deliberately gated behind allow_intrusive. Repeated failed logins are not
+        read-only in effect: on a target with lockout they can DENY SERVICE to a real
+        account, which is the one outcome a governed tool must never cause by accident.
+        The proof is that every attempt was answered normally — no 429, no lockout
+        message, no widening delay."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive or not known_user:
+            return False
+        statuses, first_body = [], ""
+        for i in range(max(2, attempts)):
+            _d, r = self.browser.run(WebAction(
+                "request", url=login_url, method="POST",
+                body=json.dumps({user_field: known_user,
+                                 pass_field: f"Brukal-Wrong-{i}"}),
+                headers={"Content-Type": "application/json"}))
+            if r is None:
+                return False                   # a blocked request is not evidence
+            statuses.append(r.status)
+            first_body = first_body or (r.body or "")
+            if r.status in (429, 423) or re.search(
+                    r"(?i)too many|rate.?limit|locked|throttl", (r.body or "")[:400]):
+                return False                   # it DOES throttle — no finding
+        if len(set(statuses)) != 1:
+            return False                       # behaviour changed; not a clean negative
+        self.findings.add(Finding(
+            title="No rate limiting on authentication",
+            severity="medium", category="api",
+            target=login_url, param=pass_field, confirmed=True,
+            evidence=(f"{len(statuses)} consecutive failed logins for '{known_user}' all "
+                      f"answered HTTP {statuses[0]} with no 429, lockout or throttling"),
+            source=f"POST {login_url} x{len(statuses)} with deliberately wrong passwords"))
+        return True
+
+    def _login_endpoint(self) -> str:
+        """The login URL the crawl mined, or "" — shared by the enumeration and
+        rate-limit checks so they cannot disagree about where the login is."""
+        surface = getattr(self, "surface", None)
+        if surface is None:
+            return ""
+        from urllib.parse import urljoin as _urljoin
+        base = getattr(surface, "seed", "") or f"http://{self.target}/"
+        for r in (getattr(surface, "api_routes", []) or []):
+            if "{" in r:
+                continue
+            if any(w in r.lower() for w in ("login", "signin", "sign-in", "authenticate")):
+                return r if r.startswith("http") else _urljoin(base, r)
+        return ""
+
+    def bfla_targets(self):
+        """(change_url_template, login_url, victim) for the BFLA proof, or None.
+
+        Needs a templated state-changing route, somewhere to log in, and a principal who
+        is NOT us — the point is acting on somebody else's object, so proving it against
+        our own account proves nothing. The victim is read from the app's own user
+        listing rather than guessed, which is the same trick `confirm_bola_from_
+        collection` uses: an API that lists its principals has already disclosed the map."""
+        surface = getattr(self, "surface", None)
+        if surface is None or not self.last_jwt:
+            return None
+        routes = list(getattr(surface, "api_routes", []) or [])
+        if not routes:
+            return None
+        from urllib.parse import urljoin as _urljoin
+        base = getattr(surface, "seed", "") or f"http://{self.target}/"
+
+        def absolute(r):
+            return r if r.startswith("http") else _urljoin(base, r)
+
+        change = next((absolute(r) for r in routes
+                       if "{" in r and r.lower().rstrip("/").endswith("password")), None)
+        login = next((absolute(r) for r in routes
+                      if "{" not in r and "login" in r.lower()), None)
+        if not (change and login):
+            return None
+        victim = self._other_principal(routes, base)
+        return (change, login, victim) if victim else None
+
+    def _other_principal(self, routes, base) -> str:
+        """A username the app lists that is not the one we authenticated as."""
+        from urllib.parse import urljoin as _urljoin
+        from . import webmap
+        from .web import WebAction
+        if self.browser is None:
+            return ""
+        collection = next((r for r in routes
+                           if "{" not in r and r.lower().rstrip("/").endswith("users")
+                           or (("user" in r.lower()) and "{" not in r
+                               and "login" not in r.lower()
+                               and "register" not in r.lower())), None)
+        if not collection:
+            return ""
+        url = collection if collection.startswith("http") else _urljoin(base, collection)
+        try:
+            _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+        except Exception:
+            return ""
+        names = webmap.principals((r.body if r else "") or "")
+        for n in names:
+            if n and n != self.identity:
+                return n
+        return ""
+
+    def mass_assignment_targets(self):
+        """(register_url, login_url, verify_url) for the mass-assignment proof, or None.
+
+        The proof needs three endpoints and can only run when all three are known: where
+        to create an account, where to exchange the credentials for a session, and where
+        to ask the server what it thinks that account IS. Discovery is deterministic —
+        matched against the routes the crawl mined, never guessed — so a target without
+        self-service registration simply yields None instead of a speculative POST.
+
+        Split out as its own method so the loop and the tests agree by construction. A
+        detector the product never calls is worth nothing, and this one went unwired
+        through a whole benchmark: the harness invoked it directly, so the coverage
+        number looked right while the autonomous path had never once found the flaw."""
+        surface = getattr(self, "surface", None)
+        if surface is None:
+            return None
+        routes = list(getattr(surface, "api_routes", []) or [])
+        if not routes:
+            return None
+        from urllib.parse import urljoin as _urljoin
+        base = getattr(surface, "seed", "") or f"http://{self.target}/"
+
+        def find(*words):
+            for r in routes:
+                if "{" in r:                       # a templated route is not an action
+                    continue
+                low = r.lower()
+                if any(w in low for w in words):
+                    return r if r.startswith("http") else _urljoin(base, r)
+            return None
+
+        register = find("register", "signup", "sign-up", "users/new")
+        login = find("login", "signin", "sign-in", "authenticate")
+        # Where the server states the account's own identity. /me is the convention;
+        # fall back to the registration collection, which typically lists what it made.
+        verify = find("/me", "whoami", "profile", "current-user") \
+            or (register.rsplit("/", 1)[0] if register else None)
+        if not (register and login and verify):
+            return None
+        return register, login, verify
+
     def confirm_surface(self, max_params: int = 12) -> int:
         """Autonomously confirm the web vuln classes (SQLi · cmdi · LFI · SSTI · XSS ·
         SSRF · open-redirect · IDOR) on BOTH the GET query parameters AND the POST/GET
@@ -2579,6 +2900,18 @@ class AssistSession:
                 self._headers_checked = True
                 try:
                     self.confirm_security_headers(base_origin)
+                except Exception:
+                    pass
+
+            # 2c) An interactive debugger reachable from the network. One read-only
+            #    request, and the worst possible answer (a remote REPL plus the app's
+            #    signing SECRET), so it belongs with the other cheap questions.
+            for base_origin_ in ({base_origin} if base_origin else set()):
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                try:
+                    if self.confirm_debug_console(base_origin_):
+                        confirmed += 1
                 except Exception:
                     pass
 
@@ -2709,6 +3042,57 @@ class AssistSession:
                             break
                     except Exception:
                         pass
+
+            # 7) MASS ASSIGNMENT — last, because it is the only proof that WRITES to the
+            #    target, and so the only one an operator must opt into (--full-send sets
+            #    allow_intrusive; confirm_mass_assignment refuses without it). Running it
+            #    here is what closes the gap between a detector existing and the
+            #    autonomous path ever using it.
+            if self.allow_intrusive and self._confirm_budget > 0 and not self._rate_limited:
+                targets = self.mass_assignment_targets()
+                if targets:
+                    try:
+                        if self.confirm_mass_assignment(*targets):
+                            confirmed += 1
+                    except Exception:
+                        pass
+
+                # 8) BFLA — the write-side of authorization. BOLA (pass 5) proves we can
+                #    READ another principal's object; this proves we can ACT on it. A
+                #    target can pass the read check and still be trivially takeoverable,
+                #    so the two are not substitutes.
+                bfla = self.bfla_targets()
+                if bfla and self._confirm_budget > 0:
+                    change_tpl, login_url, victim = bfla
+                    try:
+                        if self.confirm_bfla_password_takeover(
+                                change_tpl, login_url, victim, self.last_jwt):
+                            confirmed += 1
+                    except Exception:
+                        pass
+
+                # 9) Unthrottled credential brute-force. Intrusive by consequence rather
+                #    than by method: on a target with lockout, repeated failures deny
+                #    service to a real account.
+                login_url = self._login_endpoint()
+                if login_url and self.identity and self._confirm_budget > 0:
+                    try:
+                        if self.confirm_missing_rate_limit(login_url, self.identity):
+                            confirmed += 1
+                    except Exception:
+                        pass
+
+            # 10) Username enumeration. Read-only, so it runs whether or not intrusive
+            #     actions were authorised — but it needs an account we KNOW exists to
+            #     compare against, which in practice means we logged in.
+            login_url = self._login_endpoint()
+            if (login_url and self.identity and self._confirm_budget > 0
+                    and not self._rate_limited):
+                try:
+                    if self.confirm_user_enumeration(login_url, self.identity):
+                        confirmed += 1
+                except Exception:
+                    pass
             return confirmed
         finally:
             spent_out = (self._confirm_budget is not None and self._confirm_budget <= 0)

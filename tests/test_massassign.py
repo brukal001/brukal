@@ -119,3 +119,70 @@ def test_out_of_scope_registration_is_denied():
     assert sess.confirm_mass_assignment("http://8.8.8.8/register", "http://8.8.8.8/login",
                                         "http://8.8.8.8/me") is False
     assert api.writes == 0
+
+
+# -- wiring: a detector the product never calls is worth nothing -----------------
+#
+# confirm_mass_assignment existed, was tested, and was invoked ONLY by the benchmark
+# harness. The published "7/7 VAmPI" therefore measured the harness, not Brukal: three
+# live autonomous runs never once found the flaw. These tests pin the wiring, not just
+# the detector.
+
+def _surface(routes, seed="http://t/"):
+    """The real Surface, not a stub — a stub that lacks the fields confirm_surface
+    walks would pass this test while the live path still broke."""
+    from brukal.webmap import AttackSurface
+    s = AttackSurface(seed=seed)
+    s.add_routes(list(routes))
+    return s
+
+
+def test_targets_discovered_from_crawled_routes():
+    sess = _session(_Api())
+    sess.surface = _surface(["/users/v1/register", "/users/v1/login", "/me"])
+    got = sess.mass_assignment_targets()
+    assert got == ("http://t/users/v1/register", "http://t/users/v1/login", "http://t/me")
+
+
+def test_templated_routes_are_not_mistaken_for_actions():
+    """/users/{id}/register is a template, not an endpoint to POST to."""
+    sess = _session(_Api())
+    sess.surface = _surface(["/users/{id}/register", "/users/v1/register",
+                             "/users/v1/login", "/me"])
+    assert sess.mass_assignment_targets()[0] == "http://t/users/v1/register"
+
+
+def test_no_registration_endpoint_yields_no_speculative_write():
+    """Without a discovered self-service create there is nothing to prove, and the
+    proof must NOT guess a URL and POST at it."""
+    sess = _session(_Api())
+    sess.surface = _surface(["/users/v1/login", "/me"])
+    assert sess.mass_assignment_targets() is None
+    sess.surface = _surface([])
+    assert sess.mass_assignment_targets() is None
+    sess.surface = None
+    assert sess.mass_assignment_targets() is None
+
+
+def test_confirm_surface_actually_invokes_the_detector_when_intrusive():
+    """The regression that mattered: confirm_surface must CALL it. Asserted against the
+    real method, so deleting the pass fails the test."""
+    sess = _session(_Api())
+    sess.surface = _surface(["/users/v1/register", "/users/v1/login", "/me"])
+    sess.allow_intrusive = True
+    called = {}
+    sess.confirm_mass_assignment = lambda *a, **k: called.setdefault("args", a) is None
+    sess.confirm_surface()
+    assert called.get("args") == ("http://t/users/v1/register",
+                                  "http://t/users/v1/login", "http://t/me")
+
+
+def test_confirm_surface_does_not_write_without_authorisation():
+    """No --full-send means no state created on the target, full stop."""
+    sess = _session(_Api())
+    sess.surface = _surface(["/users/v1/register", "/users/v1/login", "/me"])
+    sess.allow_intrusive = False
+    called = {}
+    sess.confirm_mass_assignment = lambda *a, **k: called.setdefault("args", a) is None
+    sess.confirm_surface()
+    assert "args" not in called
