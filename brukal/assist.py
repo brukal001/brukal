@@ -2726,6 +2726,78 @@ class AssistSession:
                 found.append(name)
         return found
 
+    def run_hypotheses(self, max_run: int = 4) -> int:
+        """Ask the model for experiments, execute them through the gate, keep only the
+        ones the evidence supports. Returns how many became findings.
+
+        This is the answer to Brukal's narrowest limitation — that it finds only what a
+        detector was written for, and so scored fifteen findings on the target its
+        detectors were fitted to and two on an unfamiliar one. The model supplies the
+        imagination; the comparator supplies the verdict. A proposal the evidence does
+        not support is DISCARDED, not recorded as a lead: an unproven guess from a model
+        is not a lead, it is noise, and the report's confirmed/candidate distinction only
+        means anything while candidates are things a human could actually verify."""
+        from . import hypothesis as _hyp
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or self.surface is None:
+            return 0
+        llm = getattr(getattr(self, "strategist", None), "_llm", None)
+        if llm is None:
+            return 0
+
+        grounding = self.surface.summary() if hasattr(self.surface, "summary") else ""
+        source_note = ""
+        if self.source_leads:
+            # Reasoning ABOUT the application, not just pattern-matching it: the model
+            # sees what the source implies and proposes a live experiment to test it.
+            # The source still proves nothing by itself — it only suggests the question.
+            source_note = ("\n\nThe target's source was supplied. Observations from it "
+                           "(UNVERIFIED — each still has to be proved against the "
+                           "running app):\n"
+                           + "\n".join(f"  - {l['kind']}: {l['value'][:60]} "
+                                        f"({l['where']})" for l in self.source_leads[:12]))
+        prompt = _hyp.PROMPT.format(comparators=", ".join(_hyp.comparator_names()))
+        try:
+            reply = llm.propose(prompt,
+                                f"Authorised target: {self.target}\n\n"
+                                f"Attack surface:\n{grounding}{source_note}",
+                                max_tokens=1600)
+        except Exception:
+            return 0
+
+        proposals = _hyp.parse(reply)
+        if not proposals:
+            return 0
+        self._covered("Model-proposed experiments", probes=len(proposals),
+                      note="two gated requests each, judged by a fixed comparator")
+
+        confirmed = 0
+        for h in proposals[:max_run]:
+            if self._is_destructive_path(h.variant["url"]) \
+                    or self._is_destructive_path(h.control["url"]):
+                continue                   # the prompt forbids it; the code enforces it
+            try:
+                _d1, a = self.browser.run(WebAction("request", **h.control))
+                _d2, b = self.browser.run(WebAction("request", **h.variant))
+            except Exception:
+                continue
+            holds, meaning = _hyp.judge(h, a, b)
+            if not holds:
+                continue
+            confirmed += 1
+            self.findings.add(Finding(
+                title=h.title, severity=h.severity, category="logic",
+                target=h.variant["url"], param="", confirmed=True,
+                evidence=(f"{meaning}: control {h.control['method']} "
+                          f"{h.control['url']} -> HTTP {a.status} ({len(a.body or '')}B); "
+                          f"variant {h.variant['method']} {h.variant['url']} -> HTTP "
+                          f"{b.status} ({len(b.body or '')}B)"
+                          + (f". Hypothesis: {h.rationale}" if h.rationale else "")),
+                source=(f"differential [{h.comparator}] between the control and variant "
+                        f"requests above")))
+        return confirmed
+
     def confirm_destructive_endpoint_exposed(self, url: str,
                                              protected_url: str) -> bool:
         """A STATE-DESTROYING endpoint answers strangers — proved without invoking it.
@@ -3520,6 +3592,16 @@ class AssistSession:
                                   note="enumeration + throttling differentials")
                     if self.confirm_user_enumeration(login_url, self.identity):
                         confirmed += 1
+                except Exception:
+                    pass
+            # 11) MODEL-PROPOSED EXPERIMENTS. Last, and deliberately so: each costs a
+            #     model call plus two requests, and the deterministic passes above carry
+            #     far more signal per request. This is the only pass that can find a
+            #     flaw class nobody wrote a detector for, which is exactly why it must
+            #     not be able to crowd out the ones that were.
+            if self._confirm_budget > 0 and not self._rate_limited:
+                try:
+                    confirmed += self.run_hypotheses()
                 except Exception:
                     pass
             return confirmed
