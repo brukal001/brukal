@@ -131,3 +131,23 @@ def test_static_assets_cost_no_requests():
     cage = _DvnaLike()
     _sess(cage).crawl(seeds=[ROOT], max_pages=12)
     assert not [u for u in cage.seen if u.endswith(".css")]
+
+
+# --- links the server ships as markdown ---------------------------------------------
+def test_markdown_links_are_found():
+    """DVNA's only route from the crawlable surface to the application is
+    `](/app/usersearch)` inside a page showdown.js renders in the browser. An
+    HTML-parsing crawl mapped thirteen pages of documentation and never reached the app."""
+    from brukal import webmap
+    body = ("<html><body><div id='doc'>See [User Search](/app/usersearch) and "
+            "[Ping](/app/ping) for examples.</div></body></html>")
+    links, _f, _p = webmap.extract("http://127.0.0.1:5000/learn/vulnerability/a1", body)
+    assert any(u.endswith("/app/usersearch") for u in links), links
+    assert any(u.endswith("/app/ping") for u in links), links
+
+
+def test_prose_brackets_do_not_become_links():
+    from brukal import webmap
+    body = "<p>an array[0](not a link) and [see below](#anchor) and [x](mailto:a@b.c)</p>"
+    links, _f, _p = webmap.extract("http://127.0.0.1:5000/", body)
+    assert not links, links

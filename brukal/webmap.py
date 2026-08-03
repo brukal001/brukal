@@ -125,6 +125,13 @@ def base_of(url: str) -> str:
     return urlunsplit((s.scheme, s.netloc, s.path or "/", "", ""))
 
 
+# `[label](/path)` — markdown a server ships for the client to render. Deliberately
+# narrow: the destination must be a rooted path or an absolute http(s) URL, so ordinary
+# prose containing brackets and parentheses cannot masquerade as a link. Anything it
+# gets wrong costs one gated request against a target already in scope.
+_MD_LINK_RE = re.compile(r"\]\(\s*((?:/|https?://)[^\s)<>\"']{1,300})\s*\)")
+
+
 def extract(base_url: str, html: str):
     """Parse one fetched page. Returns (links, forms, params):
       links  : set of normalised absolute URLs referenced by the page
@@ -151,6 +158,16 @@ def extract(base_url: str, html: str):
 
     for href in p.hrefs:
         _record(normalize_url(base_url, href))
+    # Links the SERVER shipped as markdown for the client to render. Not a curiosity:
+    # on DVNA the only route from the crawlable surface to the application is
+    # `](/app/usersearch)` inside a page that showdown.js turns into anchors in the
+    # browser. There is no <a href> to /app/* anywhere, so an HTML-parsing crawl mapped
+    # thirteen pages of documentation and never found the application at all, while a
+    # browser-driven competitor would have walked straight in. Reading the markdown
+    # closes an architectural gap for the price of one regex, and every URL it yields is
+    # still normalised, scope-filtered and gated exactly like an anchor's.
+    for m in _MD_LINK_RE.finditer(html or ""):
+        _record(normalize_url(base_url, m.group(1)))
     # the current page's own query params count too
     for k in params_of(base_url):
         params.setdefault(base_of(base_url), set()).add(k)
