@@ -69,3 +69,50 @@ def test_the_payload_is_stripped_in_its_encoded_forms_too():
     assert "computeMetadata" not in strip(f"you sent {p} ok", p)
     assert "computeMetadata" not in strip(
         "sent http%3A%2F%2Fmetadata.google.internal%2FcomputeMetadata%2Fv1%2F", p)
+
+
+# --- a differential needs a MARGIN, not merely a strict inequality -------------------
+class _JitteryPing:
+    """A ping handler whose output differs by a couple of bytes between requests, with
+    FALSE deterministically one byte further from the baseline than TRUE. That makes
+    `st > sf` TRUE while the gap is a ten-thousandth — the exact live shape."""
+
+    def run(self, action):
+        from urllib.parse import unquote_plus
+        sent = unquote_plus((action.body or "") + action.url)
+        filler = "x" * 4000
+        tail = ""
+        if "AND" in sent:
+            tail = "bc" if ("'1'='2" in sent or "1=2" in sent or '"1"="2' in sent) else "b"
+        return WebResult(status=200, url=action.url, headers={},
+                         body=f"<html>PING {filler}{tail}</html>")
+
+
+def test_a_ten_thousandth_of_difference_is_not_sql_injection():
+    """Live /app/ping produced 0.9985 vs 0.9984 and was reported CRITICAL. Because the
+    sweep stops at the first confirmed class per parameter, that false positive MASKED
+    the real command injection on the same endpoint."""
+    s = _sess(_JitteryPing())
+    assert s.confirm_sqli("http://127.0.0.1:5000/app/ping", "address",
+                          method="POST") is False
+    assert not [f for f in s.findings.all() if "SQL injection" in f.title]
+
+
+class _RealSqli:
+    """TRUE renders the row, FALSE renders an empty result — a genuine divergence."""
+
+    def run(self, action):
+        from urllib.parse import unquote_plus
+        sent = unquote_plus((action.body or "") + action.url)
+        rows = "<tr><td>victim</td></tr>" * 40
+        empty = "<tr><td>no results</td></tr>"
+        shell = "<html>" + ("y" * 400) + "%s</html>"
+        if "'1'='2" in sent or "1=2" in sent or '"1"="2' in sent:
+            return WebResult(status=200, url=action.url, headers={}, body=shell % empty)
+        return WebResult(status=200, url=action.url, headers={}, body=shell % rows)
+
+
+def test_a_real_divergence_is_still_confirmed():
+    s = _sess(_RealSqli())
+    assert s.confirm_sqli("http://127.0.0.1:5000/app/usersearch", "login",
+                          method="POST") is True

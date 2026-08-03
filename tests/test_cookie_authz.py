@@ -180,3 +180,16 @@ def test_a_cookie_login_records_who_we_are():
     s = _sess(_AdminCage())
     assert s.login(f"{ROOT}/login", "brkeval", "BrkEval1!")
     assert s.identity == "brkeval"
+
+
+def test_crawled_pages_outrank_mined_route_fragments():
+    """The route miner recovers fragments from text and JS and loses the prefix the app
+    mounts them under. DVNA's admin API is /app/admin/usersapi and was mined as
+    /admin/usersapi, which 404s — four probes went to paths that do not exist while
+    /app/admin/users, crawled and returning 200, sat in the page map unexamined."""
+    s = _sess(_AdminCage())
+    s.surface = webmap.AttackSurface(seed=ROOT + "/")
+    s.surface.add_routes(["/admin/usersapi", "/admin"])          # mined, wrong prefix
+    s.surface.add_page(f"{ROOT}/app/admin/users", set(), [], {})  # actually fetched
+    got = s.privileged_route_targets()
+    assert got and "/app/admin/users" in got[0], got

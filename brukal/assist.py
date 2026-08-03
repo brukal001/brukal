@@ -1667,6 +1667,13 @@ class AssistSession:
         self.highlights.append(("confirmed", f"{title}: {target} ({param})"))
         self.notes.append(f"[confirm] {title} CONFIRMED on {target} param '{param}' — {evidence}")
 
+    # How far apart TRUE and FALSE must be before the pair counts as a differential.
+    # Below this the two responses are the same page rendered twice, and any tool that
+    # calls that injection will report one on nearly every echoing endpoint.
+    _SQLI_MIN_MARGIN = 0.02
+    _SQLI_MAX_FALSE = 0.98
+
+
     def confirm_sqli(self, url: str, param: str, base: str = "1",
                      method: str = "GET", extra=None) -> bool:
         """Boolean-based SQL injection confirmation through the GOVERNED browser: fetch a
@@ -1698,9 +1705,18 @@ class AssistSession:
             st = difflib.SequenceMatcher(None, b, tn).ratio()   # TRUE vs baseline
             sf = difflib.SequenceMatcher(None, b, fn).ratio()   # FALSE vs baseline
             # Injectable: with the payload removed, TRUE still tracks the baseline while
-            # FALSE diverges — relative, so it holds on template-heavy pages where the
-            # differing row is a small fraction of the response.
-            if st >= 0.9 and st > sf:
+            # FALSE MATERIALLY diverges — relative, so it holds on template-heavy pages
+            # where the differing row is a small fraction of the response.
+            #
+            # `st > sf` alone is not a differential. On a live run /app/ping answered
+            # 0.9985 and 0.9984 — a ten-thousandth apart, which is rendering jitter, not
+            # a database deciding differently — and the finding printed as "TRUE tracks
+            # baseline (0.998) while FALSE diverges (0.998)". Worse than a spurious
+            # critical on its own: the sweep stops at the first confirmed class per
+            # parameter, so the false SQL injection MASKED the real command injection
+            # sitting on that same endpoint.
+            if (st >= 0.9 and (st - sf) >= self._SQLI_MIN_MARGIN
+                    and sf <= self._SQLI_MAX_FALSE):
                 self._record_confirmed(
                     url, "SQL injection (boolean-based)", "critical", param,
                     f"TRUE tracks baseline ({st:.3f}) while FALSE diverges ({sf:.3f}); "
@@ -3659,8 +3675,14 @@ class AssistSession:
         comparison in the confirmer, never the fact that a path contains 'admin'."""
         surface = getattr(self, "surface", None)
         seen, out = set(), []
-        candidates = list(getattr(surface, "api_routes", []) or [])
-        candidates += [p for p in (getattr(surface, "pages", {}) or {})]
+        # Pages the crawl actually FETCHED come first; mined routes are guesses and go
+        # after. The miner recovers route fragments from text and JS and loses whatever
+        # prefix the app mounts them under: DVNA's admin API is /app/admin/usersapi and
+        # was mined as /admin/usersapi, which 404s. Four probes were spent on paths that
+        # do not exist while /app/admin/users — crawled, 200, and privileged — sat in
+        # the page map unexamined, so the class reported nothing and looked clean.
+        candidates = [p for p in (getattr(surface, "pages", {}) or {})]
+        candidates += list(getattr(surface, "api_routes", []) or [])
         for route in candidates:
             if not route or not self._PRIVILEGED_RE.search(route):
                 continue
