@@ -679,6 +679,31 @@ class AssistSession:
         return WebAction("request", url=url, method=method, body=body,
                          headers=headers or {}) if url else None
 
+    def _pointless_path_scan(self, command: str) -> str:
+        """A reason to refuse, or "" — path discovery against a catch-all host.
+
+        Brukal already DOWNGRADES a path scanner's hits on a soft-404 host, because a
+        server answering 200 for every path makes every hit false. It nonetheless ran
+        the scan first and threw the results away, which is not merely wasted time: on
+        an authorised Juice Shop the accumulated requests for paths that do not exist
+        drove the target's own error handling to exhaust its heap, and the application
+        died mid-engagement. A tool that knocks over what it was asked to assess has
+        caused an outage, whatever its intent — and 'read-only' describes the method
+        here, not the effect, exactly as it does for the credential brute-force probe.
+
+        So the refusal is moved earlier: if the answer is going to be discarded, the
+        requests are not worth making. The scan is skipped with a note, so the report
+        says the class was deliberately not attempted rather than quietly omitting it."""
+        if self.surface is None or not getattr(self.surface, "soft_404", False):
+            return ""
+        tool = _tool_of(command)
+        if tool not in _PATH_SCANNERS:
+            return ""
+        return (f"[coverage] skipped {tool}: this host answers 200 for paths that do "
+                f"not exist, so every hit would be false and was going to be discarded. "
+                f"Sustained path discovery against such a host has exhausted a target's "
+                f"memory and taken it down mid-engagement, so the requests are not made.")
+
     def run(self, command: str, target: str | None = None, agent: str = "strategist"):
         """Run a command through the gate/cage, record it, and surface the key
         results. Returns (decision, result, new_highlights). `agent` attributes the
@@ -686,6 +711,11 @@ class AssistSession:
         per-agent trust modulates its soft-risk score — it never changes the hard
         checks or the single execution path."""
         command = self._session_auth_for(command)       # authenticated exploitation
+        skip = self._pointless_path_scan(command)
+        if skip:
+            self.notes.append(skip)
+            self.highlights.append(("coverage", skip))
+            return None, None, [skip]
         decision, result = self.executor.run(command, target or self.target,
                                              agent=agent)
         # Auto-route a web request the shell gate rejected for a metacharacter ('&' in

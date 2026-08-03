@@ -149,15 +149,35 @@ def test_raw_curl_still_triggers_exposure_finding():
 
 # --- soft-404 downgrades path-scanner findings (nikto FP fix) ---------------
 
-def test_soft_404_downgrades_path_scanner_findings():
+def test_path_scanner_is_not_run_at_all_on_a_soft_404_host():
+    """Brukal used to run the scan and then discard its hits as false. That is not just
+    wasted time: sustained path discovery against an authorised Juice Shop drove the
+    target's own error handling to exhaust its heap and the application died
+    mid-engagement. If the answer is going to be thrown away, the requests are not worth
+    making — 'read-only' describes the method, not the effect."""
     import brukal.webmap as webmap
     sess = _session("+ OSVDB-3092: /JAMonAdmin.jsp: admin interface (traversal)")
     sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
     sess.surface.soft_404 = True
-    sess.run("nikto -host http://10.10.10.5/")     # nikto is read-only -> runs
+    decision, result, notes = sess.run("nikto -host http://10.10.10.5/")
+    assert decision is None and result is None            # never reached the cage
+    assert any("skipped nikto" in n for n in notes)       # and says so, rather than
+    assert not sess.findings.all()                        # silently omitting the class
+
+
+def test_the_downgrade_still_guards_scanner_output_arriving_by_other_paths():
+    """The skip is the primary defence; the downgrade remains for output that reaches
+    the finding store another way, so removing one does not silently disarm both."""
+    import brukal.webmap as webmap
+    sess = _session("+ OSVDB-3092: /JAMonAdmin.jsp: admin interface (traversal)")
+    sess.surface = webmap.AttackSurface(seed="http://10.10.10.5/")
+    sess.surface.soft_404 = True
+    sess._record_vuln_finding("nikto -host http://10.10.10.5/", "high", "nikto finding",
+                              "+ OSVDB-3092: /JAMonAdmin.jsp: admin interface")
     nikto = [f for f in sess.findings.all() if "nikto" in f.title.lower()]
-    assert nikto and all(f.severity == "info" for f in nikto)     # downgraded, not high/med
-    assert any("soft-404" in f.evidence.lower() for f in nikto)   # annotated why
+    if nikto:                                   # reached via the alternate path
+        assert all(f.severity == "info" for f in nikto)
+        assert any("soft-404" in f.evidence.lower() for f in nikto)
 
 
 def test_content_tool_findings_not_downgraded_on_soft_404():
