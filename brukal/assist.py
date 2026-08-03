@@ -2759,18 +2759,42 @@ class AssistSession:
                                         f"({l['where']})" for l in self.source_leads[:12]))
         prompt = _hyp.PROMPT.format(comparators=", ".join(_hyp.comparator_names()))
         try:
+            # The BASE URL, not the bare IP. The first live run handed the model
+            # "172.20.0.2" while the application was on :3000, so every proposed URL
+            # went to port 80, every request missed, and six sound experiments were
+            # judged against nothing. A hypothesis aimed at the wrong port is not a
+            # failed hypothesis, it is a failed prompt.
+            base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+            auth = ""
+            if self.last_jwt:
+                # Give it the real session rather than let it invent a placeholder: the
+                # model wrote `Bearer <userA_token>` literally, which the target
+                # correctly rejected, so every authenticated experiment tested nothing.
+                auth = (f"\n\nYou are authenticated as '{self.identity}'. Use this "
+                        f"header verbatim where a request should be authenticated:\n"
+                        f'  "Authorization": "Bearer {self.last_jwt}"\n'
+                        f"Never write a placeholder like <token>; a request carrying one "
+                        f"is rejected and the experiment proves nothing.")
             reply = llm.propose(prompt,
-                                f"Authorised target: {self.target}\n\n"
+                                f"Authorised target base URL: {base}\n"
+                                f"Every url MUST start with exactly that base."
+                                f"{auth}\n\n"
                                 f"Attack surface:\n{grounding}{source_note}",
-                                max_tokens=1600)
+                                max_tokens=8000)
         except Exception:
             return 0
 
         proposals = _hyp.parse(reply)
+        # Record the attempt BEFORE the early return. The first live run asked the model,
+        # got a truncated reply, parsed nothing, and left no trace at all — the coverage
+        # table simply had no row, which is the exact ambiguity that table exists to
+        # remove. "Asked and got nothing usable" is a result and has to be visible.
+        self._covered("Model-proposed experiments", probes=len(proposals),
+                      note=("two gated requests each, judged by a fixed comparator"
+                            if proposals else
+                            f"model returned no usable experiment ({len(reply)} chars)"))
         if not proposals:
             return 0
-        self._covered("Model-proposed experiments", probes=len(proposals),
-                      note="two gated requests each, judged by a fixed comparator")
 
         confirmed = 0
         for h in proposals[:max_run]:
@@ -3761,16 +3785,6 @@ class AssistSession:
                                   note="enumeration + throttling differentials")
                     if self.confirm_user_enumeration(login_url, self.identity):
                         confirmed += 1
-                except Exception:
-                    pass
-            # 11) MODEL-PROPOSED EXPERIMENTS. Last, and deliberately so: each costs a
-            #     model call plus two requests, and the deterministic passes above carry
-            #     far more signal per request. This is the only pass that can find a
-            #     flaw class nobody wrote a detector for, which is exactly why it must
-            #     not be able to crowd out the ones that were.
-            if self._confirm_budget > 0 and not self._rate_limited:
-                try:
-                    confirmed += self.run_hypotheses()
                 except Exception:
                     pass
             return confirmed

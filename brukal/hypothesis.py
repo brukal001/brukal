@@ -78,6 +78,46 @@ class Hypothesis:
         self.rationale = rationale
 
 
+def _salvage(text: str) -> list:
+    """Complete objects from a TRUNCATED array.
+
+    A reply that runs out of tokens mid-array is not garbage — the experiments before
+    the cut are intact, and discarding them silently made this mechanism produce nothing
+    at all on its first live run. Models with adaptive thinking spend part of the output
+    allowance before emitting any JSON, so a truncated tail is the normal case rather
+    than an error, and the same repair already exists for truncated commands elsewhere
+    in this codebase.
+
+    Scans for balanced top-level objects and stops at the first incomplete one; the
+    partial object is dropped, never repaired, because guessing at half a request spec
+    is exactly the kind of invention this module exists to prevent."""
+    out, depth, start, in_str, esc = [], 0, None, False, False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    out.append(json.loads(text[start:i + 1]))
+                except ValueError:
+                    pass
+                start = None
+    return out
+
+
 def _clean_request(raw) -> dict | None:
     """A request spec reduced to what the governed browser accepts. Anything the schema
     does not name is dropped rather than passed through — a proposal must not be able to
@@ -118,13 +158,16 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
         block = fence.group(1)
     else:
         start, end = block.find("["), block.rfind("]")
-        if start == -1 or end <= start:
+        if start == -1:
             return []
-        block = block[start:end + 1]
+        # A truncated reply has an opening bracket and no closing one. Returning early
+        # there is what made this mechanism yield nothing on its first live run: the
+        # guard fired before the salvage below could recover the intact experiments.
+        block = block[start:end + 1] if end > start else block[start:]
     try:
         doc = json.loads(block)
     except ValueError:
-        return []
+        doc = _salvage(block)
     if not isinstance(doc, list):
         return []
 

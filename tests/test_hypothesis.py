@@ -223,3 +223,76 @@ def test_no_model_means_no_hypotheses_rather_than_an_error():
     sess = _session(_Cage({}))
     sess.strategist = None
     assert sess.run_hypotheses() == 0
+
+
+def test_hypotheses_are_reachable_on_a_wide_surface():
+    """The regression that made the whole mechanism dead on arrival. Placed inside
+    confirm_surface's 120-request allowance, hypotheses were unreachable on exactly the
+    targets they exist for: Juice Shop spent 60 probes on exposure checks alone and the
+    sweep returned before ever asking for one. Live run: 2 findings, and no
+    'Model-proposed experiments' row in the coverage table."""
+    from pathlib import Path
+    import brukal.loop as _loop, brukal.assist as _assist
+    loop_src = Path(_loop.__file__).read_text()
+    assist_src = Path(_assist.__file__).read_text()
+    # the loop invokes it...
+    assert "self.session.run_hypotheses()" in loop_src
+    # ...and the sweep does not, so it cannot be starved by the reflex budget
+    body = assist_src[assist_src.index("def confirm_surface"):]
+    body = body[:body.index("\n    def ", 10)]
+    assert "run_hypotheses" not in body
+
+
+def test_a_truncated_reply_still_yields_its_intact_experiments():
+    """The defect that made the first live run produce nothing. A model with adaptive
+    thinking spends part of its output allowance before emitting any JSON, so a reply
+    cut mid-array is the NORMAL case — and the guard looking for a closing bracket
+    returned empty before the salvage could recover the complete objects before the cut."""
+    truncated = ('[{"title":"A","severity":"high","comparator":"status_differs",'
+                 '"control":{"url":"http://t/a","method":"GET"},'
+                 '"variant":{"url":"http://t/b","method":"GET"}},'
+                 '{"title":"B","severity":"high","comparator":"a_denied_b')
+    got = hyp.parse(truncated)
+    assert [h.title for h in got] == ["A"]      # the intact one, not the half-written one
+
+
+def test_a_half_written_request_is_dropped_never_repaired():
+    """Guessing at half a request spec is the invention this module exists to prevent."""
+    truncated = ('[{"title":"A","severity":"high","comparator":"status_differs",'
+                 '"control":{"url":"http://t/a","method":"GET"},"variant":{"url":"http')
+    assert hyp.parse(truncated) == []
+
+
+def test_the_model_is_given_the_base_url_not_the_bare_target():
+    """The first live run handed the model '172.20.0.2' while the app was on :3000, so
+    every proposed URL went to port 80, every request missed, and six sound experiments
+    were judged against nothing. A hypothesis aimed at the wrong port is not a failed
+    hypothesis, it is a failed prompt."""
+    _FakeLLM.reply = "[]"
+    sess = _session(_Cage({}))
+    sess.surface.seed = "http://127.0.0.1:5000/"
+    sess.run_hypotheses()
+    assert "http://127.0.0.1:5000" in _FakeLLM.last_user
+
+
+def test_a_real_session_token_is_supplied_rather_than_a_placeholder():
+    """The model wrote `Bearer <userA_token>` literally; the target rejected it, so every
+    authenticated experiment tested nothing."""
+    _FakeLLM.reply = "[]"
+    sess = _session(_Cage({}))
+    sess.last_jwt = "eyJhbGciOi.real.token"
+    sess.identity = "brk"
+    sess.run_hypotheses()
+    assert "eyJhbGciOi.real.token" in _FakeLLM.last_user
+    assert "Never write a placeholder" in _FakeLLM.last_user
+
+
+def test_the_attempt_is_recorded_even_when_nothing_parses():
+    """'Asked the model and got nothing usable' is a result. The first live run left no
+    coverage row at all, which is the exact ambiguity that table exists to remove."""
+    _FakeLLM.reply = "total nonsense, no json here"
+    sess = _session(_Cage({}))
+    assert sess.run_hypotheses() == 0
+    rows = dict((k, (p, n)) for k, p, n, _f in sess.coverage_summary())
+    assert "Model-proposed experiments" in rows
+    assert "no usable experiment" in rows["Model-proposed experiments"][1]

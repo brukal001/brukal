@@ -479,6 +479,16 @@ class GroundedLoop:
                     n = self.session.confirm_surface()
                 except Exception:
                     n = 0
+                # Model-proposed experiments run OUTSIDE the reflex request budget.
+                # Placed inside it they were unreachable on exactly the targets they
+                # exist for: a wide surface spends the whole allowance on deterministic
+                # probes and returns before ever asking for a hypothesis. One model call
+                # and a handful of requests is a different kind of work from a 120-probe
+                # sweep and should not compete with it.
+                try:
+                    n += self.session.run_hypotheses()
+                except Exception:
+                    pass
                 if n:
                     step = LoopStep(
                         index=len(self.steps) + 1, phase="exploitation",
