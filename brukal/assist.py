@@ -1427,6 +1427,29 @@ class AssistSession:
         "unsubscribe", "cancel",
     })
 
+    # A strict subset: operations that DESTROY or revoke, as opposed to those that
+    # merely create. The distinction only matters for hypothesis setup steps, whose
+    # whole purpose is to reach an interesting state — adding to a cart or starting an
+    # order is the point, while resetting the database is never a legitimate way to get
+    # there. Everything here stays refused no matter what the operator authorised,
+    # because none of it can be undone by the tool that did it.
+    _IRREVERSIBLE_WORDS = frozenset({
+        "createdb", "delete", "destroy", "remove", "drop", "reset", "purge",
+        "truncate", "wipe", "flush", "clear", "restore", "rollback", "shutdown",
+        "restart", "reboot", "revoke", "migrate", "seed", "init", "initialize",
+    })
+
+    @classmethod
+    def _is_irreversible_path(cls, url: str) -> bool:
+        """True for an operation that destroys or revokes rather than creates."""
+        from urllib.parse import urlsplit
+        path = urlsplit(url or "").path if "//" in (url or "") else (url or "")
+        for segment in path.split("/"):
+            for token in re.split(r"[-_.]", segment.lower()):
+                if token in cls._IRREVERSIBLE_WORDS:
+                    return True
+        return False
+
     @classmethod
     def _is_destructive_path(cls, url: str) -> bool:
         """True if a path names an operation that CHANGES STATE, whatever method reaches
@@ -2743,8 +2766,6 @@ class AssistSession:
         is not a lead, it is noise, and the report's confirmed/candidate distinction only
         means anything while candidates are things a human could actually verify."""
         from . import hypothesis as _hyp
-        from .findings import Finding
-        from .web import WebAction
         if self.browser is None or self.surface is None:
             return 0
         llm = getattr(getattr(self, "strategist", None), "_llm", None)
@@ -2789,6 +2810,7 @@ class AssistSession:
         except Exception:
             return 0
 
+        outcomes: list = []
         proposals = _hyp.parse(reply)
         # Record the attempt BEFORE the early return. The first live run asked the model,
         # got a truncated reply, parsed nothing, and left no trace at all — the coverage
@@ -2802,17 +2824,79 @@ class AssistSession:
             return 0
 
         confirmed = 0
-        for h in proposals[:max_run]:
+        rounds = 0
+        while proposals and rounds < 2:
+            rounds += 1
+            confirmed += self._run_one_round(proposals[:max_run], outcomes)
+            if confirmed or rounds >= 2:
+                break
+            # Nothing held. A refinement is only worth a second model call if the first
+            # round actually observed something to reason about — an empty outcome list
+            # means every experiment errored before reaching the target, and asking again
+            # would produce the same misdirected guesses.
+            if not outcomes:
+                break
+            try:
+                reply2 = llm.propose(
+                    _hyp.REFINE_PROMPT,
+                    f"Authorised target base URL: {base}{auth}\n\n"
+                    f"Attack surface:\n{grounding}\n\nResults of your last round:\n"
+                    + "\n".join(f"  - {o}" for o in outcomes[-8:]),
+                    max_tokens=8000)
+            except Exception:
+                break
+            proposals = _hyp.parse(reply2)
+            if proposals:
+                self._covered("Model-proposed experiments", probes=len(proposals),
+                              note="refined round, informed by the first round's results")
+        return confirmed
+
+    def _run_one_round(self, proposals, outcomes) -> int:
+        """Execute one batch of experiments; returns how many became findings."""
+        from . import hypothesis as _hyp
+        from .findings import Finding
+        from .web import WebAction
+        confirmed = 0
+        for h in proposals:
             if self._is_destructive_path(h.variant["url"]) \
                     or self._is_destructive_path(h.control["url"]):
                 continue                   # the prompt forbids it; the code enforces it
             try:
+                # Setup first: it establishes the state the experiment is about, and is
+                # never judged. A flaw that only exists partway through a workflow is
+                # unreachable without it.
+                for step in h.setup:
+                    # Setup exists to CREATE state — adding to a cart, starting an
+                    # order — so the ordinary state-changing guard would forbid exactly
+                    # what makes a stateful experiment possible. Creation is therefore
+                    # allowed, but only under the same authorisation that governs every
+                    # other proof that writes; destruction stays refused regardless,
+                    # since nothing here can undo it.
+                    if self._is_irreversible_path(step["url"]):
+                        raise ValueError("irreversible setup step")
+                    if self._is_destructive_path(step["url"]) and not self.allow_intrusive:
+                        raise ValueError("state-changing setup needs --full-send")
+                    self.browser.run(WebAction("request", **step))
                 _d1, a = self.browser.run(WebAction("request", **h.control))
                 _d2, b = self.browser.run(WebAction("request", **h.variant))
             except Exception:
                 continue
             holds, meaning = _hyp.judge(h, a, b)
             if not holds:
+                # Keep what happened — a round that confirms nothing is still the only
+                # information the next round has. But only when the target actually
+                # ANSWERED: an experiment the gate refused, or one aimed at a host that
+                # never replied, observed nothing, and "HTTP None vs HTTP None" is not a
+                # result to reason about. Recording it would buy a second model call to
+                # refine against noise.
+                if getattr(a, "status", None) is None and getattr(b, "status", None) is None:
+                    continue
+                outcomes.append(
+                    f"NOT CONFIRMED [{h.comparator}] {h.title}: control -> "
+                    f"HTTP {getattr(a, 'status', None)} "
+                    f"({len(getattr(a, 'body', '') or '')}B), variant -> "
+                    f"HTTP {getattr(b, 'status', None)} "
+                    f"({len(getattr(b, 'body', '') or '')}B)")
                 continue
             confirmed += 1
             self.findings.add(Finding(
@@ -2824,7 +2908,8 @@ class AssistSession:
                           f"{b.status} ({len(b.body or '')}B)"
                           + (f". Hypothesis: {h.rationale}" if h.rationale else "")),
                 source=(f"differential [{h.comparator}] between the control and variant "
-                        f"requests above")))
+                        f"requests above"
+                        + (f", after {len(h.setup)} setup request(s)" if h.setup else ""))))
         return confirmed
 
     def confirm_destructive_endpoint_exposed(self, url: str,

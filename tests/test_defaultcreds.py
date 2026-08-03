@@ -27,7 +27,27 @@ TARGET = "10.10.10.5"
 URL = f"http://{TARGET}/users/v1/login"
 # A realistic token: extraction requires a credible value, so a stub like "tok-abc"
 # would have the fixture failing for a reason the product does not have.
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImV4cCI6MTc4NTYzODI3NH0.5dkY-GPWIw8xn9r5sq2jnefixM70Zpy3A04EBpbCEfk"
+#
+# MINTED AT IMPORT, not hardcoded. The previous literal carried a fixed `exp` and this
+# test passed for months, then began failing on its own — the wall clock crossed the
+# expiry and the JWT scanner correctly raised "token is long expired", a finding the
+# test did not expect. A fixture whose meaning depends on the date is a failure waiting
+# for a quiet afternoon.
+def _mint(exp_offset: int = 3600) -> str:
+    import base64, hmac, hashlib, json as _json, time as _time
+
+    def seg(d):
+        return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
+
+    head = seg({"alg": "HS256", "typ": "JWT"})
+    body = seg({"sub": "admin", "exp": int(_time.time()) + exp_offset})
+    sig = base64.urlsafe_b64encode(
+        hmac.new(b"fixture-not-a-real-key", f"{head}.{body}".encode(),
+                 hashlib.sha256).digest()).rstrip(b"=").decode()
+    return f"{head}.{body}.{sig}"
+
+
+TOKEN = _mint()
 
 
 class _Api:

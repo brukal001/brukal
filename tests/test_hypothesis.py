@@ -127,7 +127,7 @@ def test_the_prompt_names_only_real_comparators():
 
 # -- the runner: gate and governance still apply -------------------------------
 
-def _session(cage, leads=()):
+def _session(cage, leads=(), intrusive=True):
     import tempfile
     from pathlib import Path
     from brukal import AuditLog, Executor, Gate, load_scope
@@ -143,6 +143,7 @@ def _session(cage, leads=()):
                          browser=GovernedBrowser(scope, cage, audit))
     sess.surface = AttackSurface(seed="http://127.0.0.1:5000/")
     sess.source_leads = list(leads)
+    sess.allow_intrusive = intrusive
     return sess
 
 
@@ -318,3 +319,140 @@ def test_bodies_differ_ignores_an_endpoint_merely_echoing_its_input():
     real_a = _R(201, '{"id":1,"email":"aaa@x.io","role":"customer"}')
     real_b = _R(201, '{"id":1,"email":"bbb@x.io","role":"admin"}')
     assert hyp.judge(h, real_a, real_b)[0] is True
+
+
+# -- stateful setup and a second round ----------------------------------------
+
+def test_setup_requests_run_before_the_experiment_and_are_not_judged():
+    """A two-request differential can only interrogate a stateless endpoint. The flaws
+    that cost money — workflow bypass, a price recalculated after approval, a coupon
+    reused — only exist partway through a sequence."""
+    _FakeLLM.reply = json.dumps([{
+        "title": "Coupon reusable after order is placed", "severity": "high",
+        "comparator": "a_denied_b_allowed",
+        "setup": [{"url": "http://127.0.0.1:5000/cart/add", "method": "POST"},
+                  {"url": "http://127.0.0.1:5000/coupon?c=X", "method": "POST"}],
+        "control": {"url": "http://127.0.0.1:5000/coupon?c=X", "method": "POST"},
+        "variant": {"url": "http://127.0.0.1:5000/coupon?c=X&force=1", "method": "POST"}}])
+    cage = _Cage({"http://127.0.0.1:5000/cart/add": (200, "ok"),
+                  "http://127.0.0.1:5000/coupon?c=X": (403, ""),
+                  "http://127.0.0.1:5000/coupon?c=X&force=1": (200, "applied")})
+    sess = _session(cage)
+    assert sess.run_hypotheses() == 1
+    # setup ran first, in order, before the judged pair
+    assert cage.seen[0].endswith("/cart/add")
+    assert "after 2 setup request(s)" in sess.findings.all()[0].source
+
+
+def test_state_changing_setup_needs_the_same_authorisation_as_any_other_write():
+    """Setup creating state is the point, but it is still a write, and it is governed by
+    the same flag as every other proof that writes."""
+    _FakeLLM.reply = json.dumps([{
+        "title": "x", "severity": "high", "comparator": "a_denied_b_allowed",
+        "setup": [{"url": "http://127.0.0.1:5000/cart/add", "method": "POST"}],
+        "control": {"url": "http://127.0.0.1:5000/a", "method": "GET"},
+        "variant": {"url": "http://127.0.0.1:5000/b", "method": "GET"}}])
+    cage = _Cage({"http://127.0.0.1:5000/cart/add": (200, "ok"),
+                  "http://127.0.0.1:5000/a": (403, ""),
+                  "http://127.0.0.1:5000/b": (200, "y")})
+    sess = _session(cage, intrusive=False)
+    assert sess.run_hypotheses() == 0
+    assert cage.seen == []
+
+
+def test_an_irreversible_setup_step_is_refused_even_when_writes_are_authorised():
+    """Creation can be authorised; destruction cannot, because nothing here can undo
+    it. Setup is also the easiest place to smuggle harm past a comparator that never
+    sees it."""
+    _FakeLLM.reply = json.dumps([{
+        "title": "x", "severity": "high", "comparator": "status_differs",
+        "setup": [{"url": "http://127.0.0.1:5000/createdb", "method": "GET"}],
+        "control": {"url": "http://127.0.0.1:5000/a", "method": "GET"},
+        "variant": {"url": "http://127.0.0.1:5000/b", "method": "GET"}}])
+    cage = _Cage({"http://127.0.0.1:5000/a": (200, "x"),
+                  "http://127.0.0.1:5000/b": (500, "y")})
+    sess = _session(cage, intrusive=True)          # authorised, and still refused
+    assert sess.run_hypotheses() == 0
+    assert not any("createdb" in u for u in cage.seen)
+
+
+def test_a_destructive_setup_step_aborts_the_whole_experiment():
+    """Setup is the easiest place to smuggle harm past a comparator that never sees it."""
+    _FakeLLM.reply = json.dumps([{
+        "title": "x", "severity": "high", "comparator": "status_differs",
+        "setup": [{"url": "http://127.0.0.1:5000/createdb", "method": "GET"}],
+        "control": {"url": "http://127.0.0.1:5000/a", "method": "GET"},
+        "variant": {"url": "http://127.0.0.1:5000/b", "method": "GET"}}])
+    cage = _Cage({"http://127.0.0.1:5000/a": (200, "x"),
+                  "http://127.0.0.1:5000/b": (500, "y")})
+    sess = _session(cage)
+    assert sess.run_hypotheses() == 0
+    assert not any("createdb" in u for u in cage.seen)
+
+
+def test_a_failed_round_feeds_its_observations_into_a_second_attempt():
+    """Without the outcomes a refinement is just another guess. The point of a second
+    round is that it has seen what the first one actually got back."""
+    first = json.dumps([{"title": "A", "severity": "high",
+                         "comparator": "a_denied_b_allowed",
+                         "control": {"url": "http://127.0.0.1:5000/a", "method": "GET"},
+                         "variant": {"url": "http://127.0.0.1:5000/b", "method": "GET"}}])
+    second = json.dumps([{"title": "B refined", "severity": "high",
+                          "comparator": "status_differs",
+                          "control": {"url": "http://127.0.0.1:5000/c", "method": "GET"},
+                          "variant": {"url": "http://127.0.0.1:5000/d", "method": "GET"}}])
+    replies = iter([first, second])
+
+    class _TwoShot:
+        def propose(self, system, user, max_tokens=1024):
+            _TwoShot.last_user = user
+            return next(replies)
+
+    sess = _session(_Cage({"http://127.0.0.1:5000/a": (200, "x"),
+                           "http://127.0.0.1:5000/b": (200, "x"),
+                           "http://127.0.0.1:5000/c": (404, ""),
+                           "http://127.0.0.1:5000/d": (200, "found")}))
+    sess.strategist = type("S", (), {"_llm": _TwoShot()})()
+    assert sess.run_hypotheses() == 1
+    assert "NOT CONFIRMED" in _TwoShot.last_user      # the refinement saw the failure
+    assert sess.findings.all()[0].title == "B refined"
+
+
+def test_refinement_is_skipped_when_nothing_was_observed():
+    """Every experiment erroring before reaching the target means a second round would
+    repeat the same misdirected guesses at the cost of another model call."""
+    calls = []
+
+    class _Counting:
+        def propose(self, system, user, max_tokens=1024):
+            calls.append(1)
+            return json.dumps([{"title": "x", "severity": "high",
+                                "comparator": "status_differs",
+                                "control": {"url": "http://10.0.0.99/a", "method": "GET"},
+                                "variant": {"url": "http://10.0.0.99/b", "method": "GET"}}])
+
+    sess = _session(_Cage({}))                # out of scope -> gate refuses, no outcome
+    sess.strategist = type("S", (), {"_llm": _Counting()})()
+    sess.run_hypotheses()
+    assert len(calls) == 1                    # asked once, did not ask again
+
+
+def test_rounds_are_bounded():
+    """An unbounded refine loop is an agent with a budget hole in it."""
+    calls = []
+
+    class _Never:
+        def propose(self, system, user, max_tokens=1024):
+            calls.append(1)
+            return json.dumps([{"title": f"t{len(calls)}", "severity": "low",
+                                "comparator": "a_denied_b_allowed",
+                                "control": {"url": "http://127.0.0.1:5000/a",
+                                            "method": "GET"},
+                                "variant": {"url": "http://127.0.0.1:5000/b",
+                                            "method": "GET"}}])
+
+    sess = _session(_Cage({"http://127.0.0.1:5000/a": (200, "x"),
+                           "http://127.0.0.1:5000/b": (200, "x")}))
+    sess.strategist = type("S", (), {"_llm": _Never()})()
+    assert sess.run_hypotheses() == 0
+    assert len(calls) <= 2

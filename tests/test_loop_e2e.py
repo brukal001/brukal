@@ -17,6 +17,23 @@ this test instead of a live engagement.
 """
 from __future__ import annotations
 
+def _mint_token(exp_offset: int = 3600) -> str:
+    """A token valid relative to NOW. A literal with a fixed `exp` silently changes
+    meaning the moment the wall clock passes it — the sibling fixture in
+    test_defaultcreds.py began failing on its own for exactly that reason."""
+    import base64, hmac, hashlib, json as _json, time as _time
+
+    def seg(d):
+        return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
+
+    head = seg({"alg": "HS256", "typ": "JWT"})
+    body = seg({"sub": "name1", "exp": int(_time.time()) + exp_offset})
+    sig = base64.urlsafe_b64encode(
+        hmac.new(b"random", f"{head}.{body}".encode(), hashlib.sha256)
+        .digest()).rstrip(b"=").decode()
+    return f"{head}.{body}.{sig}"
+
+
 import json
 import shutil
 import sys
@@ -59,7 +76,7 @@ SQL_ERROR = ("sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) "
 
 # A token the app leaks into an ordinary page, signed with a guessable key. The chain
 # should notice it, analyse it, and then have something to test object-authorization with.
-LEAKED_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImlhdCI6MTc4NTU2NTk0NywiZXhwIjoxNzg1NTY5NTQ3fQ._QhbIPc6rektm1Ktesi48t9eElwrWhP_M6KlDD-ghhk"
+LEAKED_JWT = _mint_token()
 BOOKS = json.dumps({"Books": [{"book_title": "bookA", "user": "alice"},
                               {"book_title": "bookB", "user": "bob"}]})
 # A listing the app serves to anyone, carrying other people's data.

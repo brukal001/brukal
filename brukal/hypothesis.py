@@ -66,14 +66,24 @@ def _norm(text) -> str:
 
 
 class Hypothesis:
-    """One proposed experiment: a control request, a variant, and how to judge them."""
+    """One proposed experiment: optional setup, a control, a variant, and a comparator.
 
-    __slots__ = ("title", "severity", "comparator", "control", "variant", "rationale")
+    `setup` is what makes a STATEFUL flaw reachable. A two-request differential can only
+    ask questions about a stateless endpoint; the flaws that actually cost money —
+    workflow bypass, a price recalculated after approval, a coupon reused, a state
+    machine entered sideways — need a sequence to arrive at the interesting moment
+    first. Setup requests are EXECUTED but never judged: they establish the world, and
+    the comparator still decides everything on the control/variant pair alone."""
 
-    def __init__(self, title, severity, comparator, control, variant, rationale=""):
+    __slots__ = ("title", "severity", "comparator", "setup", "control", "variant",
+                 "rationale")
+
+    def __init__(self, title, severity, comparator, control, variant, rationale="",
+                 setup=None):
         self.title = title
         self.severity = severity
         self.comparator = comparator
+        self.setup = list(setup or [])
         self.control = control
         self.variant = variant
         self.rationale = rationale
@@ -191,8 +201,12 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
         severity = str(item.get("severity", "medium")).lower()
         if severity not in ("critical", "high", "medium", "low", "info"):
             severity = "medium"
+        # At most three setup requests: enough to reach a non-trivial state, few
+        # enough that a confused proposal cannot turn into a crawl of the target.
+        setup = [r for r in (_clean_request(x) for x in (item.get("setup") or [])[:3])
+                 if r is not None]
         out.append(Hypothesis(title, severity, comparator, control, variant,
-                              str(item.get("rationale", ""))[:300]))
+                              str(item.get("rationale", ""))[:300], setup))
         if len(out) >= max_hypotheses:
             break
     return out
@@ -263,6 +277,22 @@ def comparator_names() -> tuple:
     return tuple(sorted(_COMPARATORS))
 
 
+REFINE_PROMPT = """Your previous experiments were executed. Results below.
+
+A result of NOT CONFIRMED usually means the experiment was aimed slightly wrong — a \
+path that does not exist, a request the app rejected before reaching the logic, a \
+comparison too weak to separate the two answers — not that the application is sound. \
+Read the observed status codes and sizes and propose a better round.
+
+Do not repeat an experiment unchanged. If a control and variant both returned the same \
+error, the endpoint or the payload shape is wrong; fix that first. If both returned 200 \
+with near-identical sizes, the change you made had no effect and a different rule needs \
+testing.
+
+Same JSON format as before. Reply [] if the results suggest nothing worth another try.
+"""
+
+
 PROMPT = """You are proposing EXPERIMENTS, not findings. You cannot declare anything \
 true: each proposal is two HTTP requests that deterministic code will execute and \
 compare, and only the comparison decides whether a vulnerability exists.
@@ -279,9 +309,16 @@ Reply with ONLY a JSON array. Each element:
   title       short name for the flaw if the experiment succeeds
   severity    critical | high | medium | low
   comparator  one of: {comparators}
+  setup       OPTIONAL list of up to 3 requests run FIRST to reach an interesting
+              state (create an order, apply a coupon, start a workflow). They are
+              executed but never judged.
   control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...}}
   variant     same shape, one thing changed
   rationale   one sentence on what the difference would prove
+
+Prefer experiments that need setup — a stateless endpoint has usually been checked \
+already by deterministic probes, whereas a rule that only exists partway through a \
+workflow has not.
 
 Rules: URLs must be on the authorised target. Do not propose anything destructive \
 (no DELETE of data you did not create, no password changes to accounts you do not own, \
