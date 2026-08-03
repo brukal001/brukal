@@ -72,6 +72,50 @@ _UNSURE_SVC_RE = re.compile(r"\?$|^unknown$|^tcpwrapped$|^ppp$", re.I)
 _LOGOUT_RE = re.compile(r"(?:log[-_]?out|sign[-_]?out|log[-_]?off|/logoff\b"
                         r"|[?&](?:action|do|page|op)=(?:log[-_]?out|sign[-_]?out))", re.I)
 
+# --- crawl budget discipline ------------------------------------------------------
+# A page budget is the crawl's scarcest resource, and on an unfamiliar application it
+# was being spent almost entirely on things that could not contain a vulnerability. A
+# live authenticated run on DVNA mapped twenty pages: twelve renderings of one
+# documentation template, four URLs invented by parsing a JS bundle as HTML, three
+# static assets — and zero of /products, /admin, /usersearch, /calc or /ping, which is
+# the whole application. Breadth on an unfamiliar target is exactly the capability
+# being defended here, so the budget is now spent on things that can answer a question.
+
+# Cannot hold a form, a parameter, or a route. Note .js is deliberately ABSENT: a
+# bundle is the one non-HTML response worth reading, because an SPA keeps its endpoints
+# there. It is mined for routes without being treated as a page.
+_ASSET_RE = re.compile(
+    r"\.(?:css|png|jpe?g|gif|svg|ico|webp|bmp|woff2?|ttf|otf|eot|mp[34]|webm|"
+    r"pdf|zip|gz|tgz|map)(?:$|[?#])", re.I)
+
+_NON_HTML_RE = re.compile(r"\.(?:js|mjs|json|xml|txt)(?:$|[?#])", re.I)
+
+# How many pages ONE deep templated family may take before the rest wait for leftovers,
+# and how many non-HTML bodies are worth mining. Both small: the point is to sample a
+# shape, not to enumerate it.
+_FAMILY_QUOTA = 3
+_MAX_NON_HTML = 5
+
+
+def _looks_non_html(url: str) -> bool:
+    return bool(_NON_HTML_RE.search(url or ""))
+
+
+def _path_family(url: str) -> str:
+    """The templated family a URL belongs to, or "" when it is not deep enough to be
+    one. `/learn/vulnerability/a1_injection` and `/learn/vulnerability/a7_xss` share the
+    family `/learn/vulnerability`; `/admin/users` and `/products` have none, because
+    capping shallow paths would throttle the top-level routes that matter most."""
+    from urllib.parse import urlsplit
+    try:
+        sp = urlsplit(url or "")
+    except ValueError:
+        return ""
+    segs = [s for s in (sp.path or "").split("/") if s]
+    if len(segs) < 3:
+        return ""
+    return f"{sp.scheme}://{sp.netloc}/" + "/".join(segs[:-1])
+
 # Services / technologies worth pulling a red-team playbook for, mined from the
 # highlights so skill retrieval follows what we've actually discovered on the box.
 _TECH_HINTS = re.compile(
@@ -1163,10 +1207,41 @@ class AssistSession:
 
         queue = deque((webmap.normalize_url(u, "") or u, 0)
                       for u in seeds if _in_scope(u) and not _LOGOUT_RE.search(u))
+        # Pages a quota pushed aside, crawled only if budget is left over. Deferring
+        # rather than dropping keeps the crawl a strict improvement: nothing becomes
+        # unreachable, it just stops going first.
+        deferred: deque = deque()
+        family_count: dict = {}
+        non_html = 0
         visited: set = set()
-        while queue and len(surface.pages) < max_pages:
-            url, depth = queue.popleft()
+        while (queue or deferred) and len(surface.pages) < max_pages:
+            from_queue = bool(queue)
+            url, depth = queue.popleft() if from_queue else deferred.popleft()
             if url in visited:
+                continue
+            # Stylesheets, fonts and images cannot hold a form, a parameter or a route.
+            # They cost a request each and taught the crawl nothing; three of twenty
+            # pages on the run that motivated this went to font-awesome and jQuery.
+            if _ASSET_RE.search(url):
+                visited.add(url)
+                continue
+            if not from_queue:
+                pass                             # leftover budget: quotas no longer apply
+            else:
+                # One deep templated family may not monopolise the budget. DVNA's
+                # `/learn/vulnerability/<name>` is ten renderings of one template; the
+                # crawl spent twelve of twenty pages there and never reached /products,
+                # /admin or /usersearch — the entire application. Three samples are
+                # enough to learn what a family looks like.
+                fam = _path_family(url)
+                if fam:
+                    seen_n = family_count.get(fam, 0)
+                    if seen_n >= _FAMILY_QUOTA:
+                        deferred.append((url, depth))
+                        continue
+                    family_count[fam] = seen_n + 1
+            if non_html >= _MAX_NON_HTML and _looks_non_html(url):
+                visited.add(url)
                 continue
             visited.add(url)
             if observer is not None:
@@ -1205,6 +1280,21 @@ class AssistSession:
             if server:
                 surface.techs.add(str(server).split("/")[0][:24])
             body = result.body or ""
+            # Parse as HTML only when the server SAID it was HTML. Feeding a JavaScript
+            # bundle to an HTML parser is not harmless: showdown.min.js builds anchors by
+            # string concatenation, the parser read `'<a href="'+c+'"'` as a real tag, and
+            # the crawl spent four of its twenty pages fetching `/assets/'+c+'` and
+            # friends. A bundle is still worth mining for route strings — that is what
+            # turns an SPA into a list of endpoints — but it is not a page, so it neither
+            # yields links nor costs page budget.
+            ctype = str((result.headers or {}).get("content-type")
+                        or (result.headers or {}).get("Content-Type") or "").lower()
+            is_html = ("html" in ctype) or (not ctype and body.lstrip()[:1] == "<")
+            if not is_html:
+                surface.add_routes(webmap.extract_api_routes(body))
+                self.scan_web_body(url, body)
+                non_html += 1
+                continue
             links, forms, params = webmap.extract(url, body)
             # Exclude session-destroying links (logout/signout) so an authenticated
             # crawl keeps its session for the whole run.
@@ -5429,6 +5519,15 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                            pass_field=login.get("pass_field", "password"),
                            login_type=login.get("type", "form"))
         _emit(console, f"  {'✓ authenticated' if ok else '⚠ login failed'} at {login['url']}")
+        # A login that was ASKED FOR and did not happen changes what the whole run
+        # means, so it has to travel as far as the findings do. Brukal learned this by
+        # producing a DVNA report that listed three low-severity header findings and
+        # looked exactly like a clean authenticated assessment — the credentials had
+        # been rejected, the crawl never left the login page, and the only trace was
+        # one line in the engagement log nobody reads next to a report. An unreached
+        # surface is the same failure mode as an unreached CHECK: silence that looks
+        # like a result.
+        session.login_status = ("authenticated" if ok else "failed", login["url"])
     return session, audit, target, cage
 
 
@@ -5512,6 +5611,7 @@ def _write_session_report(session, result, cage, audit, spend=""):
                               .summary()
                               if getattr(getattr(session, "browser", None), "health", None)
                               else ""),
+            "login_status": list(getattr(session, "login_status", ()) or ()),
             "surface": session.surface.summary() if session.surface else "",
         }
         return write_reports(session.findings, meta, _session_vault(session))

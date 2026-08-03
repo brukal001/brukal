@@ -104,6 +104,21 @@ def build_report(store: FindingStore, meta: dict) -> str:
         out.append(f"> {_health}")
         out.append("")
 
+    # Credentials were supplied and refused. Everything below was therefore measured
+    # against the UNAUTHENTICATED surface, which on most applications is the small part
+    # — and a reader given a finding list has no way to tell that apart from a clean
+    # authenticated assessment. Said before the findings, because it changes how every
+    # one of them should be read.
+    _login = m.get("login_status") or ()
+    if len(_login) >= 2 and _login[0] == "failed":
+        out.append(f"> ⚠ AUTHENTICATION FAILED at `{_login[1]}`. The supplied credentials "
+                   f"were rejected, so this run assessed only the surface reachable "
+                   f"WITHOUT a session. Anything behind the login was not tested, and its "
+                   f"absence from this report is not a clean result. Check the username, "
+                   f"the field names (`--login-field-user`/`--login-field-pass`) and the "
+                   f"login type before treating this as an authenticated assessment.")
+        out.append("")
+
     # --- what was assessed ----------------------------------------------------
     # A reader cannot tell an absent finding from an absent CHECK unless the report
     # says which it is. Brukal already insists a rate-limited sweep declare its own
