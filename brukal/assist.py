@@ -1180,6 +1180,27 @@ class AssistSession:
             self._rendered.add(url)            # don't let the render reflex re-fetch it
             if result is None:
                 continue
+            # A 3xx is not a dead end. The web layer deliberately does NOT auto-follow —
+            # the destination has to go back through the scope gate rather than being
+            # trusted because a target's own Location header said so — and it says as
+            # much in its note. Nothing was resubmitting it, so an application whose
+            # entry point redirects presented an empty surface: DVNA answers / with a
+            # 302 to /login, and a cold run against it crawled one page, found zero
+            # links, zero forms, zero routes, and reported nothing at all. Most
+            # login-gated applications behave exactly that way.
+            if 300 <= (result.status or 0) < 400:
+                loc = ((result.headers or {}).get("location")
+                       or (result.headers or {}).get("Location") or "")
+                if loc and depth <= max_depth:
+                    # normalize_url takes (base, href) in that order. Passing them the
+                    # other way round resolved the root against the destination and
+                    # handed back the root — already visited, so nothing was queued and
+                    # the fix looked like it had not worked at all.
+                    nxt = webmap.normalize_url(url, loc)
+                    if (nxt and nxt not in visited and _in_scope(nxt)
+                            and not _LOGOUT_RE.search(nxt)):
+                        queue.append((nxt, depth))   # same depth: a hop, not a level
+                continue
             server = (result.headers or {}).get("server") or (result.headers or {}).get("Server")
             if server:
                 surface.techs.add(str(server).split("/")[0][:24])
