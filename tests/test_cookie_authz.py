@@ -234,3 +234,32 @@ def test_both_new_detectors_map_to_a_coverage_class():
     for title, klass in titles.items():
         assert any(w in title.lower() for w in _COVERAGE_WORDS[klass]), \
             f"{title!r} does not map to {klass!r}"
+
+
+def test_a_failed_login_that_bounces_back_to_login_is_not_success():
+    """A 302 carries little or no body, so "the answer no longer shows a password
+    field" is vacuously true for it — and a rejected login redirected straight back to
+    /login was read as AUTHENTICATED. A redirect is decided by its destination."""
+    class _Rejects:
+        def run(self, action):
+            if action.method == "POST":
+                return WebResult(status=302, url=action.url, body="bad credentials",
+                                 headers={"Location": "/login"})
+            return WebResult(status=200, url=action.url, headers={},
+                             body='<form><input name="password" type="password"></form>')
+    s = _sess(_Rejects())
+    assert s.login(f"{ROOT}/login", "someone", "wrong") is False
+    assert s.authenticated is False
+
+
+def test_a_successful_login_redirecting_away_is_still_accepted():
+    class _Accepts:
+        def run(self, action):
+            if action.method == "POST":
+                return WebResult(status=302, url=action.url, body="",
+                                 headers={"Location": "/dashboard",
+                                          "Set-Cookie": "sid=1"})
+            return WebResult(status=200, url=action.url, headers={},
+                             body='<form><input name="password" type="password"></form>')
+    s = _sess(_Accepts())
+    assert s.login(f"{ROOT}/login", "someone", "right") is True
