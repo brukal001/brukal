@@ -97,6 +97,13 @@ def build_report(store: FindingStore, meta: dict) -> str:
         except Exception:
             pass
 
+    # A run against a target that fell over produces an empty finding list, which in a
+    # report is indistinguishable from a clean one. Say which it was, before the table.
+    _health = m.get("target_health") or ""
+    if _health.startswith("⚠"):
+        out.append(f"> {_health}")
+        out.append("")
+
     # --- what was assessed ----------------------------------------------------
     # A reader cannot tell an absent finding from an absent CHECK unless the report
     # says which it is. Brukal already insists a rate-limited sweep declare its own

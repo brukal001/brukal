@@ -229,6 +229,16 @@ class GroundedLoop:
         meter = getattr(getattr(self.session.strategist, "_llm", None), "usage", None)
         return getattr(meter, "cost", None) if meter is not None else None
 
+    def _target_unwell(self) -> str:
+        """A reason to stop because the TARGET is failing, or "". Never raises: health
+        monitoring is instrumentation and must not be able to end a run by breaking."""
+        try:
+            browser = getattr(self.session, "browser", None)
+            health = getattr(browser, "health", None)
+            return health.should_stop() if health is not None else ""
+        except Exception:
+            return ""
+
     def _research_fetches(self):
         research = getattr(self.session, "research", None)
         return getattr(research, "fetches", None) if research is not None else None
@@ -373,6 +383,14 @@ class GroundedLoop:
                                             fetches=self._research_fetches())
                 if why is not None:
                     return self._finish("budget", why)
+            # A target that was answering and has stopped is a reason to hand back, not
+            # to slow down. Brukal once carried on for twenty steps against an
+            # application its own scanning had knocked over, found nothing, and reported
+            # that as a clean result — the finding list and the corpse are
+            # indistinguishable in a report unless the run says so.
+            unwell = self._target_unwell()
+            if unwell:
+                return self._finish("target-unhealthy", unwell)
             self._checkpoint()
 
             # REFLEX 0a: FIND the web surface ourselves before anything else. Everything

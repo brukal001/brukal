@@ -5130,6 +5130,10 @@ def _write_session_report(session, result, cage, audit, spend=""):
             "spend_detail": _spend_detail(session),
             "coverage": (session.coverage_summary()
                          if hasattr(session, "coverage_summary") else []),
+            "target_health": (getattr(getattr(session, "browser", None), "health", None)
+                              .summary()
+                              if getattr(getattr(session, "browser", None), "health", None)
+                              else ""),
             "surface": session.surface.summary() if session.surface else "",
         }
         return write_reports(session.findings, meta, _session_vault(session))

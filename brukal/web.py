@@ -399,6 +399,10 @@ class GovernedBrowser:
         self.current_url = ""                  # set only by a gated, successful navigate
         self._cookies: dict = {}               # session cookie jar (name -> value)
         self.auth_header: str = ""             # e.g. "Bearer <jwt>" / "Basic <b64>" (token/basic auth)
+        # Rolling health of whatever we are pointed at. A rate limit bounds how fast
+        # requests leave; nothing was asking whether the target still answers them.
+        from .health import TargetHealth
+        self.health = TargetHealth()
 
     def _apply_cookies(self, action: "WebAction") -> None:
         """Attach the session to an outgoing request so authenticated pages are reachable
@@ -457,6 +461,10 @@ class GovernedBrowser:
 
         self._apply_cookies(action)            # carry the session into this request
         result = self._cage.run(action)
+        # Health is judged on whether bytes came back, NOT on the status code: a 404 or
+        # a 500 is the target answering, and several of the flaws Brukal looks for are
+        # found precisely by making an application error. Only silence counts against it.
+        self.health.record(bool(getattr(result, "status", None)))
         self._absorb_cookies(result)           # remember any Set-Cookie for the next one
         self._audit.append("web_result", {"status": result.status, "url": result.url,
                                            "note": result.note,
