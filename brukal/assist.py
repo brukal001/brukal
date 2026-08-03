@@ -174,6 +174,11 @@ _COVERAGE_WORDS = {
     "GraphQL": ("graphql",),
     "Transport / browser hygiene": ("security header", "cors"),
     "Debug exposure": ("debug console",),
+    # Model-proposed experiments carry titles the model chose, so they cannot be matched
+    # by keyword like the fixed detectors. They are recognised by CATEGORY instead —
+    # without this the coverage table said "none found" for a class that had just
+    # produced two critical findings.
+    "Model-proposed experiments": ("\x00never-matches",),
 }
 
 
@@ -3355,6 +3360,8 @@ class AssistSession:
         """(class, probes, note, found) rows for the report, sorted for stable output."""
         found = set()
         for f in self.findings.all():
+            if getattr(f, "category", "") == "logic":
+                found.add("Model-proposed experiments")
             title = (getattr(f, "title", "") or "").lower()
             for klass, words in _COVERAGE_WORDS.items():
                 if any(w in title for w in words):

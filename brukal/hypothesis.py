@@ -48,6 +48,7 @@ _COMPARATORS = {
                       and len(b.body or "") > len(a.body or "") * 2
                       and len(b.body or "") > 200),
         "the variant returned substantially more data than the control"),
+    # NOTE: judged against the REQUESTS as well as the responses — see judge().
     "bodies_differ": (
         lambda a, b: (a.status == b.status and a.status
                       and _norm(a.body) != _norm(b.body)),
@@ -211,9 +212,50 @@ def judge(hypothesis, control_result, variant_result):
         return False, ""
     predicate, meaning = entry
     try:
-        return bool(predicate(control_result, variant_result)), meaning
+        if not predicate(control_result, variant_result):
+            return False, ""
     except Exception:
         return False, ""
+    if hypothesis.comparator == "bodies_differ":
+        # An endpoint that ECHOES what it was given differs on every pair of distinct
+        # requests. On a live target this fired on two registrations whose bodies
+        # differed by two bytes — the echoed username — and reported mass-assignment
+        # role escalation that had not been demonstrated at all. So the values WE
+        # supplied are removed from both responses before they are compared, exactly as
+        # the username-enumeration check does; what remains is the part of the answer
+        # the server chose.
+        submitted = _submitted_values(hypothesis)
+        if _strip(control_result.body, submitted) == _strip(variant_result.body,
+                                                            submitted):
+            return False, ""
+    return True, meaning
+
+
+def _submitted_values(hypothesis) -> list:
+    """Every scalar this experiment put into either request — the strings an echoing
+    endpoint will hand straight back."""
+    out: list = []
+    for spec in (hypothesis.control, hypothesis.variant):
+        for key in ("url", "body"):
+            raw = spec.get(key) or ""
+            try:
+                doc = json.loads(raw) if key == "body" else None
+            except ValueError:
+                doc = None
+            if isinstance(doc, dict):
+                out.extend(str(v) for v in doc.values()
+                           if isinstance(v, (str, int, float)) and len(str(v)) >= 3)
+            elif key == "url":
+                out.extend(part for part in re.split(r"[/?&=]", raw) if len(part) >= 3)
+    return out
+
+
+def _strip(text: str, values) -> str:
+    out = text or ""
+    for v in values:
+        if v:
+            out = out.replace(str(v), "")
+    return _norm(out)
 
 
 def comparator_names() -> tuple:

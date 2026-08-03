@@ -296,3 +296,25 @@ def test_the_attempt_is_recorded_even_when_nothing_parses():
     rows = dict((k, (p, n)) for k, p, n, _f in sess.coverage_summary())
     assert "Model-proposed experiments" in rows
     assert "no usable experiment" in rows["Model-proposed experiments"][1]
+
+
+def test_bodies_differ_ignores_an_endpoint_merely_echoing_its_input():
+    """The live false positive. Two registrations with different usernames always
+    produce different bodies — the echoed name and id differ — so this comparator
+    reported mass-assignment role escalation on a 2-byte difference that demonstrated
+    nothing. What we submitted is stripped before comparing, as the enumeration check
+    already does."""
+    h = hyp.parse(json.dumps([{
+        "title": "t", "severity": "high", "comparator": "bodies_differ",
+        "control": {"url": "http://t/api/Users", "method": "POST",
+                    "body": {"email": "aaa@x.io", "password": "Pw1"}},
+        "variant": {"url": "http://t/api/Users", "method": "POST",
+                    "body": {"email": "bbb@x.io", "password": "Pw1", "role": "admin"}}}]))[0]
+    echo_a = _R(201, '{"id":1,"email":"aaa@x.io","role":"customer"}')
+    echo_b = _R(201, '{"id":1,"email":"bbb@x.io","role":"customer"}')
+    assert hyp.judge(h, echo_a, echo_b)[0] is False       # only the echo differed
+
+    # ...but a genuine difference in what the SERVER chose still counts
+    real_a = _R(201, '{"id":1,"email":"aaa@x.io","role":"customer"}')
+    real_b = _R(201, '{"id":1,"email":"bbb@x.io","role":"admin"}')
+    assert hyp.judge(h, real_a, real_b)[0] is True
