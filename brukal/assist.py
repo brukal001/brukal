@@ -2846,6 +2846,22 @@ class AssistSession:
                 if hasattr(self.browser, "_cookies"):
                     self.browser._cookies = saved_cookies
 
+        # Before spending requests: the application may already have SAID so. If its
+        # own spec declares security on some operations and omits it from this
+        # destructive one, that is the contract stating the endpoint is open — evidence
+        # obtained without touching it, and it works where the OPTIONS differential
+        # cannot because the framework answers preflight unauthenticated.
+        declared = self._spec_says_unprotected(url)
+        if declared:
+            self.findings.add(Finding(
+                title="Unauthenticated access to a state-destroying endpoint",
+                severity="high", category="api",
+                target=url, param="", confirmed=True,
+                evidence=declared,
+                source=("read from the target's own OpenAPI document; the endpoint was "
+                        "NOT requested, because invoking it is the harm being reported")))
+            return True
+
         guarded = anonymous_options(protected_url)
         exposed = anonymous_options(url)
         if guarded is None or exposed is None:
@@ -2951,6 +2967,136 @@ class AssistSession:
                     f"PUT {change_url}; fresh login with the new password OK; "
                     f"GET {verify_url} with the ORIGINAL token still OK")))
         return True
+
+    def confirm_plaintext_password_storage(self, register_url: str, probe_urls,
+                                           user_field: str = "username",
+                                           pass_field: str = "password",
+                                           email_field: str = "email") -> bool:
+        """The application stores credentials in recoverable form.
+
+        Proved by planting one: register with a password only we know, then look for that
+        exact string coming back out of the application. A password that reappears
+        verbatim was never hashed — no amount of arguing about algorithms is needed, and
+        unlike reading the source it holds for a target whose code nobody has.
+
+        The planted value is what makes this sound. Finding *a* password in a response
+        proves an exposure; finding THE one we just chose proves storage, because a hash
+        cannot reproduce it."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive or not register_url:
+            return False
+        import uuid as _uuid
+        marker = f"Brk-{_uuid.uuid4().hex[:12]}-Pw"
+        user = f"brukal-pw-{_uuid.uuid4().hex[:8]}"
+        try:
+            _d, reg = self.browser.run(WebAction(
+                "request", url=register_url, method="POST",
+                body=json.dumps({user_field: user, pass_field: marker,
+                                 email_field: f"{user}@example.invalid"}),
+                headers={"Content-Type": "application/json"}))
+        except Exception:
+            return False
+        if reg is None or reg.status >= 400:
+            return False
+        for url in list(probe_urls)[:4]:
+            try:
+                _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                continue
+            if r is None or not r.body or marker not in r.body:
+                continue
+            self.findings.add(Finding(
+                title="Passwords stored in recoverable form",
+                severity="high", category="api",
+                target=url, param=pass_field, confirmed=True,
+                evidence=(f"a password chosen by this test and submitted only to "
+                          f"{register_url} came back verbatim from {url}; a stored hash "
+                          f"cannot reproduce the original value, so credentials are held "
+                          f"in plaintext or reversible form"),
+                source=(f"POST {register_url} with a unique marker password, then "
+                        f"GET {url} and search for that exact value")))
+            return True
+        return False
+
+    def confirm_unthrottled_registration(self, register_url: str, attempts: int = 5,
+                                         user_field: str = "username",
+                                         pass_field: str = "password",
+                                         email_field: str = "email") -> bool:
+        """Account creation has no rate limit (OWASP API4).
+
+        Distinct from an unthrottled LOGIN: this is unlimited creation of new principals,
+        which is what turns a self-service signup into a resource-exhaustion and
+        privilege-farming primitive — especially on a target that also accepts a
+        privileged field at registration. Writes, so it is allow_intrusive-gated, and it
+        stops at the first refusal rather than pressing on."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive or not register_url:
+            return False
+        import uuid as _uuid
+        made = 0
+        for _ in range(max(2, attempts)):
+            user = f"brukal-rl-{_uuid.uuid4().hex[:8]}"
+            try:
+                _d, r = self.browser.run(WebAction(
+                    "request", url=register_url, method="POST",
+                    body=json.dumps({user_field: user, pass_field: "Brukal-Rl-1!",
+                                     email_field: f"{user}@example.invalid"}),
+                    headers={"Content-Type": "application/json"}))
+            except Exception:
+                return False
+            if r is None or r.status >= 400 or r.status in (429, 423):
+                return False               # it DOES push back — no finding
+            if re.search(r"(?i)too many|rate.?limit|captcha|throttl", (r.body or "")[:400]):
+                return False
+            made += 1
+        self.findings.add(Finding(
+            title="No rate limiting on account creation",
+            severity="medium", category="api",
+            target=register_url, param="", confirmed=True,
+            evidence=(f"{made} accounts were created in immediate succession with no "
+                      f"throttling, captcha or lockout at any point"),
+            source=f"POST {register_url} x{made} with distinct usernames"))
+        return True
+
+    def _absolute_route(self, route: str) -> str:
+        """A mined route as an absolute URL against the crawl seed."""
+        if not route:
+            return ""
+        if route.startswith("http"):
+            return route
+        from urllib.parse import urljoin as _urljoin
+        surface = getattr(self, "surface", None)
+        base = (getattr(surface, "seed", "") if surface else "") or f"http://{self.target}/"
+        return _urljoin(base, route)
+
+    def _spec_says_unprotected(self, url: str) -> str:
+        """Evidence sentence if the app's own spec declares this destructive route
+        without authentication, or "".
+
+        The comparison against OTHER operations is what makes it meaningful: a document
+        that declares security nowhere says nothing about this endpoint, while one that
+        protects two operations and leaves the database-reset open is making a
+        statement."""
+        surface = getattr(self, "surface", None)
+        if surface is None:
+            return ""
+        protected = {p for _m, p in (getattr(surface, "protected_routes", []) or [])}
+        if not protected:
+            return ""                      # no baseline: the spec protects nothing
+        from urllib.parse import urlsplit
+        path = urlsplit(url).path or url
+        routes = [r for r in (getattr(surface, "api_routes", []) or [])
+                  if r and (r == path or path.endswith(r))]
+        if not routes:
+            return ""                      # not a route the spec declares
+        if any(r in protected for r in routes):
+            return ""                      # the spec DOES protect it
+        return (f"the target's own OpenAPI document declares {path} while listing no "
+                f"security requirement for it, though it does declare one for "
+                f"{len(protected)} other operation(s) — the application states that this "
+                f"state-destroying endpoint needs no authentication")
 
     def confirm_debug_console(self, base_url: str) -> bool:
         """An INTERACTIVE debugger exposed to the network (Werkzeug/Flask debug mode).
@@ -3518,6 +3664,29 @@ class AssistSession:
                 #    READ another principal's object; this proves we can ACT on it. A
                 #    target can pass the read check and still be trivially takeoverable,
                 #    so the two are not substitutes.
+                # Credential handling and signup abuse — both need a self-service
+                # create, which mass_assignment_targets() already located.
+                if targets and self._confirm_budget > 0:
+                    reg_url, _login_u, _verify = targets
+                    self._covered("Credential storage",
+                                  note="planted password, looked for it coming back")
+                    exposures = [u for u in
+                                 [self._absolute_route(r) for r in
+                                  (getattr(self.surface, "api_routes", []) or [])]
+                                 if u and any(w in u.lower()
+                                              for w in ("debug", "user", "account"))][:4]
+                    try:
+                        if self.confirm_plaintext_password_storage(reg_url, exposures):
+                            confirmed += 1
+                    except Exception:
+                        pass
+                    self._covered("Signup abuse", note="repeated account creation")
+                    try:
+                        if self.confirm_unthrottled_registration(reg_url):
+                            confirmed += 1
+                    except Exception:
+                        pass
+
                 bfla = self.bfla_targets()
                 if bfla and self._confirm_budget > 0:
                     change_tpl, login_url, victim = bfla
