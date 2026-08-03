@@ -2557,11 +2557,35 @@ class AssistSession:
         )
         for payload, rx, label, sev in cases:
             body, _s, _h = self._probe(url, param, payload, method, extra)
-            if body and rx.search(body):
+            # An endpoint that ECHOES what it was given hands the marker straight back.
+            # `computeMetadata` is IN the GCP payload URL, so every form that redisplays
+            # a submitted value proved SSRF to Google metadata — a live DVNA run
+            # reported two CRITICALs against /app/useredit, on a container that cannot
+            # even resolve metadata.google.internal. The same echo defect was found and
+            # fixed once already in hypothesis.py; the rule never reached here.
+            #
+            # So the marker has to survive removal of everything we supplied. What is
+            # left is what the SERVER chose to say.
+            if body and rx.search(self._without_payload(body, payload)):
                 self._record_confirmed(url, label, sev, param,
                                        f"payload {payload!r} fetched by the server")
                 return True
         return False
+
+    @staticmethod
+    def _without_payload(body: str, payload: str) -> str:
+        """The response with our own submitted value removed, in the encodings a server
+        may echo it back in. A marker that only appears inside the payload proves the
+        application can repeat itself, not that it made a request."""
+        from urllib.parse import quote as _q
+        out = body or ""
+        forms = {payload, _q(payload, safe=""), _q(payload, safe=":/"),
+                 (payload or "").replace("&", "&amp;")}
+        # Fragments matter as much as the whole: a template may render only the path.
+        for piece in list(forms) + [p for p in (payload or "").split("/") if len(p) >= 6]:
+            if piece:
+                out = out.replace(piece, "")
+        return out
 
     def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Heuristic IDOR check: a numeric object id, when changed, returns a DIFFERENT
@@ -4042,6 +4066,44 @@ class AssistSession:
                 except Exception:
                     pass
 
+            # 2d) AUTHORIZATION on a cookie-session application. Every authz check
+            #     above needs a JWT and a templated route, so on a server-rendered app
+            #     with a form login the whole family silently does not run — twelve
+            #     classes probed on DVNA and not one of them an authorization class,
+            #     while a competitor found six there. These two need neither a token
+            #     nor a path parameter.
+            #     Placed HERE, among the cheap checks, for the reason this file already
+            #     gives: a budget or a rate wall must cost the expensive sweeps, not the
+            #     few-request checks that carry the most signal. Sitting after the
+            #     sweeps they never ran at all — the rate limit tripped during probing
+            #     and both loops broke on their first iteration, so a CRITICAL class
+            #     left no trace anywhere except an absent coverage row.
+            for _url in self.privileged_route_targets():
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                self._confirm_budget -= 1
+                self._covered("Function-level authz (BFLA)",
+                              note="anonymous vs a freshly self-registered account")
+                try:
+                    if self.confirm_privileged_route_via_signup(_url):
+                        confirmed += 1
+                        break          # one proof of this class is enough
+                except Exception:
+                    pass
+
+            for _rurl, _idp, _tokp in self.reset_token_targets():
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                self._covered("Credential recovery",
+                              note="token recomputed from the username")
+                try:
+                    if self.confirm_predictable_reset_token(
+                            _rurl, _idp, _tokp, self.identity or ""):
+                        confirmed += 1
+                        break
+                except Exception:
+                    pass
+
             # 3) GraphQL — one introspection query per candidate. A schema is the map
             #    of every operation the API exposes, so it is worth asking early.
             if not self._graphql_checked:
@@ -4254,38 +4316,6 @@ class AssistSession:
                         if self.confirm_bfla_password_takeover(
                                 change_tpl, login_url, victim, self.last_jwt):
                             confirmed += 1
-                    except Exception:
-                        pass
-
-                # 8a-bis) The same two questions asked of a COOKIE-SESSION application.
-                #     Everything above needs a JWT and a templated route, so on a
-                #     server-rendered app with a form login the whole authorization
-                #     family silently does not run — twelve classes probed on DVNA and
-                #     not one of them an authorization class, while a competitor found
-                #     six there. These two need neither a token nor a path parameter.
-                for _url in self.privileged_route_targets():
-                    if self._confirm_budget <= 0 or self._rate_limited:
-                        break
-                    self._confirm_budget -= 1
-                    self._covered("Function-level authz (BFLA)",
-                                  note="anonymous vs a freshly self-registered account")
-                    try:
-                        if self.confirm_privileged_route_via_signup(_url):
-                            confirmed += 1
-                            break          # one proof of this class is enough
-                    except Exception:
-                        pass
-
-                for _rurl, _idp, _tokp in self.reset_token_targets():
-                    if self._confirm_budget <= 0 or self._rate_limited:
-                        break
-                    self._covered("Credential recovery",
-                                  note="token recomputed from the username")
-                    try:
-                        if self.confirm_predictable_reset_token(
-                                _rurl, _idp, _tokp, self.identity or ""):
-                            confirmed += 1
-                            break
                     except Exception:
                         pass
 
