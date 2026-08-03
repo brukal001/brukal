@@ -151,3 +151,43 @@ def test_prose_brackets_do_not_become_links():
     body = "<p>an array[0](not a link) and [see below](#anchor) and [x](mailto:a@b.c)</p>"
     links, _f, _p = webmap.extract("http://127.0.0.1:5000/", body)
     assert not links, links
+
+
+# --- the confirmation budget must not be decided by loop order ----------------------
+class _ManyEndpoints:
+    """Fifteen endpoints; only the LAST one is injectable. Depth-first probing spends
+    its whole budget on the first few and never reaches it — which is what happened on
+    DVNA: two runs against an identical surface produced two criticals and none,
+    differing only in which loop got there first."""
+
+    def __init__(self):
+        self.seen = []
+
+    def run(self, action):
+        self.seen.append(action.url)
+        body = "<html>ok</html>"
+        if "/app/ping" in action.url and ";id" in (action.body or "") + action.url:
+            body = "uid=0(root) gid=0(root) groups=0(root)"
+        return WebResult(status=200, url=action.url,
+                         headers={"content-type": "text/html"}, body=body)
+
+
+def test_the_highest_severity_classes_reach_every_endpoint():
+    """Command injection and SQL injection are tried against ALL collected endpoints
+    before any endpoint gets the exhaustive treatment. Without that, an endpoint late in
+    the list is never touched by ANY class, and the coverage table's promise that a
+    listed class was 'exercised' becomes false for it."""
+    from brukal import webmap
+    cage = _ManyEndpoints()
+    s = _sess(cage)
+    s.surface = webmap.AttackSurface(seed="http://127.0.0.1:5000/")
+    for i in range(14):
+        s.surface.params[f"http://127.0.0.1:5000/p{i}"] = {"q"}
+    s.surface.forms.append(webmap.Form(
+        action="http://127.0.0.1:5000/app/ping", method="POST",
+        inputs=(("address", "text"),)))
+    s.confirm_surface(max_params=40)
+    assert any("/app/ping" in u for u in cage.seen), \
+        "the last endpoint was never probed at all"
+
+

@@ -126,7 +126,8 @@ def _with_signup(s):
     s.surface = webmap.AttackSurface(seed=ROOT + "/")
     s.surface.forms.append(webmap.Form(
         action=f"{ROOT}/register", method="POST",
-        inputs=["name", "username", "email", "password", "cpassword"]))
+        inputs=(("name", "text"), ("username", "text"), ("email", "email"),
+                ("password", "password"), ("cpassword", "password"))))
     s.surface.add_routes(["/app/admin/usersapi"])
     return s
 

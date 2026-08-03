@@ -3453,12 +3453,16 @@ class AssistSession:
         tag = _uuid.uuid4().hex[:10]
         user, password = f"brk{tag}", "Brukal-Signup-1!"
         body = {}
-        for field in (getattr(form, "inputs", []) or []):
+        for field, ftype in (getattr(form, "inputs", []) or []):
+            if (ftype or "").lower() == "file":
+                continue
             role = ""
             for name, rx in self._FIELD_ROLES:
                 if rx.search(field):
                     role = name
                     break
+            if not role and (ftype or "").lower() == "password":
+                role = "password"          # the type says so even when the name does not
             body[field] = {"password": password, "confirm": password,
                            "email": f"{user}@example.invalid", "username": user,
                            "name": f"Brukal {tag}"}.get(role, user)
@@ -3893,10 +3897,35 @@ class AssistSession:
         Returns how many were confirmed."""
         if self.browser is None or self.surface is None:
             return 0
-        checks = (self.confirm_sqli, self.confirm_sqli_error, self.confirm_cmdi,
-                  self.confirm_lfi, self.confirm_ssti, self.confirm_xss,
-                  self.confirm_ssrf, self.confirm_open_redirect, self.confirm_idor)
-        self._confirm_budget = 120        # cap total governed requests for the reflex
+        # Breadth before depth. Nine classes on ONE endpoint costs about twenty-five
+        # requests, so a flat budget bought four endpoints out of fifteen and the other
+        # eleven were never touched by ANY class — which is not "probed and clean", the
+        # thing the coverage table promises. Worse, WHICH four depended purely on the
+        # order the loops happen to be written in: two runs against an identical DVNA
+        # surface produced two criticals and none, the second having spent its budget on
+        # an IDOR lead before it ever reached /app/ping.
+        #
+        # So the two classes that carry remote code execution and database compromise
+        # get first claim on EVERY endpoint, and the rest share what is left.
+        tier1 = (self.confirm_sqli, self.confirm_sqli_error, self.confirm_cmdi)
+        tier2 = (self.confirm_lfi, self.confirm_ssti, self.confirm_xss,
+                 self.confirm_ssrf, self.confirm_open_redirect, self.confirm_idor)
+        checks = tier1 + tier2
+        # Sized from what a small application actually needs rather than from a round
+        # number: DVNA presents about fifteen probeable endpoints, the top tier costs
+        # roughly fourteen requests each, and 120 bought four of them. A budget below
+        # what one modest target requires does not bound risk, it just decides which
+        # findings are missed — and the target's own health monitor, not this number,
+        # is what stops a run that is doing harm.
+        self._confirm_budget = 400        # cap total governed requests for the reflex
+        # Never spend the last of it on probing: the authorization, credential-recovery
+        # and enumeration checks all run AFTER the sweeps and were reached only when a
+        # target happened to be small. A class that never ran is silence, and this
+        # report is not allowed to sell silence as a clean result.
+        probe_floor = 50
+        queue: list = []                  # (target, param, method, extra), probed later
+        queued: set = set()
+        settled: set = set()              # params a tier-1 class already confirmed
         confirmed = tried = 0
         probed: set[str] = set()          # endpoints already covered by passes 1 and 2
         confirmed_bola = [False]          # one object-authz proof per run is enough
@@ -3904,8 +3933,18 @@ class AssistSession:
 
         from . import aiscan
 
-        def probe(target, param, method="GET", extra=None):
+        def enqueue(target, param, method="GET", extra=None):
+            """Record an endpoint worth probing. Collecting first and probing after is
+            what lets the highest-severity classes reach every endpoint before any
+            endpoint gets the exhaustive treatment."""
+            key = (target, param, method)
+            if key not in queued:
+                queued.add(key)
+                queue.append((target, param, method, extra))
+
+        def probe(target, param, method="GET", extra=None, run_checks=None):
             nonlocal confirmed
+            run_checks = run_checks or checks
             probed.add(target)
             # An LLM-backed endpoint is a different attack surface: try prompt injection
             # first (the web classes rarely fire on a chat API, and the canary proof is
@@ -3919,14 +3958,17 @@ class AssistSession:
                             return
                     except Exception:
                         pass
-            self._covered("SQL injection"); self._covered("Command injection")
-            self._covered("Path traversal / LFI"); self._covered("Template injection")
-            self._covered("Cross-site scripting"); self._covered("SSRF")
-            self._covered("Open redirect")
-            for check in checks:
+            if run_checks is tier1:
+                self._covered("SQL injection"); self._covered("Command injection")
+            else:
+                self._covered("Path traversal / LFI"); self._covered("Template injection")
+                self._covered("Cross-site scripting"); self._covered("SSRF")
+                self._covered("Open redirect")
+            for check in run_checks:
                 try:
                     if check(target, param, method=method, extra=extra):
                         confirmed += 1
+                        settled.add((target, param, method))
                         return               # one confirmed class per param is enough
                 except Exception:
                     pass
@@ -4054,10 +4096,10 @@ class AssistSession:
             # 3) GET query parameters
             for base, names in list(self.surface.params.items()):
                 for p in list(names):
-                    if tried >= max_params or self._confirm_budget <= 0:
-                        return confirmed
+                    if tried >= max_params:
+                        break
                     tried += 1
-                    probe(base, p)
+                    enqueue(base, p)
             # 4) FORM fields — test each user-controllable input with the form's method,
             #    filling the other fields so the request is well-formed (POST-based SQLi/
             #    cmdi/XSS the query-only pass misses).
@@ -4067,11 +4109,11 @@ class AssistSession:
                 fields = [(n, t) for n, t in getattr(form, "inputs", ())]
                 testable = [n for n, t in fields if t.lower() not in ("submit", "hidden", "file")]
                 for field in testable:
-                    if tried >= max_params or self._confirm_budget <= 0:
-                        return confirmed
+                    if tried >= max_params:
+                        break
                     tried += 1
                     others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
-                    probe(action, field, method=method, extra=others)
+                    enqueue(action, field, method=method, extra=others)
             # 5) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
             #    concentrate here, and nothing above reaches it: there is no query string
@@ -4089,7 +4131,7 @@ class AssistSession:
                 if url in probed:
                     continue
                 probed.add(url)
-                probe(url, m.group(0), method="PATH")
+                enqueue(url, m.group(0), method="PATH")
                 # Object authorization: the parent collection often lists objects next to
                 # their owners, which is everything a cross-account read needs.
                 token = (getattr(self.browser, "auth_header", "") or "").replace(
@@ -4146,10 +4188,20 @@ class AssistSession:
                 except Exception:
                     continue
                 for name in names[:2]:
-                    if self._confirm_budget <= 0:
-                        break
                     probed.add(url)
-                    probe(url, name, method="GET")
+                    enqueue(url, name, method="GET")
+
+            # 6c) PROBE what the sweeps collected: the two highest-severity classes
+            #     against every endpoint first, then the rest with whatever survives.
+            #     Both loops stop at `probe_floor` so the authorization and enumeration
+            #     checks below are always reached.
+            for _tier in (tier1, tier2):
+                for _t, _p, _m, _x in queue:
+                    if self._confirm_budget <= probe_floor or self._rate_limited:
+                        break
+                    if (_t, _p, _m) in settled:
+                        continue
+                    probe(_t, _p, method=_m, extra=_x, run_checks=_tier)
 
             # 7) MASS ASSIGNMENT — last, because it is the only proof that WRITES to the
             #    target, and so the only one an operator must opt into (--full-send sets
