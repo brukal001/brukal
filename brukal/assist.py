@@ -22,6 +22,7 @@ import random
 import re
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1507,6 +1508,13 @@ class AssistSession:
                                        (res2.body or "")[:2000], re.I))
             ok = bool((redirected_away or no_login_form) and not failed)
         self.authenticated = ok
+        if ok and not self.identity:
+            # Who we are is set in the token branch above and was set NOWHERE else, so a
+            # cookie-session login left `identity` empty — and every authz check that
+            # asks "whose objects are ours" reads it. Checks that need a username we
+            # control simply never ran on a form-login app.
+            self.identity = username
+            self._login_password = password
         jar = len(getattr(self.browser, "_cookies", {}) or {})
         how = "bearer token" if token else f"{jar} cookie(s)"
         self.notes.append(
@@ -3366,6 +3374,277 @@ class AssistSession:
             source=f"GET {url}"))
         return True
 
+    # -- authorization on a COOKIE-SESSION application ------------------------ #
+    #
+    # Brukal's whole authorization family — BOLA, BFLA, mass assignment — was built
+    # against a JSON API with a JWT and templated routes, and it is structurally blind
+    # to anything else: `bfla_targets` returns None the moment `self.last_jwt` is empty,
+    # and the BOLA sweep needs a `{param}` in a mined route. A cold run against DVNA, a
+    # classic server-rendered Express app with a cookie session and form POSTs, probed
+    # twelve classes and NONE of them was an authorization class. A competing tool found
+    # six there, two of them critical, and both of the ones checked by hand were real.
+    #
+    # That is not a missing detector, it is a missing SHAPE. Most of the web authenticates
+    # with a cookie and submits a form.
+
+    @contextmanager
+    def _separate_identity(self):
+        """Make requests as SOMEBODY ELSE without destroying our own session.
+
+        Token auth can hold two principals at once — you simply send a different
+        Authorization header — which is why nothing needed this until now. A cookie jar
+        cannot: registering or logging in as a second user absorbs their Set-Cookie over
+        ours, and every later probe in the run silently becomes that other user. Any
+        cross-account test on a cookie-session app needs this or it corrupts the session
+        it is trying to reason about."""
+        browser = self.browser
+        saved_cookies = dict(getattr(browser, "_cookies", {}) or {})
+        saved_auth = getattr(browser, "auth_header", "")
+        try:
+            browser._cookies = {}
+            browser.auth_header = ""
+            yield browser
+        finally:
+            browser._cookies = saved_cookies
+            browser.auth_header = saved_auth
+
+    # Field names on a signup form, by role. Ordered: the first match wins, so
+    # `cpassword`/`confirm` must be tested before the bare password pattern or a
+    # confirmation field gets treated as the password itself.
+    _FIELD_ROLES = (
+        ("confirm", re.compile(r"(?:c|confirm|repeat|verify|re)[_-]?pass|password[_-]?(?:2|confirm|again)", re.I)),
+        ("password", re.compile(r"pass(?:word|wd)?$|^pwd$", re.I)),
+        ("email", re.compile(r"e-?mail", re.I)),
+        ("username", re.compile(r"^(?:user(?:name)?|login|handle|nick|account)$", re.I)),
+        ("name", re.compile(r"^(?:name|full[_-]?name|display[_-]?name|first)", re.I)),
+    )
+
+    def _signup_form(self):
+        """The application's own registration form, or None.
+
+        Read from the crawled surface rather than assumed. The existing signup helper
+        posts a JSON body with three guessed field names; DVNA's form wants five
+        url-encoded ones including a password confirmation, and rejects anything else.
+        An app that tells you its form fields should not be guessed at."""
+        surface = getattr(self, "surface", None)
+        for form in (getattr(surface, "forms", []) or []):
+            action = (getattr(form, "action", "") or "").lower()
+            method = (getattr(form, "method", "") or "").upper()
+            if method == "POST" and re.search(r"regist|signup|sign-up|create-?account", action):
+                return form
+        return None
+
+    def _register_account(self):
+        """Create a fresh account through the app's OWN signup form.
+
+        Returns (username, password) or None. This is what makes a privilege claim
+        sound: an account Brukal created seconds ago through the public form is, by
+        construction, whatever the application grants a stranger who signs up — so
+        anything privileged it can reach is reachable by any stranger. Asserting the
+        same thing about operator-supplied credentials would be worthless, because
+        those may well belong to an administrator."""
+        from urllib.parse import urlencode
+
+        from .web import WebAction
+        form = self._signup_form()
+        if form is None or self.browser is None or not self.allow_intrusive:
+            return None
+        import uuid as _uuid
+        tag = _uuid.uuid4().hex[:10]
+        user, password = f"brk{tag}", "Brukal-Signup-1!"
+        body = {}
+        for field in (getattr(form, "inputs", []) or []):
+            role = ""
+            for name, rx in self._FIELD_ROLES:
+                if rx.search(field):
+                    role = name
+                    break
+            body[field] = {"password": password, "confirm": password,
+                           "email": f"{user}@example.invalid", "username": user,
+                           "name": f"Brukal {tag}"}.get(role, user)
+        if not any(v == password for v in body.values()):
+            return None                      # no password field: not a signup we understand
+        try:
+            _d, r = self.browser.run(WebAction(
+                "request", url=form.action, method="POST", body=urlencode(body),
+                headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        except Exception:
+            return None
+        if r is None or (r.status or 0) >= 400:
+            return None
+        # A signup that failed validation re-renders the form; one that worked redirects
+        # or stops showing it. Same reasoning as login(), and for the same reason: the
+        # status code alone does not say an account exists.
+        if r.status == 200 and re.search(r"type=[\"']?password", (r.body or ""), re.I):
+            return None
+        return user, password
+
+    def confirm_predictable_reset_token(self, reset_url: str, id_param: str,
+                                        token_param: str, known_user: str) -> bool:
+        """A password-reset token DERIVED from the username (OWASP API2 / A07).
+
+        Brukal already had this one and did not look: its own engagement log recorded
+        `credential — * [Sample reset link](/resetpw?login=user&token=ee11cbb1…)`, and
+        ee11cbb19052e40b07aac0ca060c23ee is md5("user"). A competing tool tested it and
+        reported zero-interaction takeover of any known account.
+
+        Nothing here needs an observed token. A token that is a digest of the username
+        can simply be COMPUTED for an account we already control, and the differential
+        does the rest: the derived value is accepted where a random one of the same
+        shape is refused. Read-only, and aimed at our own account — the impact sentence
+        generalises to other users, the request never touches one."""
+        import hashlib
+
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not (reset_url and known_user):
+            return False
+        digests = {"md5": hashlib.md5, "sha1": hashlib.sha1, "sha256": hashlib.sha256}
+        control_token = "0" * 32            # right shape, cannot be anybody's digest
+
+        def fetch(token: str):
+            url = self._set_param(self._set_param(reset_url, id_param, known_user),
+                                  token_param, token)
+            try:
+                _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                return None
+            return r
+
+        control = fetch(control_token)
+        if control is None or control.status is None:
+            return False
+        for name, fn in digests.items():
+            if getattr(self, "_confirm_budget", 1) <= 0:
+                return False
+            if getattr(self, "_confirm_budget", None) is not None:
+                self._confirm_budget -= 1
+            derived = fn(known_user.encode("utf-8", "replace")).hexdigest()
+            got = fetch(derived)
+            if got is None or got.status is None:
+                continue
+            # The comparison IS the proof. A page that answers everything identically
+            # proves nothing, and a token guessed right by accident is not a 1-in-2^128
+            # event worth reporting on one sample.
+            if got.status == control.status:
+                continue
+            self.findings.add(Finding(
+                title="Password reset token is derived from the username",
+                severity="critical", category="auth",
+                target=reset_url, param=token_param, confirmed=True,
+                evidence=(f"{name}({known_user}) = {derived} was accepted "
+                          f"(HTTP {got.status}) while a random token of the same shape "
+                          f"was refused (HTTP {control.status}) — the token carries no "
+                          f"secret, so it can be computed for any account whose "
+                          f"username is known"),
+                source=(f"GET {reset_url}?{id_param}={known_user}&{token_param}="
+                        f"{name}({known_user}) vs the same URL with {control_token}")))
+            self.note(f"[confirm] reset token is {name}(username) on {reset_url}")
+            return True
+        return False
+
+    def reset_token_targets(self):
+        """(reset_url, id_param, token_param) for every crawled endpoint that takes an
+        identity AND a token. Read from the surface's own parameter map, so it finds the
+        endpoint whatever the application chose to call it."""
+        surface = getattr(self, "surface", None)
+        out = []
+        id_rx = re.compile(r"^(?:login|user(?:name)?|email|account|id)$", re.I)
+        token_rx = re.compile(r"tok(?:en)?|key|code|nonce|hash|sig", re.I)
+        for base, params in sorted((getattr(surface, "params", {}) or {}).items()):
+            names = list(params or [])
+            ident = next((p for p in names if id_rx.search(p)), "")
+            token = next((p for p in names if token_rx.search(p)), "")
+            if ident and token:
+                out.append((base, ident, token))
+        return out
+
+    def confirm_privileged_route_via_signup(self, url: str) -> bool:
+        """An administrative endpoint reachable by an account anyone can create
+        (OWASP API5, broken function-level authorization).
+
+        Three observations, and all three are needed. ANONYMOUS must be refused — if a
+        stranger already gets in, this is unauthenticated exposure and a different
+        finding that Brukal already makes. A FRESH SELF-REGISTERED account must be
+        allowed — an account created through the public form seconds ago holds exactly
+        the privilege the application grants strangers. And the body must actually carry
+        something, because a 200 rendering an empty shell or a redirect chase is not
+        disclosure.
+
+        Using a self-registered account rather than the operator's is the whole
+        soundness argument: operator credentials may belong to an administrator, in
+        which case reaching an admin page is correct behaviour and reporting it is a
+        false positive."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not url:
+            return False
+        with self._separate_identity():
+            try:
+                _d, anon = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                return False
+            if anon is None or anon.status is None:
+                return False
+            if anon.status == 200 and len(anon.body or "") > 200:
+                return False               # a stranger already reads it: not THIS flaw
+            made = self._register_account()
+            if not made:
+                return False
+            user, password = made
+            # Plenty of signups log you straight in. When registration already handed
+            # back a session there is nothing to authenticate, and insisting on a login
+            # step would fail the check on exactly the apps that are easiest to abuse.
+            if not (getattr(self.browser, "_cookies", {}) or {}):
+                login_url = self._login_endpoint()
+                if not login_url or not self.login(login_url, user, password):
+                    return False
+            try:
+                _d2, mine = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                return False
+        if mine is None or mine.status != 200 or len(mine.body or "") <= 200:
+            return False
+        self.findings.add(Finding(
+            title="Administrative endpoint reachable by a self-registered account",
+            severity="critical", category="api",
+            target=url, param="", confirmed=True,
+            evidence=(f"anonymous was refused (HTTP {anon.status}) while an account "
+                      f"created seconds earlier through the public signup form read "
+                      f"{len(mine.body or '')} bytes from it (HTTP 200) — the only "
+                      f"access check on this endpoint is that SOMEBODY is logged in, "
+                      f"not that they are entitled to it"),
+            source=(f"GET {url} anonymously, then register {user} via the app's own "
+                    f"signup form, authenticate, and GET {url} again")))
+        self.note(f"[confirm] self-registered account reaches {url}")
+        return True
+
+    _PRIVILEGED_RE = re.compile(
+        r"/(?:admin|administrator|manage(?:ment)?|console|staff|internal|backoffice|"
+        r"back-office|superuser|sysadmin|moderat|owner)(?:/|$|\?)", re.I)
+
+    def privileged_route_targets(self, limit: int = 4):
+        """Absolute URLs from the crawl that NAME themselves as administrative.
+
+        Deliberately a name heuristic and deliberately harmless: the worst a wrong guess
+        costs is a differential that declines to fire. The proof is the three-way
+        comparison in the confirmer, never the fact that a path contains 'admin'."""
+        surface = getattr(self, "surface", None)
+        seen, out = set(), []
+        candidates = list(getattr(surface, "api_routes", []) or [])
+        candidates += [p for p in (getattr(surface, "pages", {}) or {})]
+        for route in candidates:
+            if not route or not self._PRIVILEGED_RE.search(route):
+                continue
+            url = self._absolute_route(route)
+            if not url or url in seen or self._is_irreversible_path(url):
+                continue
+            seen.add(url)
+            out.append(url)
+            if len(out) >= limit:
+                break
+        return out
+
     def confirm_user_enumeration(self, login_url: str, known_user: str,
                                  user_field: str = "username",
                                  pass_field: str = "password") -> bool:
@@ -3923,6 +4202,38 @@ class AssistSession:
                         if self.confirm_bfla_password_takeover(
                                 change_tpl, login_url, victim, self.last_jwt):
                             confirmed += 1
+                    except Exception:
+                        pass
+
+                # 8a-bis) The same two questions asked of a COOKIE-SESSION application.
+                #     Everything above needs a JWT and a templated route, so on a
+                #     server-rendered app with a form login the whole authorization
+                #     family silently does not run — twelve classes probed on DVNA and
+                #     not one of them an authorization class, while a competitor found
+                #     six there. These two need neither a token nor a path parameter.
+                for _url in self.privileged_route_targets():
+                    if self._confirm_budget <= 0 or self._rate_limited:
+                        break
+                    self._confirm_budget -= 1
+                    self._covered("Function-level authz (BFLA)",
+                                  note="anonymous vs a freshly self-registered account")
+                    try:
+                        if self.confirm_privileged_route_via_signup(_url):
+                            confirmed += 1
+                            break          # one proof of this class is enough
+                    except Exception:
+                        pass
+
+                for _rurl, _idp, _tokp in self.reset_token_targets():
+                    if self._confirm_budget <= 0 or self._rate_limited:
+                        break
+                    self._covered("Credential recovery",
+                                  note="token recomputed from the username")
+                    try:
+                        if self.confirm_predictable_reset_token(
+                                _rurl, _idp, _tokp, self.identity or ""):
+                            confirmed += 1
+                            break
                     except Exception:
                         pass
 
