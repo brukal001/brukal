@@ -128,14 +128,38 @@ def test_loop_does_not_solve_on_a_prose_claim():
 def test_web_uid_string_is_a_candidate_not_a_confirmed_foothold():
     # THE false positive: a page whose BODY contains `id`-style output. The target
     # controls that text, so it is a CANDIDATE lead (confirmed=False), never proof.
-    v = Verifier()
+    v = Verifier(target="10.10.10.5")
     web = SimpleNamespace(body="uid=0(root) gid=0(root) groups=0(root)", stdout=None)
     got = v.check("WEB: render http://10.10.10.5/", web, source="web")
     assert got is not None and got.kind == "foothold" and got.confirmed is False
-    assert got.confirm_command == "id"                 # run it yourself to believe it
-    # the same evidence in real SHELL output IS a confirmed foothold
-    sh = v.check("id", ExecResult("id", 0, "uid=0(root) gid=0(root)", ""), source="shell")
+    assert "10.10.10.5" in got.confirm_command         # run it yourself to believe it
+    # the same evidence in SHELL output of a command that REACHED the target is a
+    # confirmed foothold
+    sh = v.check("curl http://10.10.10.5/ping -d 'a=1;id'",
+                 ExecResult("x", 0, "uid=0(root) gid=0(root)", ""), source="shell")
     assert sh.confirmed is True
+
+
+def test_a_cage_local_id_is_not_a_foothold_on_the_target():
+    """The bug this rule exists for. Every command Brukal runs is a shell command in its
+    own cage, so `id` at the cage prompt produces textbook foothold evidence about a
+    machine that was never attacked. On a live DVNA run it returned `uid=1000(brukalop)`
+    — the cage's own account — and was reported as a CRITICAL foothold on the target,
+    beside two real criticals whose credibility it borrowed."""
+    v = Verifier(target="172.20.0.10")
+    got = v.check("id", ExecResult("id", 0,
+                                   "uid=1000(brukalop) gid=1000(brukalop)", ""),
+                  source="shell")
+    assert got is not None and got.confirmed is False, \
+        "the cage's own account was reported as a foothold on the target"
+
+
+def test_without_a_target_nothing_can_be_attributed():
+    """Fail-closed: with no target configured there is nothing to attribute output to,
+    so a foothold cannot be confirmed rather than being confirmed by default."""
+    v = Verifier()
+    got = v.check("id", ExecResult("id", 0, "uid=0(root) gid=0(root)", ""), source="shell")
+    assert got is not None and got.confirmed is False
 
 
 def test_web_md5_alone_on_a_line_is_a_candidate_not_a_confirmed_flag():
@@ -157,14 +181,16 @@ def test_loop_never_solves_or_promotes_on_web_output():
         def record_candidate_lead(self, v): self.candidates.append(v)
         def note(self, text): self.notes.append(text)
 
-    loop = GroundedLoop(StubSession(), verifier=Verifier())
+    loop = GroundedLoop(StubSession(), verifier=Verifier(target="10.10.10.5"))
     web = SimpleNamespace(body="uid=0(root) gid=0(root)", stdout=None)
     # web output NEVER solves the loop or promotes a trusted lesson — only records a lead
     assert loop._check_solved("WEB: render http://10.10.10.5/", web, "web") is None
     assert loop.session.candidates and not loop.session.verified
     assert loop.session.notes and "do NOT treat it as proof" in loop.session.notes[0]
-    # a genuine SHELL-confirmed foothold DOES solve + promote
-    res = loop._check_solved("id", ExecResult("id", 0, "uid=0(root) gid=0(root)", ""), "shell")
+    # a genuine SHELL-confirmed foothold — output of a command that REACHED the
+    # target — DOES solve + promote
+    res = loop._check_solved("ssh op@10.10.10.5 id",
+                             ExecResult("x", 0, "uid=0(root) gid=0(root)", ""), "shell")
     assert res is not None and res.stop_reason == "solved" and loop.session.verified
 
 

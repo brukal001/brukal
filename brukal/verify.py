@@ -79,13 +79,37 @@ class Verifier:
         finding, and NEVER promotes a trusted lesson. To believe it, run a fresh gated
         shell command yourself (e.g. ``id``) — see ``confirm_command``.
 
-    A foothold means code execution; only real shell output can ever prove that.
+    A foothold means code execution ON THE TARGET, and "shell output" alone does not
+    establish that. Every command Brukal runs is a shell command in its own cage — the
+    cage IS the attacker box — so `id` typed at the cage prompt produces textbook
+    foothold evidence about a machine that was never attacked. It did exactly that on a
+    live DVNA run: `id` returned `uid=1000(brukalop)`, the cage's own account, and was
+    reported as CRITICAL foothold on the target, sitting beside two real criticals and
+    borrowing their credibility.
+
+    So a foothold is confirmed only when the output can be ATTRIBUTED to the target:
+    the command must name the target host, which a command reaching it necessarily
+    does (`curl http://172.20.0.10:9090/app/ping -d 'address=127.0.0.1;id'`), while a
+    bare cage-local `id` necessarily does not. When attribution is impossible the match
+    is a candidate, never a confirmation — invariant 2, fail-closed, applied to a claim
+    rather than to an action.
     """
 
-    def __init__(self, condition: SuccessCondition | None = None):
+    def __init__(self, condition: SuccessCondition | None = None, target: str = ""):
         self.condition = condition or SuccessCondition.from_env()
         self._flag_re = re.compile(self.condition.flag_pattern)
         self._foothold_res = [re.compile(p) for p in self.condition.foothold_patterns]
+        self.target = (target or "").strip()
+
+    def _on_target(self, command: str) -> bool:
+        """Whether this command's output may be attributed to the target.
+
+        Deterministic and textual, like the gate: re-read the command rather than
+        trusting a caller's claim about where it ran. With no target configured there is
+        nothing to attribute to, and the honest answer is no."""
+        if not self.target:
+            return False
+        return self.target.lower() in (command or "").lower()
 
     def check(self, command: str, result, source: str = "shell") -> Verified | None:
         """A match is drawn ONLY from real output (result is not None). Prose never
@@ -109,10 +133,15 @@ class Verifier:
         for rx in self._foothold_res:
             fm = rx.search(text)
             if fm:
-                # Foothold = code execution. Only real SHELL output can prove it; a web
-                # page containing "uid=0(root)" is just target-controlled text. Return a
-                # candidate from web with a gated command that WOULD confirm it.
+                # Foothold = code execution ON THE TARGET. Shell output is necessary and
+                # not sufficient: the cage is the attacker box, so a cage-local `id`
+                # proves only that Brukal can run `id` on itself. A web page containing
+                # "uid=0(root)" is likewise just target-controlled text.
+                attributable = shell and self._on_target(command)
                 return Verified("foothold", fm.group(0).strip(), command, source,
-                                confirmed=shell,
-                                confirm_command="" if shell else "id")
+                                confirmed=attributable,
+                                confirm_command="" if attributable else
+                                (f"run a command that reaches {self.target} and returns "
+                                 f"its output" if self.target else
+                                 "prove execution on the target, not in the cage"))
         return None

@@ -5797,7 +5797,10 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # specialist generates each command, through the same one door with per-agent
     # trust. Single-agent: the classic single-strategist loop.
     loop = GroundedLoop(session, max_steps=max_steps, observer=observer,
-                        verifier=Verifier(),      # confirm 'solved' from real output
+                        # The target is handed to the verifier so a foothold claim can
+                        # be ATTRIBUTED: cage-local output proves nothing about the
+                        # target, and without the target there is nothing to attribute to.
+                        verifier=Verifier(target=getattr(session, "target", "")),
                         agents=getattr(session, "agents", None) if multi else None,
                         trust=getattr(session, "trust", None) if multi else None,
                         kill=kill, budget=budget, on_checkpoint=_save_checkpoint)

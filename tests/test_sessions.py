@@ -160,17 +160,28 @@ def _session(responses, tmp, factory=None):
     return sess
 
 
-def test_loop_confirms_foothold_from_session_shell_output():
+def test_a_cage_session_does_not_confirm_a_foothold_on_the_target():
+    """A live SESSION is a persistent `docker exec bash` in Brukal's OWN cage — the
+    factory builds `DockerSession(container=kali.container, ...)` and `target` is only a
+    label. So `SESSION: id` proves Brukal can run `id` on itself, and it must not solve.
+
+    On a live DVNA run this returned `uid=1000(brukalop)`, the cage's own account, and
+    was reported as a CRITICAL foothold on the target beside two real criticals.
+
+    The cost of this rule is a false NEGATIVE: commands typed into a genuine reverse
+    shell also fail to name the target, so they are recorded as candidates rather than
+    confirmations. That is the right way round — a missed solve keeps the evidence in
+    front of a human, an invented one destroys the confirmed/candidate distinction the
+    whole report rests on."""
     tmp = tempfile.mkdtemp()
     sess = _session([
         "1. [exploitation] get a shell and prove code execution",
         "PHASE: exploitation\nGOAL: prove RCE\nREASONING: we have a shell.\nSESSION: id",
     ], tmp, factory=lambda t: _FootholdSession(t))
     sess.make_plan()
-    result = GroundedLoop(sess, verifier=Verifier()).run()
+    result = GroundedLoop(sess, verifier=Verifier(target=IN_SCOPE)).run()
 
-    assert result.stop_reason == "solved" and result.solved is True
-    assert "foothold" in result.stop_detail
+    assert result.solved is not True, "the cage's own shell was sold as a target foothold"
     # it really opened and used a live session (state on the manager)
     assert sess.sessions is not None and sess.sessions.states()
     assert any("id" in cmd for cmd, _v, _rc in sess.sessions.states()[0].transcript)

@@ -53,9 +53,12 @@ class _CredKali(FakeKali):
 
 
 class _FootholdSession(FakeSession):
+    """Answers any command ENDING in `id` with root output — so a bare cage-local `id`
+    and one reaching the target over ssh are indistinguishable in their output, which is
+    the whole point: only the command text can attribute them."""
     def send(self, line: str) -> ExecResult:
         self.sent.append(line)
-        if line.strip() == "id":
+        if line.strip().endswith("id"):
             return ExecResult(line, 0, "uid=0(root) gid=0(root)", "")
         return super().send(line)
 
@@ -95,9 +98,13 @@ def test_scenario_benchmark_is_honest_and_scope_clean():
 # -- a solved run (foothold CONFIRMED from a real session shell) --------------
 
 def test_run_target_records_a_solved_run():
+    """A foothold solves only when its evidence can be ATTRIBUTED to the target. The
+    session shell is Brukal's own cage, so the command has to reach the target for its
+    output to say anything about it — see test_sessions for the false positive this
+    replaced."""
     sess = _session([
         "1. [exploitation] get a shell",
-        _adv("prove RCE", session="id", phase="exploitation"),
+        _adv("prove RCE", session=f"ssh op@{IN} id", phase="exploitation"),
     ])
     sess._session_backend_factory = lambda t: _FootholdSession(t)
     run = run_target(sess, environment="fake", max_steps=6)

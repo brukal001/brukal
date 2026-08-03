@@ -219,7 +219,7 @@ def run_target(session, *, audit_path=None, environment="fake", max_steps=20,
     from .loop import GroundedLoop
     from .verify import Verifier
 
-    verifier = verifier or Verifier()
+    verifier = verifier or Verifier(target=getattr(session, "target", ""))
     if audit_path is None:
         audit_path = getattr(getattr(session.executor, "_audit", None), "path", None)
     if scope is None:
