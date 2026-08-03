@@ -218,3 +218,19 @@ def test_the_signup_form_is_found_even_when_the_crawl_was_authenticated():
     assert not s.surface.forms, "precondition: the crawl captured no signup form"
     form = s._signup_form()
     assert form is not None and "/register" in form.action
+
+
+def test_both_new_detectors_map_to_a_coverage_class():
+    """A finding whose title matches no coverage word produces a report that contradicts
+    itself: a CRITICAL in the list, and a table row saying the class found nothing. It
+    had already happened once with model-proposed experiments; it happened again with
+    both of these."""
+    from brukal.assist import _COVERAGE_WORDS
+    titles = {
+        "Administrative endpoint reachable by a self-registered account":
+            "Function-level authz (BFLA)",
+        "Password reset token is derived from the username": "Credential recovery",
+    }
+    for title, klass in titles.items():
+        assert any(w in title.lower() for w in _COVERAGE_WORDS[klass]), \
+            f"{title!r} does not map to {klass!r}"

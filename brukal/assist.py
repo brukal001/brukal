@@ -210,7 +210,16 @@ _COVERAGE_WORDS = {
     "SSRF": ("server-side request",),
     "Open redirect": ("open redirect",),
     "Object-level authz (BOLA)": ("object-level authorization", "idor"),
-    "Function-level authz (BFLA)": ("function-level authorization",),
+    # A new detector whose title matches no word here produces a report that
+    # CONTRADICTS ITSELF: the finding list carries a CRITICAL while the coverage table
+    # says the class found nothing. That has now happened three times — model-proposed
+    # experiments, then both cookie-session authz checks — so the words are kept beside
+    # the titles the detectors actually emit, and test_coverage asserts every finding a
+    # live run produced maps to a class.
+    "Function-level authz (BFLA)": ("function-level authorization",
+                                    "self-registered account",
+                                    "administrative endpoint"),
+    "Credential recovery": ("reset token", "password reset"),
     "Mass assignment": ("mass assignment",),
     "JWT / token handling": ("jwt", "forged"),
     "Authentication posture": ("rate limiting", "enumeration", "session not revoked"),
