@@ -193,3 +193,28 @@ def test_crawled_pages_outrank_mined_route_fragments():
     s.surface.add_page(f"{ROOT}/app/admin/users", set(), [], {})  # actually fetched
     got = s.privileged_route_targets()
     assert got and "/app/admin/users" in got[0], got
+
+
+def test_the_signup_form_is_found_even_when_the_crawl_was_authenticated():
+    """An AUTHENTICATED crawl never sees a signup form: /register redirects a logged-in
+    user straight into the application, so the form is visible only to strangers. The
+    surface therefore held no signup form on exactly the runs that could use one, and
+    the privilege check declined every time — indistinguishable, in the report, from a
+    target that enforces its access control properly."""
+    class _RegisterPage(_AdminCage):
+        def run(self, action):
+            if action.url.endswith("/register") and action.method == "GET":
+                return WebResult(status=200, url=action.url,
+                                 headers={"content-type": "text/html"},
+                                 body='<form method="post" action="/register">'
+                                      '<input name="username" type="text">'
+                                      '<input name="password" type="password">'
+                                      '</form>')
+            return super().run(action)
+
+    s = _sess(_RegisterPage())
+    s.surface = webmap.AttackSurface(seed=ROOT + "/")
+    s.surface.add_routes(["/register"])
+    assert not s.surface.forms, "precondition: the crawl captured no signup form"
+    form = s._signup_form()
+    assert form is not None and "/register" in form.action

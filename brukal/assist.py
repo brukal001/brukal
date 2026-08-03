@@ -3459,19 +3459,60 @@ class AssistSession:
         ("name", re.compile(r"^(?:name|full[_-]?name|display[_-]?name|first)", re.I)),
     )
 
-    def _signup_form(self):
+    _SIGNUP_RE = re.compile(r"regist|signup|sign-up|create-?account", re.I)
+
+    def _signup_form(self, fetch: bool = True):
         """The application's own registration form, or None.
 
         Read from the crawled surface rather than assumed. The existing signup helper
         posts a JSON body with three guessed field names; DVNA's form wants five
         url-encoded ones including a password confirmation, and rejects anything else.
-        An app that tells you its form fields should not be guessed at."""
+        An app that tells you its form fields should not be guessed at.
+
+        The fallback exists because an AUTHENTICATED crawl never sees a signup form:
+        /register redirects a logged-in user straight to the application, so the form is
+        visible only to strangers. The surface therefore contained no signup form on
+        exactly the runs that could use one, and the privilege check declined every time
+        with no way to tell that apart from a target that was sound. Callers are already
+        inside `_separate_identity`, so this fetch is made as a stranger."""
         surface = getattr(self, "surface", None)
         for form in (getattr(surface, "forms", []) or []):
             action = (getattr(form, "action", "") or "").lower()
             method = (getattr(form, "method", "") or "").upper()
-            if method == "POST" and re.search(r"regist|signup|sign-up|create-?account", action):
+            if method == "POST" and self._SIGNUP_RE.search(action):
                 return form
+        if not fetch or self.browser is None:
+            return None
+
+        from . import webmap
+        from .web import WebAction
+        seen, candidates = set(), []
+        for route in list(getattr(surface, "api_routes", []) or []) \
+                + [p for p in (getattr(surface, "pages", {}) or {})]:
+            if route and self._SIGNUP_RE.search(route):
+                url = self._absolute_route(route)
+                if url and url not in seen:
+                    seen.add(url)
+                    candidates.append(url)
+        for guess in ("register", "signup", "users/register", "account/register"):
+            url = self._absolute_route("/" + guess)
+            if url and url not in seen:
+                seen.add(url)
+                candidates.append(url)
+        for url in candidates[:5]:
+            try:
+                _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                continue
+            if r is None or r.status != 200 or not r.body:
+                continue
+            _links, forms, _params = webmap.extract(url, r.body)
+            for form in forms:
+                if (getattr(form, "method", "") or "").upper() != "POST":
+                    continue
+                if any((t or "").lower() == "password"
+                       for _n, t in (getattr(form, "inputs", []) or [])):
+                    return form
         return None
 
     def _register_account(self):
