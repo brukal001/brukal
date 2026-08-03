@@ -1449,6 +1449,9 @@ class AssistSession:
             self.notes.append("[login] no governed browser wired — cannot authenticate.")
             return False
         lt = (login_type or "form").lower()
+        # Remember it: an authenticated crawl cannot rediscover the login page, and
+        # every cross-account proof needs somewhere to authenticate a second principal.
+        self._login_url = login_url
 
         if lt == "basic":                          # HTTP Basic — no request needed
             tok = base64.b64encode(f"{username}:{password}".encode()).decode()
@@ -3985,15 +3988,28 @@ class AssistSession:
         return True
 
     def _login_endpoint(self) -> str:
-        """The login URL the crawl mined, or "" — shared by the enumeration and
-        rate-limit checks so they cannot disagree about where the login is."""
+        """The login URL, or "" — shared by every check that needs to authenticate, so
+        they cannot disagree about where the login is.
+
+        The URL the OPERATOR gave us wins. An authenticated crawl never mines a login
+        route: a logged-in user is redirected away from /login exactly as they are from
+        /register, so the surface has no login on precisely the runs that hold a
+        session. Both cross-account provers then called login("") and quietly failed —
+        the control passed for the wrong reason and the proof could never succeed, so a
+        confirmed critical was reported as nothing at all. The signup form had the same
+        problem; this is the same fix for the same cause."""
+        if getattr(self, "_login_url", ""):
+            return self._login_url
         surface = getattr(self, "surface", None)
         if surface is None:
             return ""
         from urllib.parse import urljoin as _urljoin
         base = getattr(surface, "seed", "") or f"http://{self.target}/"
-        for r in (getattr(surface, "api_routes", []) or []):
-            if "{" in r:
+        candidates = list(getattr(surface, "api_routes", []) or []) \
+            + [p for p in (getattr(surface, "pages", {}) or {})] \
+            + [getattr(f, "action", "") for f in (getattr(surface, "forms", []) or [])]
+        for r in candidates:
+            if not r or "{" in r:
                 continue
             if any(w in r.lower() for w in ("login", "signin", "sign-in", "authenticate")):
                 return r if r.startswith("http") else _urljoin(base, r)

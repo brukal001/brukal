@@ -263,3 +263,24 @@ def test_a_successful_login_redirecting_away_is_still_accepted():
                              body='<form><input name="password" type="password"></form>')
     s = _sess(_Accepts())
     assert s.login(f"{ROOT}/login", "someone", "right") is True
+
+
+def test_the_login_url_survives_an_authenticated_crawl():
+    """An authenticated crawl never mines a login route: a logged-in user is redirected
+    away from /login exactly as from /register, so the surface has no login on precisely
+    the runs that hold a session. Both cross-account provers then called login("") — the
+    control passed for the wrong reason and the proof could never succeed, so a
+    confirmed critical was reported as nothing at all."""
+    class _Accepts:
+        def run(self, action):
+            if action.method == "POST":
+                return WebResult(status=302, url=action.url, body="",
+                                 headers={"Location": "/app", "Set-Cookie": "sid=1"})
+            return WebResult(status=200, url=action.url, headers={},
+                             body='<form><input name="password" type="password"></form>')
+    s = _sess(_Accepts())
+    s.surface = webmap.AttackSurface(seed=ROOT + "/")   # no /login anywhere in it
+    assert s._login_endpoint() == ""
+    assert s.login(f"{ROOT}/login", "brkeval", "BrkEval1!")
+    assert s._login_endpoint() == f"{ROOT}/login", \
+        "the URL the operator supplied was forgotten"
