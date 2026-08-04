@@ -105,3 +105,44 @@ def test_acting_as_another_principal_does_not_rename_us():
     with s._separate_identity():
         s.login(f"{ROOT}/login", "victim", "p")
     assert s.identity == "me"
+
+
+def test_a_200_that_is_not_the_login_page_is_not_a_session():
+    """The fourth face of the same mistake. "The answer no longer shows a password
+    field" is true of a redirect, of a 400, and of any 200 that simply is not the login
+    page — "your account is locked" has no password field either. A login that worked
+    hands back a credential; requiring that is the difference between observing success
+    and failing to observe failure."""
+    class _Locked:
+        def run(self, action):
+            if action.method == "POST":
+                return WebResult(status=200, url=action.url, headers={},
+                                 body="<h1>Your account is locked.</h1>")
+            return WebResult(status=200, url=action.url, headers={},
+                             body='<form><input name="password" type="password"></form>')
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Locked(), audit))
+    assert s.login(f"{ROOT}/login", "u", "p") is False
+    assert s.has_session() is False
+
+
+def test_a_200_that_issues_a_cookie_is_a_session():
+    """The other direction must keep working: plenty of apps answer 200 and set the
+    session cookie without redirecting."""
+    class _SetsCookie:
+        def run(self, action):
+            if action.method == "POST":
+                return WebResult(status=200, url=action.url,
+                                 headers={"Set-Cookie": "sid=xyz; Path=/"},
+                                 body="<h1>Welcome back</h1>")
+            return WebResult(status=200, url=action.url, headers={},
+                             body='<form><input name="password" type="password"></form>')
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _SetsCookie(), audit))
+    assert s.login(f"{ROOT}/login", "u", "p") is True

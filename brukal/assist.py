@@ -1489,9 +1489,14 @@ class AssistSession:
         else:
             form = {user_field: username, pass_field: password, **carried, **(extra_fields or {})}
             body, ctype = urlencode(form), "application/x-www-form-urlencoded"
+        # What the jar held BEFORE the credentials went in. A login that works hands
+        # back something new; comparing tells us so positively, instead of inferring it.
+        jar_before = set((getattr(self.browser, "_cookies", {}) or {}).items())
         _d2, res2 = self.browser.run(WebAction(
             "request", url=login_url, method="POST", body=body,
             headers={"Content-Type": ctype}))
+        gained_cookie = bool(
+            set((getattr(self.browser, "_cookies", {}) or {}).items()) - jar_before)
 
         # 3) A token (bearer/JWT) session: extract it and carry it as Authorization.
         token = self._extract_token(res2.body if res2 is not None else "")
@@ -1536,7 +1541,22 @@ class AssistSession:
             if res2.status in (301, 302, 303, 307, 308):
                 ok = bool(redirected_away and not failed)
             else:
-                ok = bool(no_login_form and not failed)
+                # POSITIVE evidence of a session, not merely the absence of a form.
+                # "The answer no longer shows a password field" has now been wrong three
+                # times in three different ways — for a redirect, for a 400, and for any
+                # 200 that simply is not the login page ("your account is locked" has no
+                # password field either). A login that worked hands back a credential;
+                # requiring that is the difference between observing success and failing
+                # to observe failure.
+                ok = bool(gained_cookie and not failed)
+                if not ok and no_login_form and not failed and gained_cookie is False:
+                    # No new cookie at all: the only remaining honest signal is that the
+                    # app replaced the form with something that is not an error, and an
+                    # app that authenticates without issuing anything is rare enough to
+                    # be worth doubting. Left as a last resort so a session carried in a
+                    # way we cannot see is not called a failure outright.
+                    ok = bool(re.search(r"(?i)log ?out|sign ?out|welcome|dashboard|"
+                                        r"my account|profile", (res2.body or "")[:4000]))
         # An error status is never a successful login, whatever the body looks like.
         # The `no_login_form` heuristic — "the answer no longer shows a password field"
         # — is vacuously true for a 400 or a 500 as well as for a redirect, so a JSON
