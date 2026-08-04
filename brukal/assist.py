@@ -2934,6 +2934,60 @@ class AssistSession:
                 found.append(name)
         return found
 
+    @contextmanager
+    def _as_identity(self, who: str):
+        """Issue requests as one of the three principals an experiment may name.
+
+        The model chooses WHICH, from a closed set; this decides what each name means.
+        Same split as the comparators, and for the same reason — a proposal must not be
+        able to describe a credential, only to select one that already exists."""
+        browser = self.browser
+        if who == "self" or browser is None:
+            yield
+            return
+        saved_cookies = dict(getattr(browser, "_cookies", {}) or {})
+        saved_auth = getattr(browser, "auth_header", "")
+        try:
+            if who == "anonymous":
+                browser._cookies, browser.auth_header = {}, ""
+            elif who == "second":
+                second = getattr(self, "_second_identity", None) or {}
+                browser._cookies = dict(second.get("cookies") or {})
+                browser.auth_header = second.get("auth", "")
+            yield
+        finally:
+            browser._cookies = saved_cookies
+            browser.auth_header = saved_auth
+
+    def establish_second_identity(self):
+        """Create a SECOND real account and keep its session beside our own.
+
+        Authorization is a disagreement between principals, so a tool holding one
+        session can only ever ask half the question. Every hand-written authz prover had
+        to build its own second account inline; giving the experiments one turns the
+        whole class from something only a detector-author can reach into something the
+        model can propose. Returns the username, or ""."""
+        if getattr(self, "_second_identity", None):
+            return self._second_identity.get("user", "")
+        if self.browser is None or not self.allow_intrusive:
+            return ""
+        with self._separate_identity():
+            made = self._register_account()
+            if not made:
+                return ""
+            user, password = made
+            if not (getattr(self.browser, "_cookies", {}) or {}):
+                login_url = self._login_endpoint()
+                if not login_url or not self.login(login_url, user, password):
+                    return ""
+            self._second_identity = {
+                "user": user, "password": password,
+                "cookies": dict(getattr(self.browser, "_cookies", {}) or {}),
+                "auth": getattr(self.browser, "auth_header", ""),
+            }
+        self.note(f"[experiment] second principal available: {user}")
+        return user
+
     def run_hypotheses(self, max_run: int = 4) -> int:
         """Ask the model for experiments, execute them through the gate, keep only the
         ones the evidence supports. Returns how many became findings.
@@ -2963,6 +3017,23 @@ class AssistSession:
                            "running app):\n"
                            + "\n".join(f"  - {l['kind']}: {l['value'][:60]} "
                                         f"({l['where']})" for l in self.source_leads[:12]))
+        # A second real principal, created before we ask. Authorization is a
+        # disagreement between principals, so without one the model can only ever ask
+        # half of every interesting question, and `a_denied_b_allowed` — the comparator
+        # built for exactly this — is unconstructible.
+        second_user = ""
+        try:
+            second_user = self.establish_second_identity()
+        except Exception:
+            second_user = ""
+        second_note = ""
+        if second_user:
+            second_note = (
+                f"\n\nA SECOND real account exists: '{second_user}'. Set "
+                f'"as": "second" on a request to issue it as that account, "as": '
+                f'"anonymous" to issue it as a stranger with no session, or omit it for '
+                f"your own. Objects and identifiers belonging to '{second_user}' are the "
+                f"ones worth trying to reach from your own session, and vice versa.")
         prompt = _hyp.PROMPT.format(comparators=", ".join(_hyp.comparator_names()))
         try:
             # The BASE URL, not the bare IP. The first live run handed the model
@@ -2981,11 +3052,24 @@ class AssistSession:
                         f'  "Authorization": "Bearer {self.last_jwt}"\n'
                         f"Never write a placeholder like <token>; a request carrying one "
                         f"is rejected and the experiment proves nothing.")
+            elif self.authenticated:
+                # A COOKIE session was never mentioned to the model at all — this whole
+                # block was gated on holding a JWT. The governed browser attaches the
+                # jar to every request automatically, so the experiments really were
+                # authenticated; the model just did not know it, and proposed either
+                # anonymous probes or a login step it did not need. Half the interesting
+                # questions about an application are about what a LOGGED-IN stranger can
+                # reach, and it could not ask any of them.
+                auth = (f"\n\nYou are already authenticated as '{self.identity}' by a "
+                        f"session cookie, which is attached to every request you propose "
+                        f"automatically. Do NOT include a login step and do NOT set a "
+                        f"Cookie or Authorization header yourself.")
             reply = llm.propose(prompt,
                                 f"Authorised target base URL: {base}\n"
                                 f"Every url MUST start with exactly that base."
                                 f"{auth}\n\n"
-                                f"Attack surface:\n{grounding}{source_note}",
+                                f"Attack surface:\n{grounding}"
+                                f"{second_note}{source_note}",
                                 max_tokens=8000)
         except Exception:
             return 0
@@ -3018,7 +3102,8 @@ class AssistSession:
                 break
             try:
                 reply2 = llm.propose(
-                    _hyp.REFINE_PROMPT,
+                    _hyp.REFINE_PROMPT.format(
+                        comparators=", ".join(_hyp.comparator_names())),
                     f"Authorised target base URL: {base}{auth}\n\n"
                     f"Attack surface:\n{grounding}\n\nResults of your last round:\n"
                     + "\n".join(f"  - {o}" for o in outcomes[-8:]),
@@ -3038,8 +3123,20 @@ class AssistSession:
         from .web import WebAction
         confirmed = 0
         for h in proposals:
+            # Every experiment leaves a trace, whatever becomes of it. Three separate
+            # paths used to discard one silently — a destructive-path skip, a bare
+            # `except`, and a pair of unanswered requests — while `outcomes` stayed a
+            # local variable that never reached the engagement log. The coverage table
+            # then said "6 probes" with no record anywhere of WHAT was tried, so the one
+            # component built to generalise beyond hand-written detectors was the only
+            # one whose behaviour could not be inspected after a run. A mechanism that
+            # finds nothing and explains nothing cannot be improved.
+            self.note(f"[experiment] {h.title} [{h.comparator}] "
+                      f"{h.control['method']} {h.control['url']} vs "
+                      f"{h.variant['method']} {h.variant['url']}")
             if self._is_destructive_path(h.variant["url"]) \
                     or self._is_destructive_path(h.control["url"]):
+                self.note(f"[experiment] SKIPPED (destructive path): {h.title}")
                 continue                   # the prompt forbids it; the code enforces it
             try:
                 # Setup first: it establishes the state the experiment is about, and is
@@ -3056,10 +3153,17 @@ class AssistSession:
                         raise ValueError("irreversible setup step")
                     if self._is_destructive_path(step["url"]) and not self.allow_intrusive:
                         raise ValueError("state-changing setup needs --full-send")
-                    self.browser.run(WebAction("request", **step))
-                _d1, a = self.browser.run(WebAction("request", **h.control))
-                _d2, b = self.browser.run(WebAction("request", **h.variant))
-            except Exception:
+                    spec = dict(step)
+                    with self._as_identity(spec.pop("as", "self")):
+                        self.browser.run(WebAction("request", **spec))
+                cspec, vspec = dict(h.control), dict(h.variant)
+                with self._as_identity(cspec.pop("as", "self")):
+                    _d1, a = self.browser.run(WebAction("request", **cspec))
+                with self._as_identity(vspec.pop("as", "self")):
+                    _d2, b = self.browser.run(WebAction("request", **vspec))
+            except Exception as exc:
+                self.note(f"[experiment] ERRORED before reaching the target: {h.title} "
+                          f"({type(exc).__name__}: {str(exc)[:80]})")
                 continue
             holds, meaning = _hyp.judge(h, a, b)
             if not holds:
@@ -3070,7 +3174,13 @@ class AssistSession:
                 # result to reason about. Recording it would buy a second model call to
                 # refine against noise.
                 if getattr(a, "status", None) is None and getattr(b, "status", None) is None:
+                    self.note(f"[experiment] NO ANSWER from the target: {h.title}")
                     continue
+                self.note(f"[experiment] not confirmed [{h.comparator}]: {h.title} — "
+                          f"control HTTP {getattr(a, 'status', None)} "
+                          f"({len(getattr(a, 'body', '') or '')}B) vs variant HTTP "
+                          f"{getattr(b, 'status', None)} "
+                          f"({len(getattr(b, 'body', '') or '')}B)")
                 outcomes.append(
                     f"NOT CONFIRMED [{h.comparator}] {h.title}: control -> "
                     f"HTTP {getattr(a, 'status', None)} "
@@ -3079,6 +3189,7 @@ class AssistSession:
                     f"({len(getattr(b, 'body', '') or '')}B)")
                 continue
             confirmed += 1
+            self.note(f"[experiment] CONFIRMED [{h.comparator}]: {h.title}")
             self.findings.add(Finding(
                 title=h.title, severity=h.severity, category="logic",
                 target=h.variant["url"], param="", confirmed=True,

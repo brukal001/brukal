@@ -495,9 +495,28 @@ class AttackSurface:
                          "after the API endpoints below, params, and injection/logic.")
         if self.techs:
             lines.append("  techs: " + ", ".join(sorted(self.techs)[:8]))
+        # Pages the crawl actually FETCHED, before anything merely inferred. The model
+        # was shown mined route fragments and nothing else, so it aimed its admin
+        # experiments at /admin/users — which 404s, because the app mounts it at
+        # /app/admin/users and the miner strips the prefix. Three experiments in a row
+        # were spent proving that a path which does not exist answers 404 the same way
+        # for everybody. What the crawler has already reached is the one part of the map
+        # that is known to be real.
+        if self.pages:
+            from urllib.parse import urlsplit
+            paths, seen = [], set()
+            for u in self.pages:
+                path = urlsplit(u).path or "/"
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+            lines.append("  pages fetched (VERIFIED reachable): "
+                         + ", ".join(sorted(paths)[:24]))
         if self.api_routes:
-            # The high-value grounding for a SPA/API: concrete endpoints to go after.
-            lines.append("  API endpoints (probe these; auth/login/search/admin first): "
+            # Mined from text and JS: useful leads, but the prefix an app mounts them
+            # under is exactly what mining loses, so they are labelled as unverified.
+            lines.append("  API route fragments mined from page text (UNVERIFIED — the "
+                         "mount prefix may be missing; prefer the fetched paths above): "
                          + ", ".join(self.api_routes[:24]))
         for f in self.forms[:max_items]:
             lines.append(f"  form: {f.describe()}")

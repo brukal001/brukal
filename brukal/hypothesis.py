@@ -41,7 +41,7 @@ _COMPARATORS = {
         lambda a, b: a.status != b.status and a.status and b.status,
         "the two requests were answered with different status codes"),
     "a_denied_b_allowed": (
-        lambda a, b: (a.status in (401, 403)) and (b.status == 200),
+        lambda a, b: _denied(a) and b.status == 200 and len(b.body or "") > 0,
         "the control was refused and the variant was accepted"),
     "b_reveals_more": (
         lambda a, b: (b.status == 200 and a.status == 200
@@ -58,11 +58,49 @@ _COMPARATORS = {
         "the variant drove the application into a server error the control did not"),
 }
 
+# WHO a request is issued as. A closed set, for exactly the reason the comparators are
+# one: the model names a principal, deterministic code decides what that means. Without
+# this the model held a single session, so `a_denied_b_allowed` — the comparator built
+# for authorization — was unconstructible, and the whole authorization space was closed
+# to model-proposed experiments and reachable only by hand-written detectors.
+_IDENTITIES = ("self", "second", "anonymous")
+
 _MAX_HYPOTHESES = 6
 
 
 def _norm(text) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+# Where a server sends someone it has refused. A redirect to the login page is how
+# nearly every server-rendered application denies an unauthenticated request; only an
+# API answers 401/403.
+_LOGIN_LOCATION_RE = re.compile(
+    r"/(?:login|log-in|signin|sign-in|auth|authenticate|session|sso|account/login)",
+    re.I)
+
+
+def _denied(result) -> bool:
+    """Whether a response REFUSED the caller.
+
+    Recognising only 401 and 403 cost a confirmed critical. On DVNA the model proposed
+    exactly the right experiment — anonymous versus a non-admin account against
+    /app/admin/usersapi — and it executed perfectly: the stranger got 302 to /login, the
+    account got 200 with 9,978 bytes of the user table. The comparator said no, because
+    302 is not 401. That is textbook broken function-level authorization, thrown away
+    for being phrased the way most of the web phrases it.
+
+    A redirect only counts when it points somewhere that looks like authentication: a
+    302 to /dashboard after a successful action is not a refusal, and treating every
+    redirect as one would confirm a flaw on any endpoint that redirects at all."""
+    status = getattr(result, "status", None)
+    if status in (401, 403):
+        return True
+    if status in (301, 302, 303, 307, 308):
+        headers = getattr(result, "headers", None) or {}
+        loc = headers.get("location") or headers.get("Location") or ""
+        return bool(_LOGIN_LOCATION_RE.search(loc))
+    return False
 
 
 class Hypothesis:
@@ -142,6 +180,8 @@ def _clean_request(raw) -> dict | None:
     if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
         return None
     out = {"url": url, "method": method}
+    who = str(raw.get("as", "self")).strip().lower()
+    out["as"] = who if who in _IDENTITIES else "self"   # unknown principal: refuse, don't guess
     body = raw.get("body")
     if isinstance(body, (dict, list)):
         out["body"] = json.dumps(body)
@@ -289,7 +329,21 @@ error, the endpoint or the payload shape is wrong; fix that first. If both retur
 with near-identical sizes, the change you made had no effect and a different rule needs \
 testing.
 
-Same JSON format as before. Reply [] if the results suggest nothing worth another try.
+Reply with ONLY a JSON array, using EXACTLY these keys — the same ones as before:
+  title       short name for the flaw if the experiment succeeds
+  severity    critical | high | medium | low
+  comparator  one of: {comparators}
+  setup       OPTIONAL list of up to 3 requests run first, never judged
+  control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...,
+               "as": "self" | "second" | "anonymous"}}
+  variant     same shape, one thing changed
+  rationale   one sentence on what the difference would prove
+
+Do NOT rename them. A refined round that answered with "name" and "type" instead of \
+"title" and "comparator" was discarded in full, so the second round contributed nothing \
+at all and the first round's results were wasted.
+
+Reply [] if the results suggest nothing worth another try.
 """
 
 
@@ -312,9 +366,17 @@ Reply with ONLY a JSON array. Each element:
   setup       OPTIONAL list of up to 3 requests run FIRST to reach an interesting
               state (create an order, apply a coupon, start a workflow). They are
               executed but never judged.
-  control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...}}
+  control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...,
+               "as": "self" | "second" | "anonymous"}}
   variant     same shape, one thing changed
   rationale   one sentence on what the difference would prove
+
+`as` chooses WHICH PRINCIPAL issues the request, and it is the most valuable field \
+here. "self" is the account you hold, "second" is a different real account that also \
+exists, "anonymous" is a stranger with no session. Authorization flaws are precisely a \
+disagreement between these: an object one account may read and another may not, an \
+action a stranger should be refused. A control and a variant that differ ONLY in `as` \
+is the cleanest experiment you can propose.
 
 Prefer experiments that need setup — a stateless endpoint has usually been checked \
 already by deterministic probes, whereas a rule that only exists partway through a \

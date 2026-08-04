@@ -191,3 +191,18 @@ def test_the_highest_severity_classes_reach_every_endpoint():
         "the last endpoint was never probed at all"
 
 
+
+
+def test_the_summary_separates_fetched_pages_from_mined_guesses():
+    """The model was shown mined route fragments and nothing else, so it aimed its admin
+    experiments at /admin/users — which 404s, because the app mounts it at
+    /app/admin/users and the miner strips the prefix. Three experiments in a row proved
+    only that a nonexistent path 404s for everybody."""
+    from brukal import webmap
+    surface = webmap.AttackSurface(seed="http://t:9090/")
+    surface.add_page("http://t:9090/app/admin/users", set(), [], {})
+    surface.add_routes(["/admin/users"])
+    text = surface.summary()
+    assert "/app/admin/users" in text.split("mined")[0], \
+        "the verified path is not listed ahead of the mined guesses"
+    assert "UNVERIFIED" in text

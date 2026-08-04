@@ -60,7 +60,24 @@ def test_unknown_request_fields_are_dropped_not_forwarded():
     got = hyp.parse(_prop(variant={"url": "http://t/b", "method": "GET",
                                    "verify": False, "proxies": {"http": "http://evil"},
                                    "timeout": 9999}))
-    assert set(got[0].variant) <= {"url", "method", "body", "headers"}
+    assert set(got[0].variant) <= {"url", "method", "body", "headers", "as"}
+
+
+def test_an_unknown_principal_falls_back_to_self():
+    """`as` names a principal from a closed set — the same discipline as the
+    comparators. A proposal may SELECT a credential that already exists; it may never
+    describe one."""
+    got = hyp.parse(_prop(variant={"url": "http://t/b", "method": "GET",
+                                   "as": "administrator"}))
+    assert got[0].variant["as"] == "self"
+
+
+def test_the_named_principals_are_carried_through():
+    got = hyp.parse(_prop(control={"url": "http://t/a", "method": "GET",
+                                   "as": "anonymous"},
+                          variant={"url": "http://t/a", "method": "GET",
+                                   "as": "second"}))
+    assert got[0].control["as"] == "anonymous" and got[0].variant["as"] == "second"
 
 
 def test_a_differential_against_itself_is_refused():
@@ -339,8 +356,13 @@ def test_setup_requests_run_before_the_experiment_and_are_not_judged():
                   "http://127.0.0.1:5000/coupon?c=X&force=1": (200, "applied")})
     sess = _session(cage)
     assert sess.run_hypotheses() == 1
-    # setup ran first, in order, before the judged pair
-    assert cage.seen[0].endswith("/cart/add")
+    # Setup ran before the judged pair. Asserted RELATIVE to the experiment rather than
+    # at index 0: establishing the second principal issues its own requests first, and
+    # pinning an absolute index would make this test fail for a reason it does not care
+    # about.
+    first_setup = next(i for i, u in enumerate(cage.seen) if u.endswith("/cart/add"))
+    first_judged = next(i for i, u in enumerate(cage.seen) if "/coupon" in u)
+    assert first_setup < first_judged
     assert "after 2 setup request(s)" in sess.findings.all()[0].source
 
 
@@ -456,3 +478,52 @@ def test_rounds_are_bounded():
     sess.strategist = type("S", (), {"_llm": _Never()})()
     assert sess.run_hypotheses() == 0
     assert len(calls) <= 2
+
+
+def test_the_refine_prompt_restates_the_schema():
+    """A refined round that answered with "name" and "type" instead of "title" and
+    "comparator" was discarded in full, so the second round contributed nothing and the
+    first round's observations were wasted. "Same format as before" was not enough."""
+    text = hyp.REFINE_PROMPT.format(comparators=", ".join(hyp.comparator_names()))
+    for key in ("title", "severity", "comparator", "control", "variant", "as"):
+        assert key in text, f"the refine prompt never names {key!r}"
+    assert "a_denied_b_allowed" in text, "the comparator set is not restated"
+
+
+# --- denial is not only 401/403 -------------------------------------------------------
+class _R:
+    def __init__(self, status, body="", headers=None):
+        self.status, self.body, self.headers = status, body, headers or {}
+
+
+def _judge(comparator, a, b):
+    h = hyp.Hypothesis("t", "high", comparator,
+                       {"url": "http://t/x", "method": "GET"},
+                       {"url": "http://t/x", "method": "GET"})
+    return hyp.judge(h, a, b)[0]
+
+
+def test_a_redirect_to_login_counts_as_a_refusal():
+    """The live miss. The model proposed exactly the right experiment against
+    /app/admin/usersapi — anonymous versus a non-admin account — and it executed
+    perfectly: the stranger got 302 to /login, the account got 200 with 9,978 bytes of
+    the user table. The comparator said no, because 302 is not 401."""
+    anon = _R(302, "", {"Location": "/login"})
+    member = _R(200, "x" * 9978)
+    assert _judge("a_denied_b_allowed", anon, member) is True
+
+
+def test_a_redirect_somewhere_else_is_not_a_refusal():
+    """A 302 to /dashboard after a successful action is not a denial. Treating every
+    redirect as one would confirm a flaw on any endpoint that redirects at all."""
+    ok = _R(302, "", {"Location": "/dashboard"})
+    assert _judge("a_denied_b_allowed", ok, _R(200, "y" * 500)) is False
+
+
+def test_401_and_403_still_count():
+    for status in (401, 403):
+        assert _judge("a_denied_b_allowed", _R(status), _R(200, "z" * 100)) is True
+
+
+def test_an_empty_200_does_not_count_as_allowed():
+    assert _judge("a_denied_b_allowed", _R(403), _R(200, "")) is False
