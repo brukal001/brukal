@@ -1452,6 +1452,7 @@ class AssistSession:
         # Remember it: an authenticated crawl cannot rediscover the login page, and
         # every cross-account proof needs somewhere to authenticate a second principal.
         self._login_url = login_url
+        self._login_type = lt
 
         if lt == "basic":                          # HTTP Basic — no request needed
             tok = base64.b64encode(f"{username}:{password}".encode()).decode()
@@ -1528,6 +1529,15 @@ class AssistSession:
                 ok = bool(redirected_away and not failed)
             else:
                 ok = bool(no_login_form and not failed)
+        # An error status is never a successful login, whatever the body looks like.
+        # The `no_login_form` heuristic — "the answer no longer shows a password field"
+        # — is vacuously true for a 400 or a 500 as well as for a redirect, so a JSON
+        # API answering {"message":"malformed"} to a urlencoded body read as
+        # AUTHENTICATED. That is the third distinct way this function has claimed a
+        # session it did not have; all three were the same mistake, inferring success
+        # from the ABSENCE of a form rather than from evidence of a session.
+        if res2 is not None and (res2.status or 0) >= 400:
+            ok = False
         self.authenticated = ok
         if ok and not self.identity:
             # Who we are is set in the token branch above and was set NOWHERE else, so a
@@ -1542,6 +1552,37 @@ class AssistSession:
             f"[login] {login_url} as {username} ({lt}) → "
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
         return ok
+
+    def has_session(self) -> bool:
+        """Whether we hold an authenticated session, HOWEVER it is carried.
+
+        This is the question every authorization check actually needs, and none of them
+        asked it. They asked `if self.last_jwt` instead, which is not "am I logged in"
+        but "am I logged in to a JSON API that issues bearer tokens". On a cookie-session
+        application the answer was always no, so the whole family — BFLA targeting, the
+        BOLA sweep, the model's authentication briefing — silently did not run, while a
+        coverage row claimed it had.
+
+        Five separate defects this session traced to that one substitution. A cookie jar
+        and a bearer token are two ways to carry the same fact, and code that is not
+        about credentials has no business knowing which one it is looking at."""
+        if self.last_jwt or getattr(self.browser, "auth_header", ""):
+            return True
+        if getattr(self.browser, "_cookies", None):
+            return bool(self.authenticated)
+        return False
+
+    def session_token(self) -> str:
+        """The bearer token, or "" when the session is carried some other way.
+
+        Only the provers that are genuinely ABOUT a token — forging one, cracking its
+        key — may branch on this. Anything asking merely whether a request will be
+        authenticated must use `has_session()`; the governed browser replays whatever we
+        hold without being told which kind it is."""
+        if self.last_jwt:
+            return self.last_jwt
+        header = getattr(self.browser, "auth_header", "") or ""
+        return header[7:] if header.lower().startswith("bearer ") else ""
 
     @staticmethod
     def _set_param(url: str, param: str, value: str) -> str:
@@ -1971,10 +2012,15 @@ class AssistSession:
         their object returned with different content)."""
         from . import webmap
         from .web import WebAction
-        if self.browser is None or not token:
+        # A credential handed to us, or one we already hold — either authenticates the
+        # request. Requiring a SESSION shut out callers that supply a token directly;
+        # requiring a TOKEN shut out every cookie-session application. The question is
+        # only whether this request will be authenticated at all.
+        if self.browser is None or not (token or self.has_session()):
             return False
         _d, r = self.browser.run(WebAction("request", url=collection_url, method="GET",
-                                           headers={"Authorization": f"Bearer {token}"}))
+                                           headers=({"Authorization": f"Bearer {token}"}
+                                                    if token else {})))
         pairs = webmap.objects_with_owners((r.body if r else "") or "")
         if len(pairs) < 2:
             return False
@@ -2838,7 +2884,8 @@ class AssistSession:
         password is not knowable. That irreversibility is precisely why it is gated."""
         from .findings import Finding
         from .web import WebAction
-        if self.browser is None or not self.allow_intrusive or not token or not victim:
+        if (self.browser is None or not self.allow_intrusive
+                or not (token or self.has_session()) or not victim):
             return False
         if "{" not in change_url_template:
             return False
@@ -2846,40 +2893,54 @@ class AssistSession:
         new_password = "Brukal-BFLA-Pr00f!"
         target_url = _re.sub(r"\{[^}]*\}", victim, change_url_template, count=1)
 
-        def login_as(user: str, password: str):
-            _d, r = self.browser.run(WebAction(
-                "request", url=login_url, method="POST",
-                body=json.dumps({user_field: user, pass_field: password}),
-                headers={"Content-Type": "application/json"}))
-            return r
+        # The proof is "did a session get issued for the victim", and that is exactly
+        # what login() decides — for a token API and a cookie app alike. Asking instead
+        # whether the word "token" appears in the body answered "no" for every
+        # server-rendered application, so the control passed vacuously and the proof
+        # could never succeed. Run under a separate identity so establishing the
+        # victim's session never overwrites our own.
+        def login_as(user: str, password: str) -> bool:
+            # We may never have logged in ourselves, so the app's login shape is not
+            # always known. Try the one we used if there is one, then the other: a
+            # JSON API rejects a urlencoded body and vice versa, and guessing wrong
+            # once would make the control pass vacuously and the proof impossible.
+            preferred = getattr(self, "_login_type", "") or ""
+            tried = []
+            for style in ([preferred] if preferred else []) + ["json", "form"]:
+                if style in tried:
+                    continue
+                tried.append(style)
+                with self._separate_identity():
+                    if self.login(login_url, user, password, user_field=user_field,
+                                  pass_field=pass_field, login_type=style):
+                        return True
+            return False
 
         # Control: our chosen password must not ALREADY authenticate the victim, or the
         # "proof" would be a coincidence rather than something we caused.
-        before = login_as(victim, new_password)
-        if before is not None and before.status == 200 and "token" in (before.body or ""):
+        if login_as(victim, new_password):
             return False
 
         _d, changed = self.browser.run(WebAction(
             "request", url=target_url, method="PUT",
             body=json.dumps({pass_field: new_password}),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"}))
+                     **({"Authorization": f"Bearer {token}"} if token else {})}))
         if changed is None or changed.status >= 400:
             return False
 
-        after = login_as(victim, new_password)
-        if after is None or after.status != 200 or "token" not in (after.body or ""):
+        if not login_as(victim, new_password):
             return False
 
         self.findings.add(Finding(
             title="Account takeover via broken function-level authorization",
             severity="critical", category="api",
             target=target_url, param=pass_field, confirmed=True,
-            evidence=(f"a token for '{self.identity or 'another user'}' set "
+            evidence=(f"the session of '{self.identity or 'another user'}' set "
                       f"'{victim}' password via PUT {target_url} (HTTP "
                       f"{changed.status}); logging in as '{victim}' with that password "
                       f"then succeeded, where it failed before the change"),
-            source=(f"PUT {target_url} with our own Bearer token and "
+            source=(f"PUT {target_url} with our own session and "
                     f"{{\"{pass_field}\": \"...\"}}, then POST {login_url} as {victim}")))
         return True
 
@@ -3043,13 +3104,13 @@ class AssistSession:
             # failed hypothesis, it is a failed prompt.
             base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
             auth = ""
-            if self.last_jwt:
+            if self.session_token():
                 # Give it the real session rather than let it invent a placeholder: the
                 # model wrote `Bearer <userA_token>` literally, which the target
                 # correctly rejected, so every authenticated experiment tested nothing.
                 auth = (f"\n\nYou are authenticated as '{self.identity}'. Use this "
                         f"header verbatim where a request should be authenticated:\n"
-                        f'  "Authorization": "Bearer {self.last_jwt}"\n'
+                        f'  "Authorization": "Bearer {self.session_token()}"\n'
                         f"Never write a placeholder like <token>; a request carrying one "
                         f"is rejected and the experiment proves nothing.")
             elif self.authenticated:
@@ -3572,6 +3633,12 @@ class AssistSession:
         browser = self.browser
         saved_cookies = dict(getattr(browser, "_cookies", {}) or {})
         saved_auth = getattr(browser, "auth_header", "")
+        # Identity is part of the session, so it is saved too. login() adopts the first
+        # username it authenticates when `identity` is empty, which meant proving a
+        # takeover could quietly rename US to the VICTIM — and every later check that
+        # asks "whose objects are ours" would then be reasoning about the wrong account.
+        saved_identity = self.identity
+        saved_password = getattr(self, "_login_password", "")
         try:
             browser._cookies = {}
             browser.auth_header = ""
@@ -3579,6 +3646,8 @@ class AssistSession:
         finally:
             browser._cookies = saved_cookies
             browser.auth_header = saved_auth
+            self.identity = saved_identity
+            self._login_password = saved_password
 
     # Field names on a signup form, by role. Ordered: the first match wins, so
     # `cpassword`/`confirm` must be tested before the bare password pattern or a
@@ -4135,7 +4204,7 @@ class AssistSession:
         listing rather than guessed, which is the same trick `confirm_bola_from_
         collection` uses: an API that lists its principals has already disclosed the map."""
         surface = getattr(self, "surface", None)
-        if surface is None or not self.last_jwt:
+        if surface is None or not self.has_session():
             return None
         routes = list(getattr(surface, "api_routes", []) or [])
         if not routes:
@@ -4562,15 +4631,14 @@ class AssistSession:
                 enqueue(url, m.group(0), method="PATH")
                 # Object authorization: the parent collection often lists objects next to
                 # their owners, which is everything a cross-account read needs.
-                token = (getattr(self.browser, "auth_header", "") or "").replace(
-                    "Bearer ", "") or self.last_jwt
-                if token and confirmed_bola[0] is False:
+                if self.has_session() and confirmed_bola[0] is False:
                     collection = url.split(m.group(0))[0].rstrip("/")
                     try:
                         self._covered("Object-level authz (BOLA)",
                                       note="another principal's object, from the listing")
                         if self.confirm_bola_from_collection(
-                                collection, url, m.group(0), token, self.identity):
+                                collection, url, m.group(0), self.session_token(),
+                                self.identity):
                             confirmed += 1
                             confirmed_bola[0] = True
                     except Exception:
@@ -4680,7 +4748,7 @@ class AssistSession:
                         self._covered("Function-level authz (BFLA)",
                                       note="proof is a login as the victim")
                         if self.confirm_bfla_password_takeover(
-                                change_tpl, login_url, victim, self.last_jwt):
+                                change_tpl, login_url, victim, self.session_token()):
                             confirmed += 1
                     except Exception:
                         pass

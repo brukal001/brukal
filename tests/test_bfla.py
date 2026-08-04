@@ -41,16 +41,26 @@ class _Api:
 
     def run(self, action):
         url, method = action.url, (action.method or "GET").upper()
-        body = json.loads(action.body or "{}") if action.body else {}
+        # A JSON API answers 400 to a body it cannot parse; it does not raise. The
+        # prover legitimately tries a urlencoded login as well as a JSON one, because it
+        # cannot know which shape an unfamiliar app wants, and a fixture that explodes
+        # on the second attempt is testing its own brittleness rather than the prover.
+        try:
+            body = json.loads(action.body or "{}") if action.body else {}
+        except ValueError:
+            return WebResult(status=400, url=url, body='{"message":"malformed"}')
         if url == LOGIN and method == "POST":
             u, p = body.get("username"), body.get("password")
             if self.passwords.get(u) == p:
+                # Long enough to look like a real bearer token: the extractor requires
+                # >= 12 characters, and no API issues a ten-character session token.
                 return WebResult(status=200, url=url,
-                                 body=json.dumps({"auth_token": f"tok-{u}"}))
+                                 body=json.dumps({"auth_token": f"tok-{u}-s3ss10nvalue"}))
             return WebResult(status=401, url=url, body='{"message":"bad creds"}')
         if url.endswith("/password") and method == "PUT":
             who = url.rsplit("/", 2)[-2]
-            caller = (action.headers or {}).get("Authorization", "").replace("Bearer tok-", "")
+            caller = ((action.headers or {}).get("Authorization", "")
+                      .replace("Bearer tok-", "").split("-")[0])
             if self.enforces and who != caller:
                 return WebResult(status=403, url=url, body='{"message":"forbidden"}')
             self.writes += 1
