@@ -221,13 +221,21 @@ _COVERAGE_WORDS = {
                                     "self-registered account",
                                     "administrative endpoint"),
     "Credential recovery": ("reset token", "password reset"),
+    "Default credentials": ("default credentials",),
+    "Blind injection (out-of-band)": ("blind ssrf", "blind rce", "out-of-band"),
+    # Probed for a long time with no words here at all, so however much they found the
+    # table reported "none found" — the report contradicting its own finding list. That
+    # makes five instances; test_coverage_consistency now makes it impossible.
+    "Credential storage": ("recoverable form", "plaintext password"),
+    "Signup abuse": ("rate limiting on account creation",),
     "Mass assignment": ("mass assignment",),
     "JWT / token handling": ("jwt", "forged"),
     "Authentication posture": ("rate limiting", "enumeration", "session not revoked"),
     "Unauthenticated exposure": ("unauthenticated exposure", "unauthenticated access"),
     "Prompt injection (LLM)": ("prompt injection",),
     "GraphQL": ("graphql",),
-    "Transport / browser hygiene": ("security header", "cors"),
+    "Transport / browser hygiene": ("security header", "cors",
+                                    "cookie set without"),
     "Debug exposure": ("debug console",),
     # Model-proposed experiments carry titles the model chose, so they cannot be matched
     # by keyword like the fixed detectors. They are recognised by CATEGORY instead —
@@ -2377,24 +2385,19 @@ class AssistSession:
             return False
 
         def attempt(user: str, password: str) -> bool:
-            saved_header = getattr(self.browser, "auth_header", "")
-            saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
-            saved_auth = self.authenticated
-            try:
-                self.browser.auth_header = ""
-                if hasattr(self.browser, "_cookies"):
-                    self.browser._cookies = {}
-                self.authenticated = False
-                return bool(self.login(login_url, user, password,
-                                       login_type=login_type,
-                                       user_field=user_field, pass_field=pass_field))
-            except Exception:
-                return False
-            finally:
-                self.browser.auth_header = saved_header
-                if hasattr(self.browser, "_cookies"):
-                    self.browser._cookies = saved_cookies
-                self.authenticated = saved_auth
+            # One implementation of "act as somebody else". This used to hand-roll the
+            # save/restore and, like the original _separate_identity, it forgot
+            # `identity` — so a default credential that worked would silently rename us
+            # to admin, and every later check asking whose objects are ours would reason
+            # about the wrong account. A second copy of a rule is a second place for it
+            # to be wrong.
+            with self._separate_identity():
+                try:
+                    return bool(self.login(login_url, user, password,
+                                           login_type=login_type,
+                                           user_field=user_field, pass_field=pass_field))
+                except Exception:
+                    return False
 
         control_user = self.DEFAULT_CREDENTIALS[0][0]
         if attempt(control_user, f"brukalControl{random.randint(10 ** 6, 10 ** 7)}"):
@@ -3639,6 +3642,7 @@ class AssistSession:
         # asks "whose objects are ours" would then be reasoning about the wrong account.
         saved_identity = self.identity
         saved_password = getattr(self, "_login_password", "")
+        saved_authed = self.authenticated
         try:
             browser._cookies = {}
             browser.auth_header = ""
@@ -3648,6 +3652,7 @@ class AssistSession:
             browser.auth_header = saved_auth
             self.identity = saved_identity
             self._login_password = saved_password
+            self.authenticated = saved_authed
 
     # Field names on a signup form, by role. Ordered: the first match wins, so
     # `cpassword`/`confirm` must be tested before the bare password pattern or a
@@ -4526,6 +4531,24 @@ class AssistSession:
                     except Exception:
                         pass
 
+            # Shipped credentials that were never changed. This detector exists
+            # BECAUSE a comparative benchmark found a critical default login Brukal had
+            # walked past — and it was then never called from the autonomous path, so
+            # the gap it was written to close stayed open. A detector the product does
+            # not invoke is worth nothing; that has now happened twice in this file.
+            _login_for_defaults = self._login_endpoint()
+            if (_login_for_defaults and self.allow_intrusive
+                    and self._confirm_budget > 0 and not self._rate_limited):
+                self._covered("Default credentials",
+                              note="documented pairs, against a wrong-password control")
+                try:
+                    if self.confirm_default_credentials(
+                            _login_for_defaults,
+                            login_type=getattr(self, "_login_type", "form") or "form"):
+                        confirmed += 1
+                except Exception:
+                    pass
+
             for _rurl, _idp, _tokp in self.reset_token_targets():
                 if self._confirm_budget <= 0 or self._rate_limited:
                     break
@@ -4698,6 +4721,26 @@ class AssistSession:
                     if (_t, _p, _m) in settled:
                         continue
                     probe(_t, _p, method=_m, extra=_x, run_checks=_tier)
+
+            # 6d) BLIND injection, out-of-band. Written, tested, and never invoked from
+            #     the autonomous path — the third dead detector in this file. They cost
+            #     nothing where there is no listener (`_oob()` returns None in the fake
+            #     cage and both simply decline), and blind SSRF/RCE is precisely the
+            #     class an in-band differential cannot reach: the server makes the
+            #     request or runs the command and tells you nothing.
+            if self._oob() is not None:
+                for _t, _p, _m, _x in queue[:4]:
+                    if self._confirm_budget <= probe_floor or self._rate_limited:
+                        break
+                    self._covered("Blind injection (out-of-band)",
+                                  note="callback to Brukal's in-cage listener")
+                    try:
+                        if self.confirm_blind_ssrf(_t, _p, method=_m, extra=_x) \
+                                or self.confirm_blind_rce(_t, _p, method=_m, extra=_x):
+                            confirmed += 1
+                            break
+                    except Exception:
+                        pass
 
             # 7) MASS ASSIGNMENT — last, because it is the only proof that WRITES to the
             #    target, and so the only one an operator must opt into (--full-send sets
