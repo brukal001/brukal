@@ -6418,7 +6418,40 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         # surface is the same failure mode as an unreached CHECK: silence that looks
         # like a result.
         session.login_status = ("authenticated" if ok else "failed", login["url"])
+    session.reachable = _preflight(session, console)
     return session, audit, target, cage
+
+
+def _preflight(session, console=None) -> bool:
+    """One gated request, before anything is spent, to prove the target is reachable
+    THROUGH THE PATH THE RUN WILL ACTUALLY USE.
+
+    A run once spent $0.46 and thirty-two model calls against a target it could not
+    touch: the cage had failed to start on a stale bind mount, so every web request died
+    at the source. The health monitor said so honestly in the report — "none of 13
+    requests were answered, nothing was actually assessed" — but only afterwards, once
+    the budget was gone. Reachability is cheap to establish and expensive to assume, and
+    checking the cage separately would not do: what matters is the whole path, cage and
+    scope gate and browser together, which is exactly what one real request exercises."""
+    browser = getattr(session, "browser", None)
+    if browser is None:
+        return True                       # no web layer in this engagement; nothing to check
+    from .web import WebAction
+    url = f"http://{session.target}/"
+    try:
+        _d, result = browser.run(WebAction("request", url=url, method="GET"))
+    except Exception as exc:
+        result = None
+        session.notes.append(f"[preflight] {url} raised {type(exc).__name__}")
+    if result is not None and getattr(result, "status", None) is not None:
+        return True
+    msg = (f"⚠ PREFLIGHT FAILED: {url} returned nothing through the governed browser. "
+           f"The target, the cage, or the route between them is down — a run started "
+           f"now would assess nothing and still cost a full budget. Check that the cage "
+           f"container is up and can reach the target.")
+    session.notes.append(f"[preflight] {msg}")
+    _emit(console, f"  {msg}")
+    return False
 
 
 def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
@@ -6541,6 +6574,12 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
+    if not getattr(session, "reachable", True):
+        # Refuse to start rather than spend a budget assessing nothing. The report would
+        # have said so honestly afterwards; saying so BEFORE costs one request.
+        _emit(console, "  stopping: the target is not reachable through the governed "
+                       "browser. Nothing was assessed and nothing was spent.")
+        return 2
     if no_research:                            # opt out of all control-plane research egress
         session.research = None
 

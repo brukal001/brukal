@@ -146,3 +146,40 @@ def test_a_200_that_issues_a_cookie_is_a_session():
                       StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
                       browser=GovernedBrowser(scope, _SetsCookie(), audit))
     assert s.login(f"{ROOT}/login", "u", "p") is True
+
+
+def test_preflight_refuses_to_start_against_an_unreachable_target():
+    """A run once spent $0.46 and thirty-two model calls against a target it could not
+    touch: the cage had failed to start on a stale bind mount, so every request died at
+    the source. The health monitor reported it honestly — "none of 13 requests were
+    answered" — but only afterwards, once the budget was gone."""
+    from brukal.assist import _preflight
+
+    class _Dead:
+        def run(self, action):
+            raise OSError("connection refused")
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Dead(), audit))
+    assert _preflight(s) is False
+    assert any("PREFLIGHT FAILED" in n for n in s.notes)
+
+
+def test_preflight_passes_when_the_target_answers_at_all():
+    """A 404 or a 500 is an answer: the question is whether the path works, not whether
+    the target likes us."""
+    from brukal.assist import _preflight
+
+    class _Answers:
+        def run(self, action):
+            return WebResult(status=404, url=action.url, headers={}, body="nope")
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Answers(), audit))
+    assert _preflight(s) is True
