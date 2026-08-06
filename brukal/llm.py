@@ -222,7 +222,37 @@ class _AnthropicBackend:
         self.model = model
         self.last_usage: dict = {}
 
+    # How much bigger a second attempt gets when the first spent its whole allowance on
+    # thinking, and the ceiling it may not pass. One retry, because a model that thinks
+    # past twice the budget is not going to answer on a third try either.
+    _THINKING_RETRY_FACTOR = 4
+    _THINKING_RETRY_CEILING = 32_000
+
     def propose(self, system: str, user: str, max_tokens: int) -> str:
+        """A reply, retried ONCE when the allowance was spent entirely on thinking.
+
+        Adaptive thinking is billed against the same max_tokens as the answer, so a
+        model that reasons at length can hit the ceiling before emitting a single text
+        block — the call then succeeds, costs full price, and returns "". A live run
+        recorded exactly that as "model returned no usable experiment (0 chars)", which
+        looked like a model with nothing to say about the target. It had plenty to say;
+        it never got to the part where it says it.
+
+        Every caller is exposed to this, not just the experiment mechanism: the
+        strategist plans through the same method, and an empty plan is indistinguishable
+        from a finished engagement."""
+        text = self._propose_once(system, user, max_tokens)
+        if text or self.last_stop_reason != "max_tokens":
+            return text
+        if "text" in (self.last_block_kinds or []):
+            return text                      # it answered and was cut off; not this case
+        bigger = min(max_tokens * self._THINKING_RETRY_FACTOR,
+                     self._THINKING_RETRY_CEILING)
+        if bigger <= max_tokens:
+            return text
+        return self._propose_once(system, user, bigger)
+
+    def _propose_once(self, system: str, user: str, max_tokens: int) -> str:
         # The system prompt is the stable prefix of every turn in an engagement — the
         # methodology, the schema, the rules — while only the user turn changes. Marking
         # it cacheable bills it at ~0.1x on every call after the first, which on a long
@@ -245,6 +275,14 @@ class _AnthropicBackend:
             "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
             "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
         } if u is not None else {}
+        # WHY a reply was empty, not merely that it was. "model returned no usable
+        # experiment (0 chars)" appeared in a live coverage table and was undiagnosable:
+        # an empty string is produced by a refusal, by a reply that spent its whole
+        # allowance on thinking before emitting any text, and by a truncation, and those
+        # need opposite responses. The stop reason and the block kinds distinguish them
+        # and cost nothing to record.
+        self.last_stop_reason = getattr(msg, "stop_reason", "") or ""
+        self.last_block_kinds = [getattr(b, "type", "?") for b in (msg.content or [])]
         text = "".join(b.text for b in msg.content
                        if getattr(b, "type", None) == "text")
         return _strip_think(text)
@@ -358,5 +396,9 @@ class LLMClient:
 
     def propose(self, system: str, user: str, max_tokens: int = 1024) -> str:
         text = self._backend.propose(system, user, max_tokens)
+        # Carried up from whichever backend answered, so callers can say WHY a reply was
+        # unusable instead of only that it was.
+        self.last_stop_reason = getattr(self._backend, "last_stop_reason", "")
+        self.last_block_kinds = list(getattr(self._backend, "last_block_kinds", []))
         self.usage.add(getattr(self._backend, "last_usage", {}))
         return text

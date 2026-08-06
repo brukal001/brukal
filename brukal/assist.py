@@ -3383,10 +3383,18 @@ class AssistSession:
         # got a truncated reply, parsed nothing, and left no trace at all — the coverage
         # table simply had no row, which is the exact ambiguity that table exists to
         # remove. "Asked and got nothing usable" is a result and has to be visible.
-        self._covered("Model-proposed experiments", probes=len(proposals),
-                      note=("two gated requests each, judged by a fixed comparator"
-                            if proposals else
-                            f"model returned no usable experiment ({len(reply)} chars)"))
+        if proposals:
+            _why = "two gated requests each, judged by a fixed comparator"
+        else:
+            # Say WHY. An empty reply comes from a refusal, from an allowance spent
+            # entirely on thinking, and from a truncation — three causes needing three
+            # different responses, and "0 chars" distinguishes none of them.
+            _stop = getattr(llm, "last_stop_reason", "") or "unknown"
+            _kinds = ",".join(getattr(llm, "last_block_kinds", []) or []) or "none"
+            _why = (f"model returned no usable experiment ({len(reply)} chars; "
+                    f"stop_reason={_stop}; blocks={_kinds})")
+            self.note(f"[experiment] no usable proposal — {_why}")
+        self._covered("Model-proposed experiments", probes=len(proposals), note=_why)
         if not proposals:
             return 0
 
