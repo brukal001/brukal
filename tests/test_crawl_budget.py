@@ -206,3 +206,53 @@ def test_the_summary_separates_fetched_pages_from_mined_guesses():
     assert "/app/admin/users" in text.split("mined")[0], \
         "the verified path is not listed ahead of the mined guesses"
     assert "UNVERIFIED" in text
+
+
+# --- reaching an endpoint that nothing links to --------------------------------------
+class _UnlinkedRoute:
+    """The app mounts everything under /app/. One documentation page NAMES /app/redirect
+    in its text; no anchor anywhere points at it. That is DVNA exactly: a live open
+    redirect that no link-following crawl can reach, while the report said the class had
+    been probed nine times and found nothing."""
+
+    def __init__(self):
+        self.seen = []
+
+    def run(self, action):
+        self.seen.append(action.url)
+        path = action.url.split("5000", 1)[-1]
+        if path == "/":
+            links = "".join(f'<a href="/app/{p}">x</a>' for p in ("one", "two", "three"))
+            links += "".join(f'<a href="/docs/p{i}">d</a>' for i in range(8))
+            return WebResult(status=200, url=action.url,
+                             headers={"content-type": "text/html"}, body=f"<html>{links}</html>")
+        if path.startswith("/docs/"):
+            # Only the LAST doc page names the unlinked route, so a quota that defers
+            # the family must still get around to reading it.
+            extra = "see /app/redirect for examples" if path == "/docs/p7" else "prose"
+            return WebResult(status=200, url=action.url,
+                             headers={"content-type": "text/html"},
+                             body=f"<html><p>{extra}</p></html>")
+        return WebResult(status=200, url=action.url,
+                         headers={"content-type": "text/html"}, body="<html>app</html>")
+
+
+def test_an_unlinked_route_named_only_in_text_is_recovered():
+    cage = _UnlinkedRoute()
+    s = _sess(cage)
+    surface = s.crawl(seeds=[ROOT], max_pages=8)
+    assert "app" in surface.mount_prefixes()
+    assert "/app/redirect" in surface.api_routes, \
+        f"unlinked route not recovered; routes={surface.api_routes}"
+
+
+def test_a_path_under_an_unproven_prefix_is_not_promoted():
+    """A string in a page is not a route. Only a prefix the crawl has fetched more than
+    once earns the benefit of the doubt, or every scrap of prose becomes a request."""
+    from brukal import webmap
+    surface = webmap.AttackSurface(seed="http://t:9090/")
+    for p in ("/app/a", "/app/b"):
+        surface.add_page(f"http://t:9090{p}", set(), [], {})
+    surface.path_candidates |= {"/app/hidden", "/nowhere/hidden"}
+    promoted = surface.promote_mounted_routes()
+    assert "/app/hidden" in promoted and "/nowhere/hidden" not in promoted

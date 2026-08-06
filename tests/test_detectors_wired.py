@@ -47,3 +47,15 @@ def test_the_confirmation_pass_reaches_the_high_value_ones():
                  "confirm_horizontal_takeover_via_form", "confirm_blind_ssrf"):
         assert re.search(r"self\.%s\b" % name, pass_src), \
             f"{name} is never reached from confirm_surface()"
+
+
+def test_the_new_classes_are_probed_and_reportable():
+    """A detector that exists, is called, but whose class cannot report a finding is the
+    same silence in a different place — five instances of that this session."""
+    from brukal.assist import _COVERAGE_WORDS
+    import re as _re
+    probed = set(_re.findall(r'_covered\(\s*"([^"]+)"', SRC))
+    for klass in ("Insecure deserialization", "Session management", "Password policy",
+                  "Default credentials", "Blind injection (out-of-band)"):
+        assert klass in probed, f"{klass} is never probed"
+        assert klass in _COVERAGE_WORDS, f"{klass} can never report found=True"

@@ -134,8 +134,13 @@ def build_report(store: FindingStore, meta: dict) -> str:
             verdict = "**finding**" if found else "none found"
             out.append(f"| {klass} | {probes} | {verdict} | {note or '-'} |")
         out.append("")
-        out.append("_A class listed here was exercised. A class absent from this table "
-                   "was not reached in this run, and its silence is not a clean result._")
+        out.append("_A class listed here was exercised **against the endpoints in the "
+                   "map above** — which is a narrower statement than it looks. An "
+                   "endpoint nothing links to, or one the crawl never reached, was not "
+                   "probed by any class, so a row reading 'none found' is evidence "
+                   "about the mapped surface and not about the application. A class "
+                   "absent from this table was not reached at all, and its silence is "
+                   "not a clean result either._")
         out.append("")
 
     # --- findings, ranked -----------------------------------------------------

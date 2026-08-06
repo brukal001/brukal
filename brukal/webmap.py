@@ -188,6 +188,20 @@ _API_ROUTE_RE = re.compile(
     r"(?:/[A-Za-z0-9_.~:{}-]{1,50}){0,5}", re.I)
 
 
+# Any rooted path-shaped string, with NO keyword allowlist. `_API_ROUTE_RE` above only
+# matches a fixed set of first segments (api, admin, user, products, ...), so an
+# application that mounts its routes under any other prefix is invisible to it. DVNA
+# mounts everything under `/app/`: the string "/app/redirect" appears in a page the
+# crawl fetched, nothing linked to it, and the miner skipped it because "app" is not a
+# keyword. The result was a live open redirect that no crawl could reach and a coverage
+# row reading "Open redirect | 9 probes | none found".
+#
+# Matching everything path-shaped would be noise, so these are held as CANDIDATES and
+# only promoted once the crawl has shown the prefix is real — see mount_prefixes().
+_PATH_CANDIDATE_RE = re.compile(
+    r"/[A-Za-z][A-Za-z0-9_-]{1,24}(?:/[A-Za-z0-9_.~:{}-]{1,40}){1,4}")
+
+
 # Static assets that match the route shapes but are never an API endpoint. They cost
 # nothing to match and everything to keep: under a hard cap they push real endpoints out.
 _ASSET_RE = re.compile(
@@ -425,6 +439,17 @@ def protected_operations(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def extract_path_candidates(text: str, cap: int = 200) -> set:
+    """Every rooted, path-shaped string in a body. Untrusted and unfiltered by design —
+    `AttackSurface.promote_mounted_routes` decides which are worth a request."""
+    out = set()
+    for m in _PATH_CANDIDATE_RE.finditer(text or ""):
+        out.add(m.group(0))
+        if len(out) >= cap:
+            break
+    return out
+
+
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     """Pull distinct API-ish route paths out of a fetched body (JS bundle or HTML).
     Deterministic regex over UNTRUSTED text — the paths become leads in the site map,
@@ -461,6 +486,7 @@ class AttackSurface:
     write_operations: list = field(default_factory=list)  # (METHOD, templated path) that mutate state
     privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set
     soft_404: bool = False                           # host answers 200 for missing paths
+    path_candidates: set = field(default_factory=set)  # path-shaped strings seen in bodies
 
     def add_page(self, url: str, links, forms, params) -> None:
         self.pages.add(url)
@@ -470,6 +496,48 @@ class AttackSurface:
                 self.forms.append(f)
         for b, names in params.items():
             self.params.setdefault(b, set()).update(names)
+
+    def mount_prefixes(self, minimum: int = 2) -> set:
+        """First path segments the crawl has actually FETCHED more than once.
+
+        A prefix Brukal has retrieved repeatedly is a real mount point for this
+        application, not a guess — which is what makes it safe to trust paths under it
+        that were only ever seen as text."""
+        from collections import Counter
+        counts = Counter()
+        for url in self.pages:
+            segs = [x for x in (urlsplit(url).path or "").split("/") if x]
+            if segs:
+                counts[segs[0]] += 1
+        return {seg for seg, n in counts.items() if n >= minimum}
+
+    def promote_mounted_routes(self, cap: int = 24) -> list:
+        """Candidate paths that sit under a mount prefix the crawl proved real.
+
+        This is the narrow, evidence-backed way to reach an endpoint nothing links to.
+        A string in a page is not a route; a string under a prefix we have fetched
+        repeatedly is worth one gated request. Everything downstream still has to prove
+        a finding — promotion only decides where to look."""
+        prefixes = self.mount_prefixes()
+        if not prefixes:
+            return []
+        known = set(self.api_routes)
+        fetched = {urlsplit(u).path for u in self.pages}
+        promoted = []
+        for path in sorted(self.path_candidates):
+            if path in known or path in fetched:
+                continue
+            segs = [x for x in path.split("/") if x]
+            if len(segs) < 2 or segs[0] not in prefixes:
+                continue
+            if _ASSET_RE.search(path):
+                continue
+            promoted.append(path)
+            if len(promoted) >= cap:
+                break
+        if promoted:
+            self.add_routes(promoted)
+        return promoted
 
     def add_routes(self, routes, cap: int = 60) -> None:
         """Fold API routes mined from a body into the map (deduped, capped)."""
