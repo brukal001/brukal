@@ -222,6 +222,8 @@ _COVERAGE_WORDS = {
                                     "administrative endpoint"),
     "Credential recovery": ("reset token", "password reset"),
     "Default credentials": ("default credentials",),
+    "Session management": ("session fixation", "not rotated", "session not revoked"),
+    "Password policy": ("password complexity", "password policy"),
     "Blind injection (out-of-band)": ("blind ssrf", "blind rce", "out-of-band"),
     # Probed for a long time with no words here at all, so however much they found the
     # table reported "none found" — the report contradicting its own finding list. That
@@ -243,6 +245,17 @@ _COVERAGE_WORDS = {
     # produced two critical findings.
     "Model-proposed experiments": ("\x00never-matches",),
 }
+
+
+def _norm_ws(text) -> str:
+    """Collapse whitespace, so two renderings of the same page compare equal.
+
+    Referenced by the recovery-enumeration differential before it existed anywhere — a
+    NameError that would have been swallowed whole by the caller's `except Exception`,
+    turning a detector into a silent no-op indistinguishable from a clean target. That
+    is the fifth time an unwired or unreachable check has hidden behind broad exception
+    handling in this file."""
+    return re.sub(r"\s+", " ", (text or "")).strip()
 
 
 def _issued_session(body: str) -> bool:
@@ -3709,6 +3722,14 @@ class AssistSession:
                 return form
         if not fetch or self.browser is None:
             return None
+        # Remember the answer, INCLUDING "there is none". Several detectors ask, and the
+        # fallback costs up to five speculative fetches each time — which turned a
+        # fifteen-second test suite into a hundred-and-forty-second one and would spend
+        # the same requests repeatedly against a real target. A signup form does not
+        # appear or vanish partway through an engagement.
+        if hasattr(self, "_signup_form_cache"):
+            return self._signup_form_cache
+        self._signup_form_cache = None
 
         from . import webmap
         from .web import WebAction
@@ -3738,6 +3759,7 @@ class AssistSession:
                     continue
                 if any((t or "").lower() == "password"
                        for _n, t in (getattr(form, "inputs", []) or [])):
+                    self._signup_form_cache = form
                     return form
         return None
 
@@ -3853,6 +3875,187 @@ class AssistSession:
             self.note(f"[confirm] reset token is {name}(username) on {reset_url}")
             return True
         return False
+
+    def confirm_session_fixation(self, login_url: str, username: str,
+                                 password: str) -> bool:
+        """The session identifier is not rotated when privilege changes (CWE-384).
+
+        A competitor reported this on a target where Brukal had no check for it at all.
+        The flaw is that an attacker who can plant a session id in a victim's browser —
+        via a link, a subdomain cookie, an XSS — still holds a valid one after the victim
+        logs in, because the application kept the same identifier and merely attached an
+        identity to it.
+
+        Deterministic and read-only: take the identifier a stranger is given, log in with
+        it, and see whether the identifier survived. No guessing and no payload — the
+        application either issues a new one or it does not."""
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not (login_url and username and password):
+            return False
+        with self._separate_identity():
+            try:
+                self.browser.run(WebAction("request", url=login_url, method="GET"))
+            except Exception:
+                return False
+            before = dict(getattr(self.browser, "_cookies", {}) or {})
+            if not before:
+                return False              # no pre-auth session to fixate
+            if not self.login(login_url, username, password):
+                return False
+            after = dict(getattr(self.browser, "_cookies", {}) or {})
+        kept = [k for k, v in before.items()
+                if k in after and after[k] == v and len(str(v)) >= 8]
+        if not kept:
+            return False                  # rotated: correct behaviour
+        name = kept[0]
+        self.findings.add(Finding(
+            title="Session identifier not rotated on login (session fixation)",
+            severity="high", category="auth",
+            target=login_url, param=name, confirmed=True,
+            evidence=(f"the value of '{name}' issued to an anonymous visitor was still "
+                      f"the session identifier after a successful login, so an "
+                      f"identifier planted in a victim's browser before they "
+                      f"authenticate remains valid afterwards and carries their "
+                      f"privileges"),
+            source=(f"GET {login_url} as a stranger, record '{name}', POST the "
+                    f"credentials, compare '{name}' again")))
+        self.note(f"[confirm] session identifier '{name}' survives login on {login_url}")
+        return True
+
+    def confirm_recovery_enumeration(self, recovery_url: str, known_user: str,
+                                     field: str = "login") -> bool:
+        """The password-recovery form tells a stranger which accounts exist.
+
+        Brukal already asks this of the LOGIN endpoint. A competitor found it on the
+        recovery endpoint instead, which is a different handler, is usually written with
+        less care, and is reachable without any credential at all. Same differential
+        discipline: an account we know exists against one that cannot, and only a
+        difference in the answers is evidence."""
+        import uuid as _uuid
+
+        from .findings import Finding
+        from .web import WebAction
+        if self.browser is None or not (recovery_url and known_user):
+            return False
+        absent = f"brukal-{_uuid.uuid4().hex[:10]}@example.invalid"
+
+        def ask(value: str):
+            from urllib.parse import urlencode
+            with self._separate_identity():
+                try:
+                    _d, r = self.browser.run(WebAction(
+                        "request", url=recovery_url, method="POST",
+                        body=urlencode({field: value}),
+                        headers={"Content-Type": "application/x-www-form-urlencoded"}))
+                except Exception:
+                    return None
+            return r
+
+        real, fake = ask(known_user), ask(absent)
+        if real is None or fake is None:
+            return False
+        real_loc = (real.headers or {}).get("Location", "") or (real.headers or {}).get("location", "")
+        fake_loc = (fake.headers or {}).get("Location", "") or (fake.headers or {}).get("location", "")
+        differs = (real.status != fake.status) or (real_loc != fake_loc)
+        if not differs:
+            # Bodies too, with the submitted values removed so an echo cannot fake it.
+            stripped_real = (real.body or "").replace(known_user, "")
+            stripped_fake = (fake.body or "").replace(absent, "")
+            differs = _norm_ws(stripped_real) != _norm_ws(stripped_fake)
+        if not differs:
+            return False
+        self.findings.add(Finding(
+            title="Account enumeration via the password recovery endpoint",
+            severity="medium", category="auth",
+            target=recovery_url, param=field, confirmed=True,
+            evidence=(f"a recovery request for an account that exists was answered "
+                      f"differently (HTTP {real.status}{' -> ' + real_loc if real_loc else ''}) "
+                      f"from one that cannot exist (HTTP {fake.status}"
+                      f"{' -> ' + fake_loc if fake_loc else ''}), so an unauthenticated "
+                      f"stranger can test any address for membership"),
+            source=(f"POST {recovery_url} with {field}={known_user} versus the same "
+                    f"request with a random address")))
+        self.note(f"[confirm] recovery endpoint enumerates accounts: {recovery_url}")
+        return True
+
+    def confirm_weak_password_policy(self) -> bool:
+        """The server accepts a password no policy would allow (CWE-521).
+
+        Not a guess about strength rules: it registers a real account through the app's
+        own signup form with a trivially weak secret and reports only if the account is
+        actually created. What makes it worth reporting alongside the rest is that every
+        rate-limit and enumeration flaw becomes materially cheaper to exploit when the
+        passwords behind them are guessable."""
+        from urllib.parse import urlencode
+
+        from .findings import Finding
+        from .web import WebAction
+        form = self._signup_form()
+        if form is None or self.browser is None or not self.allow_intrusive:
+            return False
+        import uuid as _uuid
+        weak = "1"
+        tag = _uuid.uuid4().hex[:10]
+        user = f"brkw{tag}"
+        body = {}
+        for field, ftype in (getattr(form, "inputs", []) or []):
+            if (ftype or "").lower() == "file":
+                continue
+            role = ""
+            for name, rx in self._FIELD_ROLES:
+                if rx.search(field):
+                    role = name
+                    break
+            if not role and (ftype or "").lower() == "password":
+                role = "password"
+            body[field] = {"password": weak, "confirm": weak,
+                           "email": f"{user}@example.invalid", "username": user,
+                           "name": f"Brukal {tag}"}.get(role, user)
+        with self._separate_identity():
+            try:
+                _d, r = self.browser.run(WebAction(
+                    "request", url=form.action, method="POST", body=urlencode(body),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}))
+            except Exception:
+                return False
+            if r is None or (r.status or 0) >= 400:
+                return False
+            # The proof is a usable account, not a 200: an app may accept the form and
+            # reject the password silently.
+            login_url = self._login_endpoint()
+            if not login_url or not self.login(login_url, user, weak):
+                return False
+        self.findings.add(Finding(
+            title="No server-side password complexity policy",
+            severity="medium", category="auth",
+            target=form.action, param="", confirmed=True,
+            evidence=(f"an account was created through the public signup form with the "
+                      f"password {weak!r} and then authenticated with it, so the server "
+                      f"enforces no minimum length or composition at all"),
+            source=(f"POST {form.action} with a one-character password, then log in "
+                    f"as {user}")))
+        self.note("[confirm] the server accepts a one-character password")
+        return True
+
+    def recovery_endpoints(self, limit: int = 2):
+        """(url, field) for password-recovery forms the crawl found. Read from the
+        surface so an app that calls it something else is still covered."""
+        surface = getattr(self, "surface", None)
+        out = []
+        rx = re.compile(r"forgot|recover|reset|lost.?pass", re.I)
+        for form in (getattr(surface, "forms", []) or []):
+            action = getattr(form, "action", "") or ""
+            if (getattr(form, "method", "") or "").upper() != "POST" or not rx.search(action):
+                continue
+            names = [n for n, _t in (getattr(form, "inputs", []) or [])]
+            ident = next((n for n in names
+                          if re.search(r"login|user|email|account", n, re.I)), "")
+            if ident:
+                out.append((action, ident))
+                if len(out) >= limit:
+                    break
+        return out
 
     def reset_token_targets(self):
         """(reset_url, id_param, token_param) for every crawled endpoint that takes an
@@ -4550,6 +4753,45 @@ class AssistSession:
                             break
                     except Exception:
                         pass
+
+            # 2e) AUTHENTICATION POSTURE a competitor found and Brukal had no check
+            #     for: whether the session identifier survives a privilege change,
+            #     whether the RECOVERY endpoint enumerates accounts (a different handler
+            #     from the login, usually written with less care and reachable with no
+            #     credential at all), and whether the server enforces any password
+            #     policy. All read-only except the last, which is gated.
+            _fix_login = self._login_endpoint()
+            if (_fix_login and self.identity and getattr(self, "_login_password", "")
+                    and self._confirm_budget > 0 and not self._rate_limited):
+                self._covered("Session management",
+                              note="identifier compared across a login")
+                try:
+                    if self.confirm_session_fixation(_fix_login, self.identity,
+                                                     self._login_password):
+                        confirmed += 1
+                except Exception:
+                    pass
+
+            for _rurl, _rfield in self.recovery_endpoints():
+                if self._confirm_budget <= 0 or self._rate_limited:
+                    break
+                self._covered("Authentication posture",
+                              note="recovery endpoint, real account vs impossible one")
+                try:
+                    if self.confirm_recovery_enumeration(_rurl, self.identity or "",
+                                                         _rfield):
+                        confirmed += 1
+                        break
+                except Exception:
+                    pass
+
+            if self.allow_intrusive and self._confirm_budget > 0 and not self._rate_limited:
+                self._covered("Password policy", note="a one-character password")
+                try:
+                    if self.confirm_weak_password_policy():
+                        confirmed += 1
+                except Exception:
+                    pass
 
             # Shipped credentials that were never changed. This detector exists
             # BECAUSE a comparative benchmark found a critical default login Brukal had
