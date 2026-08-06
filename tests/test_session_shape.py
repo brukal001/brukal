@@ -183,3 +183,31 @@ def test_preflight_passes_when_the_target_answers_at_all():
                       StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
                       browser=GovernedBrowser(scope, _Answers(), audit))
     assert _preflight(s) is True
+
+
+def test_preflight_probes_the_origin_the_run_will_use():
+    """The first version assumed http://{target}/ — port 80 — and blocked a healthy
+    engagement whose application was on :9090, one line after the login to that same
+    port had succeeded. A guard that fails closed is right; one that fails closed for
+    the wrong reason costs a run and teaches the operator to ignore it."""
+    from brukal.assist import _preflight
+
+    class _OnlyOn9090:
+        def __init__(self):
+            self.seen = []
+
+        def run(self, action):
+            self.seen.append(action.url)
+            if ":9090" in action.url:
+                return WebResult(status=302, url=action.url, headers={}, body="")
+            raise OSError("connection refused")
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    cage = _OnlyOn9090()
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, cage, audit))
+    s._login_url = "http://127.0.0.1:9090/login"
+    assert _preflight(s) is True, f"probed {cage.seen}"
+    assert any(":9090" in u for u in cage.seen)

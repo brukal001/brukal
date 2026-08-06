@@ -6679,7 +6679,23 @@ def _preflight(session, console=None) -> bool:
     if browser is None:
         return True                       # no web layer in this engagement; nothing to check
     from .web import WebAction
+
+    # Probe the ORIGIN THE RUN WILL USE, which is rarely port 80. The first version of
+    # this check assumed `http://{target}/` and promptly blocked a healthy engagement:
+    # the login had just succeeded at :9090 on the line above, and the preflight then
+    # declared the target unreachable because nothing was listening on 80. A guard that
+    # fails closed is right; a guard that fails closed for the wrong reason costs a run
+    # and teaches the operator to ignore it.
+    #
+    # The login URL is authoritative when the operator gave one — it is a place we have
+    # already reached. Otherwise fall back to the bare target.
+    from urllib.parse import urlsplit
     url = f"http://{session.target}/"
+    login_url = getattr(session, "_login_url", "") or ""
+    if login_url:
+        sp = urlsplit(login_url)
+        if sp.scheme and sp.netloc:
+            url = f"{sp.scheme}://{sp.netloc}/"
     try:
         _d, result = browser.run(WebAction("request", url=url, method="GET"))
     except Exception as exc:
