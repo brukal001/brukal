@@ -70,6 +70,34 @@ _UNSURE_SVC_RE = re.compile(r"\?$|^unknown$|^tcpwrapped$|^ppp$", re.I)
 # URLs that DESTROY the session: never fetch these during a crawl, or we log
 # ourselves out and the rest of an AUTHENTICATED crawl runs unauthenticated (a
 # classic authenticated-scanning trap — the scanner clicks its own "logout").
+# A link that SETS a configuration value. `/difficulty/hard` is a plain GET with no
+# destructive word in it, and following it during a crawl silently switched a live
+# target from easy mode to hard mode — disabling GraphQL introspection PARTWAY THROUGH
+# Brukal's own assessment. The finding made before that request was true and the
+# verification after it failed, because they were made against two different
+# applications.
+#
+# Three things are wrong with that, in rising order of seriousness: the run is not
+# reproducible, it is not internally consistent, and on a real engagement Brukal would
+# have altered a client's security posture without being asked. The existing
+# destructive-path doctrine — "read-only is a property of the METHOD, not the endpoint"
+# — was already written down here; the crawl simply never applied it.
+#
+# The shape is a configuration noun followed by the value it is being set to. Matching
+# the noun alone would refuse `/settings`, which is an ordinary page worth reading.
+_CONFIG_SET_RE = re.compile(
+    r"/(?:difficulty|mode|level|setting|config|configuration|preference|theme|locale|"
+    r"lang|language|toggle|switch|feature[-_]?flag|env|environment)s?/"
+    r"[A-Za-z0-9_.-]{1,40}/?$", re.I)
+
+
+def _changes_target_state(url: str) -> bool:
+    """Whether following this link would change the APPLICATION rather than read it.
+
+    Used to keep a crawl read-only in EFFECT, not merely in method."""
+    return bool(_CONFIG_SET_RE.search(url or ""))
+
+
 _LOGOUT_RE = re.compile(r"(?:log[-_]?out|sign[-_]?out|log[-_]?off|/logoff\b"
                         r"|[?&](?:action|do|page|op)=(?:log[-_]?out|sign[-_]?out))", re.I)
 
@@ -1271,6 +1299,8 @@ class AssistSession:
         # rather than dropping keeps the crawl a strict improvement: nothing becomes
         # unreachable, it just stops going first.
         deferred: deque = deque()
+        skipped_state: set = set()       # links refused because following them would
+                                         # have changed the target rather than read it
         family_count: dict = {}
         non_html = 0
         visited: set = set()
@@ -1362,8 +1392,22 @@ class AssistSession:
             links, forms, params = webmap.extract(url, body)
             # Exclude session-destroying links (logout/signout) so an authenticated
             # crawl keeps its session for the whole run.
-            in_scope_links = {l for l in links
-                              if _in_scope(l) and not _LOGOUT_RE.search(l)}
+            # A crawl must be read-only in EFFECT. Logout ends our own session;
+            # irreversible paths destroy the target's data; a configuration link
+            # reconfigures the application under the assessment that is measuring it.
+            # All three are recorded rather than silently dropped, because "Brukal
+            # declined to touch this" is information an operator needs.
+            in_scope_links = set()
+            for l in links:
+                if not _in_scope(l):
+                    continue
+                if _LOGOUT_RE.search(l):
+                    continue
+                if self._is_irreversible_path(l) or _changes_target_state(l):
+                    if l not in skipped_state:
+                        skipped_state.add(l)
+                    continue
+                in_scope_links.add(l)
             surface.add_page(url, in_scope_links, forms, params)
             self.scan_web_body(url, body)      # every crawled page is evidence too
             # Mine API route paths from the body (crucial for SPAs: the endpoints live
@@ -1403,6 +1447,11 @@ class AssistSession:
                 continue
             surface.path_candidates |= webmap.extract_path_candidates(dres.body)
             surface.add_routes(webmap.extract_api_routes(dres.body))
+
+        if skipped_state:
+            self.note(f"[crawl] did NOT follow {len(skipped_state)} link(s) that would "
+                      f"have changed the target rather than read it: "
+                      f"{', '.join(sorted(skipped_state)[:5])}")
 
         # Promote paths seen only as TEXT but sitting under a prefix this crawl has
         # fetched repeatedly. DVNA's open redirect lives at /app/redirect: the string is
@@ -6952,6 +7001,24 @@ def _preflight(session, console=None) -> bool:
         result = None
         session.notes.append(f"[preflight] {url} raised {type(exc).__name__}")
     if result is not None and getattr(result, "status", None) is not None:
+        return True
+    # A failure is only EVIDENCE of a dead target when we knew where to knock. Without
+    # an operator-supplied login URL there is no port to use but 80, and recon has not
+    # run yet to discover the real one — so a silent port 80 is the normal case for an
+    # application on :3000, :5013 or :8080, not a reason to abort.
+    #
+    # This guard has now blocked two healthy engagements. It was added because a run
+    # spent $0.46 assessing nothing, and it has since cost more runs than it saved. A
+    # guard that fails closed for the WRONG REASON is worse than no guard: it burns the
+    # run and teaches the operator to ignore the warning, so the day it fires correctly
+    # nobody listens. Certainty about the origin is what licenses a hard stop.
+    if not login_url:
+        note = (f"⚠ preflight could not reach {url}, but no target URL was supplied and "
+                f"recon has not yet found the open ports — continuing, since an "
+                f"application on a non-default port answers nothing on 80. Target "
+                f"health will report honestly if nothing is reachable.")
+        session.notes.append(f"[preflight] {note}")
+        _emit(console, f"  {note}")
         return True
     msg = (f"⚠ PREFLIGHT FAILED: {url} returned nothing through the governed browser. "
            f"The target, the cage, or the route between them is down — a run started "

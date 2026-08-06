@@ -152,7 +152,11 @@ def test_preflight_refuses_to_start_against_an_unreachable_target():
     """A run once spent $0.46 and thirty-two model calls against a target it could not
     touch: the cage had failed to start on a stale bind mount, so every request died at
     the source. The health monitor reported it honestly — "none of 13 requests were
-    answered" — but only afterwards, once the budget was gone."""
+    answered" — but only afterwards, once the budget was gone.
+
+    The abort now requires a KNOWN origin. This test used to omit one, asserting a hard
+    stop from a silent port 80 — which blocked two healthy engagements on applications
+    listening elsewhere before recon had a chance to find the port."""
     from brukal.assist import _preflight
 
     class _Dead:
@@ -164,6 +168,7 @@ def test_preflight_refuses_to_start_against_an_unreachable_target():
     s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
                       StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
                       browser=GovernedBrowser(scope, _Dead(), audit))
+    s._login_url = "http://127.0.0.1:9090/login"      # we were told where it lives
     assert _preflight(s) is False
     assert any("PREFLIGHT FAILED" in n for n in s.notes)
 
@@ -211,3 +216,41 @@ def test_preflight_probes_the_origin_the_run_will_use():
     s._login_url = "http://127.0.0.1:9090/login"
     assert _preflight(s) is True, f"probed {cage.seen}"
     assert any(":9090" in u for u in cage.seen)
+
+
+def test_preflight_does_not_abort_when_it_never_knew_the_port():
+    """A failure is only evidence of a dead target when we knew where to knock. With no
+    operator-supplied URL there is no port but 80, and recon has not run yet — so an app
+    on :5013 answers nothing on 80 and that proves nothing. This guard blocked two
+    healthy engagements; it has cost more runs than it saved."""
+    from brukal.assist import _preflight
+
+    class _Dead:
+        def run(self, action):
+            raise OSError("connection refused")
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Dead(), audit))
+    assert _preflight(s) is True, "aborted on a port it was never told about"
+    assert any("could not reach" in n for n in s.notes)
+
+
+def test_preflight_still_aborts_when_the_origin_was_known():
+    """The case it exists for: we were told exactly where the application is, and
+    nothing answered."""
+    from brukal.assist import _preflight
+
+    class _Dead:
+        def run(self, action):
+            raise OSError("connection refused")
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Dead(), audit))
+    s._login_url = "http://127.0.0.1:9090/login"
+    assert _preflight(s) is False
