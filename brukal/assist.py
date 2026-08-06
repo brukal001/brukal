@@ -99,6 +99,9 @@ _MAX_NON_HTML = 5
 # Extra reads for ROUTE DISCOVERY only, after the page budget is spent. Deliberately
 # small: their whole purpose is to harvest path strings from pages a quota deferred.
 _MINING_READS = 8
+# Below this many requests per minute, calibration's few probes are a material fraction
+# of the whole engagement and are better spent on findings.
+_CALIBRATION_MIN_RATE = 60
 
 
 def _looks_non_html(url: str) -> bool:
@@ -2708,6 +2711,25 @@ class AssistSession:
 
     _IMDS_RE = re.compile(r"ami-id|instance-id|iam/security-credentials|"
                           r"computeMetadata|\"AccessKeyId\"|placement/availability-zone", re.I)
+    def _refused(self, result, body: str = "") -> bool:
+        """Was this request refused? Asked of the APPLICATION first, its prose second.
+
+        The regex below reads the target's own words to make a security decision, which
+        is doubly wrong. It is English-only and framework-specific, so it generalises to
+        whatever the author had seen — and it takes a hostile target at its word, which
+        invariant 1 exists to forbid. A page can say "Access denied" and hand over the
+        data anyway, or say nothing and refuse.
+
+        The learned refusal baseline settles it whenever calibration established one.
+        The phrase list survives only as the fallback for an uncalibrated run, where
+        some signal beats none."""
+        profile = getattr(self, "profile", None)
+        if profile is not None and result is not None:
+            verdict = profile.is_denied(result)
+            if verdict is not None:
+                return verdict
+        return bool(self._AUTHZ_DENY_RE.search(body or ""))
+
     _AUTHZ_DENY_RE = re.compile(r"(?i)forbidden|unauthor|access denied|not allowed|"
                                 r"permission denied|\b403\b|\b401\b|login required")
 
@@ -2763,12 +2785,21 @@ class AssistSession:
         from urllib.parse import parse_qsl, urlsplit
         cur = dict(parse_qsl(urlsplit(url).query)).get(param, "")
         n = int(cur) if cur.isdigit() else 1
+        from types import SimpleNamespace as _NS
         base, _s, _h = self._probe(url, param, str(n), method, extra)
-        if not base or self._AUTHZ_DENY_RE.search(base):
+        if not base or self._refused(_NS(status=_s, body=base, headers=_h or {}), base):
             return False
         for nb in (str(n + 1), str(max(0, n - 1)), str(n + 2)):
             body, _s2, _h2 = self._probe(url, param, nb, method, extra)
-            if not body or self._AUTHZ_DENY_RE.search(body) or len(body) < 50:
+            got = _NS(status=_s2, body=body, headers=_h2 or {})
+            if not body or self._refused(got, body):
+                continue
+            # "Enough content to be an object" measured against what THIS app returns
+            # for nothing, not against a constant fifty bytes — an app that renders a
+            # full template around an empty result answers in kilobytes.
+            profile = getattr(self, "profile", None)
+            substantive = profile.is_substantive(got) if profile is not None else None
+            if substantive is False or (substantive is None and len(body) < 50):
                 continue
             sim = difflib.SequenceMatcher(None, base, body).ratio()
             if body != base and 0.3 < sim < 0.98:      # different object, same page shape
@@ -3359,7 +3390,7 @@ class AssistSession:
                 self.note(f"[experiment] ERRORED before reaching the target: {h.title} "
                           f"({type(exc).__name__}: {str(exc)[:80]})")
                 continue
-            holds, meaning = _hyp.judge(h, a, b)
+            holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None))
             if not holds:
                 # Keep what happened — a round that confirms nothing is still the only
                 # information the next round has. But only when the target actually
@@ -3973,6 +4004,80 @@ class AssistSession:
             return True
         return False
 
+    def calibrate(self, max_requests: int = 4):
+        """Learn what this application's answers mean, before anything is judged.
+
+        Four gated requests buy every later comparison a baseline drawn from the target
+        instead of from a constant somebody wrote against a different application. The
+        denial baseline is the valuable one: it is what `a_denied_b_allowed` needed and
+        did not have, and its absence meant an app that refuses with a redirect to
+        /login could not produce an authorization finding at all.
+
+        Read-only, and it never concludes anything on its own — a profile only makes
+        later evidence interpretable."""
+        from . import calibrate as _cal
+        from .web import WebAction
+        profile = _cal.TargetProfile()
+        if self.browser is None:
+            self.profile = profile
+            return profile
+        # Calibration is OVERHEAD, and overhead must not starve the work. On a tightly
+        # rate-limited engagement the handful of requests it costs are requests not
+        # spent probing — measured: on a 30/min scope those few tipped the run over the
+        # wall and a confirmed injection finding was lost. Above that, the cost is
+        # noise and the accuracy it buys applies to every later comparison, so the
+        # trade is worth making explicitly rather than accidentally.
+        scope = getattr(self.browser, "_scope", None)
+        per_min = getattr(scope, "rate_limit_per_min", None) if scope else None
+        if isinstance(per_min, int) and 0 < per_min < _CALIBRATION_MIN_RATE:
+            self.profile = profile
+            self.note(f"[calibration] skipped: the scope allows only {per_min} "
+                      f"request(s)/min, and those are better spent probing. Later "
+                      f"comparisons fall back to their built-in rules.")
+            return profile
+        surface = getattr(self, "surface", None)
+        base = (getattr(surface, "seed", "") if surface else "") or f"http://{self.target}/"
+
+        def fetch(url, anonymous=False):
+            try:
+                if anonymous:
+                    with self._separate_identity():
+                        return self.browser.run(WebAction("request", url=url,
+                                                          method="GET"))[1]
+                return self.browser.run(WebAction("request", url=url, method="GET"))[1]
+            except Exception:
+                return None
+
+        # 1) What a page we are ALLOWED to see looks like.
+        profile.learn_ok(fetch(base), base)
+        # 2) What "no such thing" looks like. Reuses the soft-404 idea, but keeps the
+        #    whole response rather than only the yes/no, because the SHAPE is what later
+        #    comparisons need.
+        import uuid as _uuid
+        from urllib.parse import urljoin as _urljoin
+        miss = _urljoin(base, f"/brukal-absent-{_uuid.uuid4().hex[:12]}")
+        profile.learn_missing(fetch(miss), miss)
+        # 3) What a REFUSAL looks like: a resource we have reached WITH a session, asked
+        #    again WITHOUT one. Anything that changes between those two answers is the
+        #    application telling us how it says no. Skipped when we hold no session,
+        #    since then there is no privileged resource to compare against.
+        if self.has_session():
+            protected = ""
+            for page in sorted(getattr(surface, "pages", set()) or []):
+                if page != base and not _LOGOUT_RE.search(page):
+                    protected = page
+                    break
+            if protected:
+                anon = fetch(protected, anonymous=True)
+                mine = fetch(protected)
+                if (anon is not None and mine is not None
+                        and not _cal.Sample(anon).resembles(_cal.Sample(mine))):
+                    profile.learn_denied(anon, protected)
+        self.profile = profile
+        if profile.notes:
+            self.note(profile.summary())
+        return profile
+
     def confirm_session_fixation(self, login_url: str, username: str,
                                  password: str) -> bool:
         """The session identifier is not rotated when privilege changes (CWE-384).
@@ -4197,8 +4302,14 @@ class AssistSession:
                 return False
             if anon is None or anon.status is None:
                 return False
-            if anon.status == 200 and len(anon.body or "") > 200:
-                return False               # a stranger already reads it: not THIS flaw
+            # A stranger already reads it -> that is unauthenticated exposure, a
+            # different finding. Judged by the app's own baselines when calibrated.
+            _profile = getattr(self, "profile", None)
+            _anon_reads = (_profile.is_substantive(anon) if _profile is not None else None)
+            if _anon_reads is None:
+                _anon_reads = anon.status == 200 and len(anon.body or "") > 200
+            if _anon_reads and not self._refused(anon, anon.body or ""):
+                return False
             made = self._register_account()
             if not made:
                 return False
@@ -4678,6 +4789,15 @@ class AssistSession:
         tier2 = (self.confirm_lfi, self.confirm_ssti, self.confirm_xss,
                  self.confirm_ssrf, self.confirm_open_redirect, self.confirm_idor)
         checks = tier1 + tier2
+        # Learn this application's vocabulary before judging anything by it. Cheap (a
+        # handful of read-only requests), and it is what turns "is this a 401" into "is
+        # this how THIS app refuses" — the difference that cost a confirmed critical on
+        # a target whose refusal is a redirect to /login.
+        if getattr(self, "profile", None) is None:
+            try:
+                self.calibrate()
+            except Exception:
+                self.profile = None
         # Sized from what a small application actually needs rather than from a round
         # number: DVNA presents about fifteen probeable endpoints, the top tier costs
         # roughly fourteen requests each, and 120 bought four of them. A budget below

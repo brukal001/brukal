@@ -41,7 +41,8 @@ _COMPARATORS = {
         lambda a, b: a.status != b.status and a.status and b.status,
         "the two requests were answered with different status codes"),
     "a_denied_b_allowed": (
-        lambda a, b: _denied(a) and b.status == 200 and len(b.body or "") > 0,
+        lambda a, b, p=None: (_denied(a, p) and b.status == 200
+                              and _substantive(b, p)),
         "the control was refused and the variant was accepted"),
     "b_reveals_more": (
         lambda a, b: (b.status == 200 and a.status == 200
@@ -65,6 +66,19 @@ _COMPARATORS = {
 # to model-proposed experiments and reachable only by hand-written detectors.
 _IDENTITIES = ("self", "second", "anonymous")
 
+def _substantive(result, profile=None) -> bool:
+    """Whether a response carries real content, as THIS application measures it.
+
+    `len(body) > 0` is the usual test and it is wrong on any app that renders a full
+    template around an empty result: its "nothing here" page is several kilobytes. Judged
+    against the learned MISSING baseline when there is one."""
+    if profile is not None:
+        verdict = profile.is_substantive(result)
+        if verdict is not None:
+            return verdict
+    return len(getattr(result, "body", "") or "") > 0
+
+
 _MAX_HYPOTHESES = 6
 
 
@@ -80,7 +94,7 @@ _LOGIN_LOCATION_RE = re.compile(
     re.I)
 
 
-def _denied(result) -> bool:
+def _denied(result, profile=None) -> bool:
     """Whether a response REFUSED the caller.
 
     Recognising only 401 and 403 cost a confirmed critical. On DVNA the model proposed
@@ -93,6 +107,14 @@ def _denied(result) -> bool:
     A redirect only counts when it points somewhere that looks like authentication: a
     302 to /dashboard after a successful action is not a refusal, and treating every
     redirect as one would confirm a flaw on any endpoint that redirects at all."""
+    # The application's OWN answer, when we have learned it. A hardcoded list of status
+    # codes is a statement about the apps this tool was written against; a baseline
+    # taken from THIS target is a statement about this target. Calibration may only add
+    # certainty — an uncalibrated run falls through to the rules below unchanged.
+    if profile is not None:
+        verdict = profile.is_denied(result)
+        if verdict is not None:
+            return verdict
     status = getattr(result, "status", None)
     if status in (401, 403):
         return True
@@ -252,7 +274,7 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
     return out
 
 
-def judge(hypothesis, control_result, variant_result):
+def judge(hypothesis, control_result, variant_result, profile=None):
     """(holds, meaning) for an executed hypothesis.
 
     The only place a proposal becomes a finding, and it consults the comparator rather
@@ -266,7 +288,11 @@ def judge(hypothesis, control_result, variant_result):
         return False, ""
     predicate, meaning = entry
     try:
-        if not predicate(control_result, variant_result):
+        try:
+            held = predicate(control_result, variant_result, profile)
+        except TypeError:
+            held = predicate(control_result, variant_result)   # comparator ignores it
+        if not held:
             return False, ""
     except Exception:
         return False, ""
