@@ -99,6 +99,27 @@ _MAX_NON_HTML = 5
 # Extra reads for ROUTE DISCOVERY only, after the page budget is spent. Deliberately
 # small: their whole purpose is to harvest path strings from pages a quota deferred.
 _MINING_READS = 8
+
+# Bundles worth reading FIRST. A modern SPA build emits one entry bundle that names the
+# API and many lazy chunks that mostly do not — and the crawl sorted its frontier
+# alphabetically, so `chunk-5K74DZ2F.js` came before `main.js` every time. On OWASP
+# Juice Shop that spent the entire non-HTML allowance on five chunks, never read
+# main.js, and mined eleven routes instead of forty: the endpoint carrying the
+# application's best-known SQL injection was simply never seen.
+_ENTRY_BUNDLE_RE = re.compile(r"/(?:main|app|index|bundle|vendor)[.-]", re.I)
+_LAZY_CHUNK_RE = re.compile(r"/(?:chunk|polyfill|runtime|scripts?|styles?)[.-]", re.I)
+
+
+def _bundle_rank(url: str) -> int:
+    """Read order for a link. Lower is sooner. HTML pages keep their place; among
+    scripts, the entry bundle is worth more than any number of lazy chunks."""
+    if not _looks_non_html(url):
+        return 0
+    if _ENTRY_BUNDLE_RE.search(url or ""):
+        return 1
+    if _LAZY_CHUNK_RE.search(url or ""):
+        return 3
+    return 2
 # Below this many requests per minute, calibration's few probes are a material fraction
 # of the whole engagement and are better spent on findings.
 _CALIBRATION_MIN_RATE = 60
@@ -1349,7 +1370,10 @@ class AssistSession:
             # in the JS bundle, not the near-empty initial HTML). Leads, still gated.
             surface.add_routes(webmap.extract_api_routes(body))
             if depth < max_depth:
-                for l in sorted(in_scope_links):
+                # Rank before queueing. Alphabetical order is not a priority, and here
+                # it actively cost findings by putting lazy chunks ahead of the entry
+                # bundle that names the API.
+                for l in sorted(in_scope_links, key=lambda u: (_bundle_rank(u), u)):
                     if l not in visited:
                         queue.append((l, depth + 1))
 
@@ -1754,12 +1778,17 @@ class AssistSession:
         s = self.surface
         if s is None:
             return False
-        return bool(
-            s.params or getattr(s, "forms", None) or self._ai_endpoints()
-            # An API mined from its own spec has no params and no forms — its entire
-            # surface is routes whose identifier sits in the path.
-            or any(self._PATH_PARAM_RE.search(r)
-                   for r in (getattr(s, "api_routes", None) or [])))
+        if s.params or getattr(s, "forms", None) or self._ai_endpoints():
+            return True
+        # A SINGLE-PAGE APPLICATION has no forms, no query parameters and no templated
+        # routes: its initial HTML is a shell, and its entire attack surface is the REST
+        # endpoints named in the JS bundle. Requiring a `{id}` template here meant that
+        # surface counted for nothing — a cold run on OWASP Juice Shop mined eleven real
+        # endpoints (/api/Users, /rest/user/login, /rest/user/change-password) and then
+        # skipped active probing altogether, producing an EMPTY coverage table and one
+        # finding in eighteen requests. Pass 6b exists precisely to discover parameters
+        # on untemplated routes, and this gate was closing the door before it could run.
+        return bool(getattr(s, "api_routes", None))
 
     def scan_web_body(self, url: str, body: str) -> int:
         """Run the exposure signatures over a body fetched through the GOVERNED BROWSER

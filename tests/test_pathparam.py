@@ -154,17 +154,26 @@ def test_crawled_pages_are_scanned_for_exposures():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_reflex_gate_counts_path_routes_as_probeable():
+def test_reflex_gate_counts_mined_routes_as_probeable():
     """Regression: an API mined from its own spec has 0 params, 0 forms and no AI
     endpoint, so the confirm reflex skipped it entirely and the path-parameter probing
-    above was unreachable in a real run — the same shape of miss twice over."""
+    above was unreachable in a real run — the same shape of miss twice over.
+
+    This test used to also assert that an UNTEMPLATED route left the surface
+    unprobeable. Live evidence overturned that: a cold run on OWASP Juice Shop mined
+    eleven real endpoints — /api/Users, /rest/user/login, /rest/products/search — none
+    of them templated, because a JavaScript bundle names paths and not path parameters.
+    Requiring a `{id}` skipped active probing altogether, produced an EMPTY coverage
+    table, and missed a critical SQL injection sitting on one of those very routes.
+    A mined endpoint IS a surface; pass 6b exists to discover its parameters."""
     sess = _session(_PathSqlCage())
     assert sess.probeable_surface() is False          # nothing crawled yet
     sess.surface = AttackSurface(seed=f"http://{TARGET}:5000/")
-    sess.surface.add_routes(["/books/v1"])            # a route with no path parameter
     assert not sess.surface.params and not sess.surface.forms
     assert not sess._ai_endpoints()
-    assert sess.probeable_surface() is False
+    assert sess.probeable_surface() is False          # genuinely nothing to probe
+    sess.surface.add_routes(["/books/v1"])            # an untemplated REAL endpoint
+    assert sess.probeable_surface() is True
     sess.surface.add_routes(["/users/v1/{username}"])
     # Call the REAL predicate the loop uses. An earlier version of this test rebuilt the
     # expression inline, so it passed while the loop crashed on a missing import.

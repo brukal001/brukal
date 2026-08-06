@@ -156,3 +156,31 @@ def test_calibration_is_skipped_when_the_rate_budget_is_tight():
     requests tipped the run past the wall and a confirmed injection finding was lost."""
     from brukal.assist import _CALIBRATION_MIN_RATE
     assert _CALIBRATION_MIN_RATE >= 30, "the guard must trip before a 30/min scope"
+
+
+# --- a single-page application HAS a surface, even with no forms ---------------------
+
+def test_mined_api_routes_alone_make_a_surface_probeable():
+    """An SPA's initial HTML is a shell: no forms, no query parameters, no templated
+    routes. Its entire attack surface is the REST endpoints named in the JS bundle.
+    Requiring a `{id}` template meant that surface counted for nothing — a cold run on
+    OWASP Juice Shop mined eleven real endpoints and then skipped active probing
+    altogether, producing an empty coverage table and one finding in eighteen requests."""
+    from brukal import webmap
+    from brukal.assist import AssistSession
+    s = AssistSession.__new__(AssistSession)
+    s.surface = webmap.AttackSurface(seed="http://t/")
+    s.surface.add_routes(["/api/Users", "/rest/user/login"])
+    s._ai_endpoints = lambda: []
+    assert s.probeable_surface() is True
+
+
+def test_a_genuinely_empty_surface_is_still_not_probeable():
+    """The gate must still close on nothing at all, or every unreachable host burns a
+    full probing budget."""
+    from brukal import webmap
+    from brukal.assist import AssistSession
+    s = AssistSession.__new__(AssistSession)
+    s.surface = webmap.AttackSurface(seed="http://t/")
+    s._ai_endpoints = lambda: []
+    assert s.probeable_surface() is False

@@ -189,9 +189,27 @@ class HttpWebCage:
     only actions (navigate/click/fill/intercept) raise until the Chrome/CDP backend
     lands — use FakeWebCage or the Chrome backend for those."""
 
+    # A JavaScript bundle is a MAP, not a page, and it is read for the endpoints named
+    # inside it. Twenty kilobytes is ample for a page and useless for a bundle: OWASP
+    # Juice Shop's main.js is about a megabyte, its API routes are spread throughout,
+    # and truncating at 20 000 characters yielded ZERO of them. A direct read of the
+    # same file finds forty. That single cap is why single-page applications — most of
+    # the modern web — presented Brukal with an empty attack surface.
+    _SCRIPT_MAX_BODY = 2_000_000
+    _SCRIPT_RE = re.compile(r"\.(?:js|mjs|json|map)(?:$|[?#])", re.I)
+
     def __init__(self, timeout: int = 20, max_body: int = 20000):
         self.timeout = timeout
         self.max_body = max_body
+
+    def _cap_for(self, url: str, content_type: str = "") -> int:
+        """How much of this response is worth reading. Scripts get the larger allowance;
+        everything else keeps the small one, so an accidental download of a huge asset
+        still cannot exhaust memory."""
+        ctype = (content_type or "").lower()
+        if self._SCRIPT_RE.search(url or "") or "javascript" in ctype or "json" in ctype:
+            return self._SCRIPT_MAX_BODY
+        return self.max_body
 
     def run(self, action: WebAction) -> WebResult:
         if action.kind not in ("get", "request"):
@@ -203,7 +221,12 @@ class HttpWebCage:
                                      headers=action.headers or {})
         try:
             with _NO_REDIRECT_OPENER.open(req, timeout=self.timeout) as resp:
-                body = resp.read(self.max_body).decode(errors="replace")
+                _ct = ""
+                try:
+                    _ct = resp.headers.get("content-type", "") or ""
+                except Exception:
+                    _ct = ""
+                body = resp.read(self._cap_for(action.url, _ct)).decode(errors="replace")
                 return WebResult(status=resp.status, url=resp.geturl(), body=body,
                                  headers=dict(resp.headers))
         except urllib.error.HTTPError as e:
