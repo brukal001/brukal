@@ -2708,6 +2708,30 @@ class AssistSession:
             act = WebAction("request", url=url, method="POST",
                             body=_json.dumps({param: value, **(extra or {})}),
                             headers={"Content-Type": "application/json"})
+        elif method.upper() == "MULTIPART":
+            # A file-upload sink is unreachable by every mode above. Express fills
+            # `req.files` (and PHP `$_FILES`) ONLY from a part carrying a filename, so a
+            # query string or a urlencoded body leaves the collection empty and the
+            # handler never sees the payload at all. Measured on DVNA: the identical
+            # node-serialize gadget fires as a multipart part and does nothing as a
+            # urlencoded field. Deserialization and upload sinks live behind uploads,
+            # so without this the detectors run, spend budget, emit a coverage row and
+            # are structurally unable to report.
+            opts = dict(extra or {})
+            filename = opts.pop("_filename", "brukal.json")
+            part_type = opts.pop("_content_type", "application/octet-stream")
+            boundary = "----brukal%d" % random.randint(10 ** 15, 10 ** 16)
+            seg = [f"--{boundary}",
+                   f'Content-Disposition: form-data; name="{param}"; '
+                   f'filename="{filename}"',
+                   f"Content-Type: {part_type}", "", value]
+            for _k, _v in opts.items():
+                seg += [f"--{boundary}",
+                        f'Content-Disposition: form-data; name="{_k}"', "", str(_v)]
+            seg += [f"--{boundary}--", ""]
+            act = WebAction("request", url=url, method="POST", body="\r\n".join(seg),
+                            headers={"Content-Type":
+                                     f"multipart/form-data; boundary={boundary}"})
         elif method.upper() == "GET":
             # No parameter name means "fetch this URL as-is" (an endpoint-level check
             # such as the unauthenticated-access probe), not "append an empty param".
@@ -3041,10 +3065,18 @@ class AssistSession:
         pick = _b64.b64encode(
             b"c__builtin__\n__import__\n(S'urllib.request'\ntRp0\n."
         ).decode()
+        # Deliver each gadget BOTH ways. The caller's method is whatever the crawler saw
+        # the parameter used with, and for an import/bulk feature that is a file field —
+        # the one shape none of the other modes can produce. Trying only the discovered
+        # method is what made this detector unable to fire on the target it was written
+        # for; trying only multipart would miss a sink that takes a plain field.
+        modes = [method] if method.upper() == "MULTIPART" else [method, "MULTIPART"]
         for payload in (node, php, pick):
-            if self._confirm_budget is not None and self._confirm_budget <= 0:
-                return False
-            self._probe(url, param, payload, method, extra)
+            for mode in modes:
+                _b = getattr(self, "_confirm_budget", None)
+                if _b is not None and _b <= 0:
+                    return False
+                self._probe(url, param, payload, mode, extra)
         time.sleep(2)
         if lis.hit(token):
             self._record_confirmed(
@@ -5199,6 +5231,22 @@ class AssistSession:
                     tried += 1
                     others = {n: "1" for n, t in fields if n != field and t.lower() != "file"}
                     enqueue(action, field, method=method, extra=others)
+                # A file input was excluded above because no delivery mode could carry
+                # one — so the sinks that live behind an upload (deserialization of an
+                # imported blob, upload handling itself) were unreachable by
+                # construction, however good the detector. `_probe` has a MULTIPART mode
+                # now, and this is what puts the parameter in front of it.
+                #
+                # Intrusive-gated on the same reasoning as mass assignment: an upload
+                # WRITES to the target, and a default run stays read-only in effect.
+                if self.allow_intrusive:
+                    for fname, ftype in fields:
+                        if ftype.lower() != "file" or tried >= max_params:
+                            continue
+                        tried += 1
+                        others = {n: "1" for n, t in fields
+                                  if n != fname and t.lower() != "file"}
+                        enqueue(action, fname, method="MULTIPART", extra=others)
             # 5) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
             #    concentrate here, and nothing above reaches it: there is no query string
@@ -5294,22 +5342,29 @@ class AssistSession:
             #     class an in-band differential cannot reach: the server makes the
             #     request or runs the command and tells you nothing.
             if self._oob() is not None:
+                _oob_found = False
                 for _t, _p, _m, _x in queue[:4]:
-                    if self._confirm_budget <= probe_floor or self._rate_limited:
+                    if (_oob_found or self._confirm_budget <= probe_floor
+                            or self._rate_limited):
                         break
                     self._covered("Blind injection (out-of-band)",
                                   note="callback to Brukal's in-cage listener")
                     self._covered("Insecure deserialization",
                                   note="gadget shapes, proved by an OOB callback")
-                    try:
-                        if (self.confirm_blind_ssrf(_t, _p, method=_m, extra=_x)
-                                or self.confirm_blind_rce(_t, _p, method=_m, extra=_x)
-                                or self.confirm_deserialization_rce(
-                                    _t, _p, method=_m, extra=_x)):
-                            confirmed += 1
-                            break
-                    except Exception:
-                        pass
+                    # One try PER detector. Chained under a single `except`, a throw in
+                    # an earlier probe silently cancelled every later one — so blind RCE
+                    # failing on an unrelated error made deserialization unreachable
+                    # while both still reported themselves as covered. Three classes
+                    # sharing one swallow is three classes that can vanish together.
+                    for _fn in (self.confirm_blind_ssrf, self.confirm_blind_rce,
+                                self.confirm_deserialization_rce):
+                        try:
+                            if _fn(_t, _p, method=_m, extra=_x):
+                                confirmed += 1
+                                _oob_found = True
+                                break
+                        except Exception:
+                            continue
 
             # 7) MASS ASSIGNMENT — last, because it is the only proof that WRITES to the
             #    target, and so the only one an operator must opt into (--full-send sets
