@@ -289,3 +289,26 @@ class BasicAuth:
             f"{creds.username}:{creds.password}".encode()).decode()
         browser.auth_header = f"Basic {tok}"
         return AuthAttempt(strategy=self.name, token=tok, responded=False)
+
+
+@dataclass
+class SessionState:
+    """Who we are and how we got in — one object instead of six attributes.
+
+    Cookies and the Authorization header stay on GovernedBrowser: that is transport.
+    This is identity. Keeping them apart is what lets `_separate_identity` swap one
+    without disturbing the other.
+    """
+    identity: str = ""
+    authenticated: bool = False
+    last_jwt: str = ""
+    login_url: str = ""
+    login_type: str = ""
+    login_password: str = ""
+    strategy: str = ""
+
+    def snapshot(self) -> dict:
+        return dict(self.__dict__)
+
+    def restore(self, snap: dict) -> None:
+        self.__dict__.update(snap)

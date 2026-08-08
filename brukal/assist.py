@@ -364,10 +364,12 @@ class AssistSession:
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
         self.surface = None            # webmap.AttackSurface once the site is crawled
+        from .auth import SessionState
+        # Session identity lives in one object. This MUST be assigned before anything
+        # sets identity/authenticated/last_jwt, because those are now properties that
+        # write through to it.
+        self.session = SessionState()
         self._seen_jwts: set = set()   # tokens already analysed (once each, offline)
-        self.last_jwt: str = ""        # most recent JWT seen — the forgery proof needs one
-        self.identity: str = ""        # the principal we authenticated as (authz tests)
-        self._login_password: str = ""  # that principal's password (session-revocation check)
         # What was actually ASSESSED, so a class with no finding can be reported as
         # "checked and clean" rather than left to read as "never tested". Brukal already
         # insists a rate-limited sweep declare its own incompleteness; staying silent
@@ -388,7 +390,6 @@ class AssistSession:
         self.findings = FindingStore()   # structured vuln findings (vault-backed in _prepare_session)
         self.executed_cmds: list = []  # commands that really ran (fed back as ALREADY TRIED)
         self.resumed = 0               # how many prior findings we loaded
-        self.authenticated = False     # True once a form login has succeeded (auth scanning)
         self.sessions = None           # lazy SessionManager (Phase 2 stateful live shells)
         self.session_states: dict = {} # mirrored per-session state (for the blackboard)
         if blackboard is not None:
@@ -1717,6 +1718,69 @@ class AssistSession:
             f"[login] {login_url} as {username} ({lt}) → "
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
         return ok
+
+    # Session facts live on `self.session`; these keep the 40+ existing call sites
+    # and their tests working unchanged. Adding a new session fact means adding it
+    # to SessionState, not adding a seventh attribute here.
+    def _ensure_session(self):
+        """Lazily create `self.session` for objects built via `__new__` (some
+        pre-existing tests construct AssistSession this way, skipping __init__
+        entirely). Real construction always assigns `self.session` first, so
+        this is a no-op on the normal path."""
+        s = getattr(self, "session", None)
+        if s is None:
+            from .auth import SessionState
+            s = SessionState()
+            self.session = s
+        return s
+
+    @property
+    def identity(self) -> str:
+        return self._ensure_session().identity
+
+    @identity.setter
+    def identity(self, v: str) -> None:
+        self._ensure_session().identity = v or ""
+
+    @property
+    def authenticated(self) -> bool:
+        return self._ensure_session().authenticated
+
+    @authenticated.setter
+    def authenticated(self, v) -> None:
+        self._ensure_session().authenticated = bool(v)
+
+    @property
+    def last_jwt(self) -> str:
+        return self._ensure_session().last_jwt
+
+    @last_jwt.setter
+    def last_jwt(self, v: str) -> None:
+        self._ensure_session().last_jwt = v or ""
+
+    @property
+    def _login_url(self) -> str:
+        return self._ensure_session().login_url
+
+    @_login_url.setter
+    def _login_url(self, v: str) -> None:
+        self._ensure_session().login_url = v or ""
+
+    @property
+    def _login_type(self) -> str:
+        return self._ensure_session().login_type
+
+    @_login_type.setter
+    def _login_type(self, v: str) -> None:
+        self._ensure_session().login_type = v or ""
+
+    @property
+    def _login_password(self) -> str:
+        return self._ensure_session().login_password
+
+    @_login_password.setter
+    def _login_password(self, v: str) -> None:
+        self._ensure_session().login_password = v or ""
 
     def has_session(self) -> bool:
         """Whether we hold an authenticated session, HOWEVER it is carried.
