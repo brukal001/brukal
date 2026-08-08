@@ -189,9 +189,14 @@ On top of that spine:
 - **Hardened host matcher** (`hostmatch.py`) — the scope check finds *every* host in
   a command (URLs, IPv4/IPv6, and decimal/hex IP encodings), so an out-of-scope host
   can't be smuggled by spelling. Authorising a vhost also covers its `*.domain`.
-- **Kernel-enforced scope** — the cage installs a scope-derived, default-drop
-  **nftables** egress ruleset at startup (VPN-aware), so a command that slips past the
-  Python gate still can't put a packet on the wire to an out-of-scope host.
+- **Kernel-enforced scope (second line of defence, when available)** — where the host
+  supports it, the cage installs a scope-derived, default-drop **nftables** egress
+  ruleset at startup (VPN-aware), so a command that slips past the Python gate still
+  can't put a packet on the wire to an out-of-scope host. **This is a second layer, not
+  the primary one, and it is conditional:** it requires host **nftables** support and
+  the **NET_ADMIN** capability. Without them — or with `BRUKAL_EGRESS_LOCK=0` — the cage
+  starts anyway and **degrades to the software gate alone**, which is the layer that is
+  always present. Verify which you are getting with `docker/verify_egress.sh`.
 - **Internet search & learning** (`research.py`) — a first-class, on-by-default
   capability: when a new CVE or service+version appears, Brukal **auto-researches** it
   from an allowlist of **verified sources** (NVD/CVE, Exploit-DB, GTFOBins, HackTricks)
@@ -263,7 +268,7 @@ the wiring), `--yes-authorised` (confirm authorisation for a live run),
 ## Quickstart
 
 ```bash
-# 1. run the test suite (290 tests, no infra, no key needed)
+# 1. run the test suite (851 tests, no infra, no key needed)
 python -m pytest -q
 
 # 2. reproduce the benchmark metrics (fake cage)
@@ -718,7 +723,7 @@ brukal/
 ├── experiment.py     # the four-metric governance benchmark harness
 ├── eval.py           # the capability eval (steps-to-foothold, governed vs ungated)
 └── agents/           # recon · exploit · verify · strategist
-tests/                # 290 tests — the invariants, in code
+tests/                # 851 tests — the invariants, in code
 docker/               # the Kali cage (Dockerfile + compose, chromium + VPN)
 run_experiments.py · run_eval.py · run_engagement.py · run_recon.py
 HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md · CONTRIBUTING.md

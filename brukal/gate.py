@@ -14,9 +14,19 @@ Design rules honoured here:
   * No self-report — the gate reads the command itself; it never trusts an
                      agent's claim about what the command does.
 
-Milestone 1 implements the hard gate (scope / allowlist / rate / injection).
-The soft risk score (impact, policy) and ESCALATE path are stubbed with a
-clear extension point for milestone 3.
+Two layers, in this order, both deterministic:
+
+  * The HARD gate — injection guard, parse, tool allowlist, target-in-scope,
+    no-smuggled-host, rate limit, and the per-agent capability check. A logical
+    AND: any single failure DENIES. Hard checks can only DENY, never widen.
+  * The SOFT risk layer — implemented in `risk.py` (`assess()`), consumed below
+    in `Gate.check`. It scores reversibility x blast-radius (modulated by the
+    proposing agent's adaptive trust) and returns ALLOW / ESCALATE / DENY. It
+    runs only AFTER every hard check has passed, so it can add caution to an
+    in-scope action but can never rescue one the hard gate refused.
+
+Neither layer contains an LLM (invariant 1) and neither reads an agent's claim
+about its own action (invariant 3).
 """
 from __future__ import annotations
 
