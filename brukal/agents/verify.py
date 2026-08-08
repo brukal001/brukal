@@ -99,8 +99,14 @@ class VerifyAgent:
         self._last_request = request
 
         # 2. run it through the one door
+        # Authorise THIS ONE confirming command. The capability follows from the
+        # command's own bytes (identity.required_capability), never from the claim it
+        # is verifying — a verifier that could widen itself by asserting a finding
+        # class would put the model inside the capability decision.
+        from ..identity import verification_grant
         decision, result = self._executor.run(
-            request.command, request.target_host, agent=self._identity)
+            request.command, request.target_host,
+            agent=verification_grant(self._identity, request.command))
         self._last_decision, self._last_exec = decision, result
 
         if result is None:

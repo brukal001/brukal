@@ -184,7 +184,11 @@ class Gate:
         """
         from .identity import resolve_identity
 
-        ident = resolve_identity(agent)
+        # The command is passed in so a single-action verification grant can be
+        # validated against the bytes actually being judged — the grant names a
+        # command, and the capability it confers is recomputed here, not read from
+        # the identity.
+        ident = resolve_identity(agent, command)
         decision = self._check_inner(command, target, ident)
         # Every decision carries WHICH run of the role asked, and under which
         # engagement. Stamped here so no return path can forget it.

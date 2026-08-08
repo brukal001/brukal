@@ -100,6 +100,12 @@ ROLE_CAPABILITIES: dict[str, frozenset] = {
 }
 
 
+# Roles permitted to take a single-action verification grant. Kept to the role whose
+# entire purpose is independent confirmation — without this gate the grant would be a
+# universal escape hatch any role could take.
+ROLES_THAT_MAY_VERIFY = frozenset({"verify"})
+
+
 @dataclass(frozen=True)
 class AgentIdentity:
     """Bound identity for one running principal. Frozen: a holder cannot edit it,
@@ -109,6 +115,11 @@ class AgentIdentity:
     capabilities: frozenset
     engagement_id: str = ""
     agent_version: str = AGENT_VERSION
+    # Set ONLY by `verification_grant`. Names the single command this identity is
+    # authorised to run beyond its role. It is a command, never a capability and
+    # never a finding-class: the gate recomputes the capability from these bytes,
+    # so the identity cannot declare what it is owed.
+    verifying_command: str = ""
 
     def can(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -139,15 +150,50 @@ def operator_identity(engagement_id: str = "") -> AgentIdentity:
     return mint("operator", engagement_id=engagement_id)
 
 
-def resolve_identity(agent) -> AgentIdentity:
+def verification_grant(identity: AgentIdentity, command: str) -> AgentIdentity:
+    """Authorise ONE command for a verifying principal.
+
+    The verifier's job is to reproduce a finding independently, and some findings
+    cannot be confirmed without performing the thing they describe — you cannot
+    confirm an injection without injecting. Phase 1 gave `verify` only RECON, which
+    made SUPPORTED structurally unreachable for the injection, auth and foothold
+    classes (`agents/verify.py:106-111` returns UNVERIFIED whenever nothing ran).
+
+    This grants no capability directly. It records the single command the action is
+    for; the gate recomputes `required_capability(command)` from those bytes. So:
+
+      * nothing persists — the base identity is untouched, and the elevation applies
+        to one command in one action;
+      * nothing is claimed — there is no parameter for a finding-class or a
+        capability name, so a model cannot widen itself by asserting what it is
+        confirming (invariant 1: no LLM in the capability decision);
+      * only a verifying role may take it, or it would be a universal escape hatch.
+    """
+    if identity.role not in ROLES_THAT_MAY_VERIFY:
+        return identity
+    return replace(identity, verifying_command=command or "")
+
+
+def resolve_identity(agent, command: str = "") -> AgentIdentity:
     """Coerce whatever a caller passed into a bound identity.
 
     Capabilities are ALWAYS re-derived from the role. A caller handing in an
     AgentIdentity with a self-declared capability set gains nothing — authority comes
     from ROLE_CAPABILITIES, never from the object claiming it.
+
+    The one addition on top of the role's set is a verification grant, and it is
+    self-validating: it applies only when the command being judged is byte-identical
+    to the command the grant names, and the capability added is recomputed here from
+    that command rather than read from the identity.
     """
     if isinstance(agent, AgentIdentity):
-        return replace(agent, capabilities=capabilities_for(agent.role))
+        caps = capabilities_for(agent.role)
+        if (agent.verifying_command
+                and agent.role in ROLES_THAT_MAY_VERIFY
+                and command
+                and agent.verifying_command == command):
+            caps = caps | {required_capability(command)}
+        return replace(agent, capabilities=caps)
     role = (str(agent or "")).strip().lower()
     return AgentIdentity(agent_id=f"{role or 'unnamed'}-unbound", role=role,
                          capabilities=capabilities_for(role))

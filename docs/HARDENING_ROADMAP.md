@@ -149,7 +149,7 @@ Phase 1, and not a documentation problem — `audit.py` already states it plainl
 
 ## Known gaps carried into Phase 2
 
-### VERIFY ROLE MIS-SCOPED — a regression introduced in Phase 1
+### ~~VERIFY ROLE MIS-SCOPED~~ — **CLOSED in Phase 2 Part 1**, see below
 
 `agents/verify.py:102-103` executes exactly one command to confirm a finding, and
 `agents/verify.py:106-111` returns `UNVERIFIED` whenever `result is None`. **A denied
@@ -194,3 +194,55 @@ A blanket multi-capability grant to `verify` is **rejected**: it gives narrower 
 Capability enforcement covers the **shell path only**. Web actions route through
 `web.check_web()` and consult no capability yet, so the `web` role's
 `{RECON, WEB_REQUEST}` entry is currently declarative rather than enforced.
+
+---
+
+## Phase 2 Part 1 — the verifier per-action grant (2026-08-08)
+
+### A. The verifier can confirm without becoming an attacker — CLOSED
+
+**The problem.** `agents/verify.py` runs exactly one command to confirm a claim, and
+returns `UNVERIFIED` whenever that command did not run. A denied verification command
+therefore *eliminates* confirmation rather than weakening it. With `verify` holding only
+`{RECON}`, `SUPPORTED` was structurally unreachable for the SQLi, auth-bypass and
+foothold classes.
+
+**The fix, and the boundary it respects.** `identity.verification_grant(identity,
+command)` authorises ONE command. It confers no capability itself — it records the
+command, and `resolve_identity` recomputes `required_capability(command)` from those
+bytes when the gate judges that exact command.
+
+**This is the invariant-1 boundary and it is the load-bearing part of the design.** Had
+the grant been derived from a claimed finding-class — "this confirms a SQLi, so give me
+INJECTION_TEST" — a model could widen itself by lying, putting an LLM inside the
+capability decision. `verification_grant` takes a command and nothing else; there is no
+parameter through which a label could arrive, and a test asserts that signature so no
+future caller can quietly add one.
+
+Containment: the base identity is never mutated, the grant matches one exact command,
+and only a role in `ROLES_THAT_MAY_VERIFY` can take one — otherwise it would be a
+universal escape hatch.
+
+Tests: `test_verification_grant.py::test_a_verifier_may_run_its_sqli_confirmation`,
+`::test_a_verifier_may_run_its_auth_confirmation`,
+`::test_a_verifier_may_run_its_foothold_confirmation`,
+`::test_a_claimed_finding_class_cannot_widen_the_verifier`,
+`::test_verification_grant_takes_no_label_parameter`,
+`::test_the_grant_is_bound_to_that_exact_command`,
+`::test_an_ungranted_verify_identity_is_still_recon_only`,
+`::test_only_a_verifying_role_can_take_a_verification_grant`,
+`::test_scope_still_precedes_capability_for_a_granted_verifier`,
+`::test_the_verify_agent_can_now_reach_supported_on_an_injection_finding`
+
+**Unchanged by design:** the SOFT risk layer still escalates attack-class confirmations
+for human sign-off. Confirming a SQLi by running sqlmap *is* intrusive; the capability
+grant lets it past the capability check, not past risk or approval.
+
+### Residual risk — recorded, not fixed
+
+**A verifying agent can authorise any single command it emits.** The grant is bounded to
+one action, audited, and still subject to scope, risk and approval — but a
+prompt-injected verifier could emit an exploitation command and have it authorised for
+that action. This is inherent to "the verifier must reproduce the finding": narrowing it
+further would re-create the hole this part closed. The mitigations that matter are the
+soft layer's escalation and the audit record, both intact.
