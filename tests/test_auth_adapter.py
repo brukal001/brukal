@@ -122,6 +122,58 @@ def test_a_failed_login_leaves_no_session():
     assert s.authenticated is False
 
 
+def test_a_rejected_token_still_sets_identity_and_password():
+    """CHARACTERISATION of a latent bug, restored deliberately after the adapter
+    briefly lost it. Old login()'s token branch set `identity`/`_login_password`
+    UNCONDITIONALLY, before the oracle's final ok verdict — so a response carrying
+    a token-shaped string but a >=400 status still set identity, even though the
+    login is correctly reported as failed. Do not 'fix' this here: the phase
+    contract is zero behaviour change, and the underlying bug gets its own
+    deliberate fix and its own test later, same treatment as the Basic-auth
+    identity gap."""
+    class _TokenButRejected:
+        _cookies: dict = {}
+        auth_header = ""
+
+        def run(self, action):
+            if (getattr(action, "method", "") or "GET").upper() == "POST":
+                return WebResult(status=401, url=action.url,
+                                 body='{"access_token":"%s"}' % JWT)
+            return WebResult(status=200, url=action.url, body="{}")
+
+    s = _session(_TokenButRejected())
+    assert s.login(LOGIN, "dave", "pw", login_type="json") is False
+    assert s.identity == "dave"
+    assert s._login_password == "pw"
+
+
+def test_a_form_login_with_a_token_shaped_body_sets_the_bearer_header():
+    """CHARACTERISATION of a second latent-bug restoration. Old login() set
+    `auth_header` for every non-basic type, form included, whenever a token-shaped
+    string turned up anywhere in the response body (extract_token's regex
+    fallback matches `token: "<16+ chars>"` with no JSON required). Plenty of
+    server-rendered pages embed exactly that in inline JS. Not fixed here for the
+    same reason as the sibling test above."""
+    TOKEN = "abcdefghijklmnopqrst"
+
+    class _FormTokenLeak:
+        def __init__(self):
+            self._cookies = {}
+            self.auth_header = ""
+
+        def run(self, action):
+            if (getattr(action, "method", "") or "GET").upper() == "POST":
+                return WebResult(
+                    status=302, url=action.url,
+                    body='<script>var config = {token: "%s"};</script>' % TOKEN,
+                    headers={"Location": "/home"})
+            return WebResult(status=200, url=action.url, body="<form></form>")
+
+    s = _session(_FormTokenLeak())
+    s.login(LOGIN, "carol", "pw")   # default login_type="form"
+    assert s.browser.auth_header == f"Bearer {TOKEN}"
+
+
 def test_extract_token_is_still_a_staticmethod_on_the_session():
     """tests/test_auth_scan.py calls AssistSession._extract_token directly."""
     assert AssistSession._extract_token('{"token":"abcdefghijklmnop"}') == \

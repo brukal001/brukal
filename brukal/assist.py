@@ -1594,6 +1594,19 @@ class AssistSession:
         ok = SessionOracle().judge(attempt)
 
         if attempt.token and strategy.name != "basic":
+            # All three of these ran in the OLD login()'s token branch,
+            # unconditionally — before the ok verdict, and for every non-basic
+            # strategy including form. Restored verbatim.
+            #
+            # KNOWN LATENT BUG, DEFERRED ON PURPOSE (same treatment as the
+            # Basic-auth identity gap): a 4xx body containing a token-shaped
+            # string — `extract_token`'s regex fallback matches `token: "<16+>"`
+            # anywhere — sets identity and a bearer header from a REJECTED token.
+            # Not fixed here, because this phase's value is that a regression has
+            # exactly one possible cause.
+            self.browser.auth_header = f"Bearer {attempt.token}"
+            self.identity = username
+            self._login_password = password
             # The token the app just handed us is itself evidence: its header names
             # the algorithm and its signature exposes a weak key. Reading it costs
             # nothing and needs no further request.
