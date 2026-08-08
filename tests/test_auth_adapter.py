@@ -9,6 +9,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from brukal import AuditLog, Executor, Gate, load_scope
 from brukal.agents.strategist import StrategistAgent
 from brukal.assist import AssistSession
@@ -87,9 +89,21 @@ def test_the_login_note_never_contains_the_password():
 
 
 def test_basic_auth_needs_no_request():
-    s = _session(_TokenApi())
+    class _CountingCage:
+        def __init__(self):
+            self._cookies = {}
+            self.auth_header = ""
+            self.calls = 0
+
+        def run(self, action):
+            self.calls += 1
+            return WebResult(status=200, url=action.url, body="{}")
+
+    cage = _CountingCage()
+    s = _session(cage)
     assert s.login(LOGIN, "u", "p", login_type="basic") is True
     assert s.browser.auth_header.startswith("Basic ")
+    assert cage.calls == 0
 
 
 def test_basic_auth_currently_leaves_identity_empty():
@@ -145,6 +159,9 @@ def test_a_rejected_token_still_sets_identity_and_password():
     assert s.login(LOGIN, "dave", "pw", login_type="json") is False
     assert s.identity == "dave"
     assert s._login_password == "pw"
+    # The header is the more dangerous half: it rides on every later gated
+    # request, so a rejected token still arming it is the part worth pinning.
+    assert s.browser.auth_header == f"Bearer {JWT}"
 
 
 def test_a_form_login_with_a_token_shaped_body_sets_the_bearer_header():
@@ -172,6 +189,42 @@ def test_a_form_login_with_a_token_shaped_body_sets_the_bearer_header():
     s = _session(_FormTokenLeak())
     s.login(LOGIN, "carol", "pw")   # default login_type="form"
     assert s.browser.auth_header == f"Bearer {TOKEN}"
+
+
+def test_an_unrecognised_login_type_fails_closed():
+    """MAINTAINER RULING: fail closed (CLAUDE.md invariant 2 — anything ambiguous
+    is DENIED). The OLD code let an unrecognised login_type through with form
+    encoding but gated the cookie/redirect success heuristics on `lt == "form"`
+    exactly, so an unknown type could only ever succeed on a token. Routing
+    unknown types to FormAuth instead (as the adapter briefly did) applies those
+    heuristics unconditionally — reproduced: 18/140 measured old-vs-new cases
+    flipped a FAILED login to AUTHENTICATED, the unsafe direction, and
+    confirm_default_credentials builds on that verdict. Refusing to guess removes
+    that direction entirely."""
+    s = _session(_CookieApp())
+    assert s.login(LOGIN, "u", "p", login_type="post") is False
+    assert s.authenticated is False
+    assert any("unrecognised login type" in n and "post" in n for n in s.notes)
+
+
+def test_a_strategy_exception_propagates_instead_of_being_reported_as_bad_creds():
+    """MAINTAINER RULING: remove the blanket except. The adapter briefly turned
+    ANY strategy exception into `AuthAttempt(responded=False)`, so a read timeout
+    reported identically to wrong credentials ('login may have FAILED — check
+    creds') — erasing exactly the distinction this phase exists to provide.
+    A strategy exception must propagate, as it did before the port."""
+    class _Timeout:
+        _cookies: dict = {}
+        auth_header = ""
+
+        def run(self, action):
+            if (getattr(action, "method", "") or "GET").upper() == "POST":
+                raise TimeoutError("target unreachable")
+            return WebResult(status=200, url=action.url, body="<form></form>")
+
+    s = _session(_Timeout())
+    with pytest.raises(TimeoutError):
+        s.login(LOGIN, "u", "p")
 
 
 def test_extract_token_is_still_a_staticmethod_on_the_session():

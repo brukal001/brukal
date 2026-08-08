@@ -1550,8 +1550,9 @@ class AssistSession:
 
     @staticmethod
     def _extract_token(body: str) -> str:
-        """Kept on the session because tests and assist.py:2247 call it directly.
-        The implementation now lives with the strategies that need it."""
+        """Kept on the session because tests call it directly, and so does the
+        `whoami` closure inside `confirm_mass_assignment`. The implementation now
+        lives with the strategies that need it."""
         from .auth import extract_token
         return extract_token(body)
 
@@ -1569,8 +1570,7 @@ class AssistSession:
         Cookie sessions AND token/bearer/basic auth are propagated (see GovernedBrowser).
         Gate untouched — each request passes check_web (scope+scheme), never a shell.
         Returns True if we appear authenticated."""
-        from .auth import (AuthAttempt, BasicAuth, Credentials, FormAuth,
-                           JsonAuth, SessionOracle)
+        from .auth import BasicAuth, Credentials, FormAuth, JsonAuth, SessionOracle
         if self.browser is None:
             self.notes.append("[login] no governed browser wired — cannot authenticate.")
             return False
@@ -1582,14 +1582,31 @@ class AssistSession:
         self._login_url = login_url
         self._login_type = lt
 
-        strategy = {"basic": BasicAuth(), "json": JsonAuth()}.get(lt, FormAuth())
+        strategy = {"basic": BasicAuth(), "json": JsonAuth(),
+                    "form": FormAuth()}.get(lt)
+        if strategy is None:
+            # Fail closed (invariant 2). The OLD code let an unknown type through
+            # with form encoding but gated the cookie/redirect heuristics on
+            # `lt == "form"`, so only a token could authenticate it. Routing it to
+            # FormAuth instead flipped 18 of 140 measured cases from FAILED to
+            # AUTHENTICATED. Refusing to guess removes that direction entirely, and
+            # protects A2: a new strategy added but not yet wired here fails loudly
+            # instead of silently inheriting form semantics.
+            self.notes.append(
+                f"[login] unrecognised login type {lt!r} — refusing to guess "
+                f"(known: form, json, basic)")
+            self.authenticated = False
+            return False
+
         creds = Credentials(username=username, password=password,
                             user_field=user_field, pass_field=pass_field,
                             extra_fields=extra_fields)
-        try:
-            attempt = strategy.authenticate(self.browser, login_url, creds)
-        except Exception:
-            attempt = AuthAttempt(strategy=strategy.name, responded=False)
+        # No try/except here: a strategy exception (a read timeout, a bug inside
+        # auth.py) must propagate as it did before the port, not be swallowed and
+        # re-reported as "login may have FAILED — check creds". Erasing the
+        # difference between "the credentials were wrong" and "the request itself
+        # broke" is exactly the ambiguity this phase exists to remove.
+        attempt = strategy.authenticate(self.browser, login_url, creds)
 
         ok = SessionOracle().judge(attempt)
 
@@ -1620,8 +1637,10 @@ class AssistSession:
         self.authenticated = ok
         # NOTE: Task 4 shipped this class as `Principal` on `self.principal`, not
         # `SessionState` on `self.session` — the earlier name collided with the
-        # already-exported `brukal.sessions.SessionState`.
-        self.principal.strategy = strategy.name
+        # already-exported `brukal.sessions.SessionState`. Routed through
+        # `_ensure_principal()`, like every other access in this class, rather than
+        # `self.principal` directly — this was the one place that did not.
+        self._ensure_principal().strategy = strategy.name
 
         if strategy.name == "basic":
             # Preserved EXACTLY as the old early-return branch behaved: a distinct
@@ -3924,6 +3943,12 @@ class AssistSession:
         saved_identity = self.identity
         saved_password = getattr(self, "_login_password", "")
         saved_authed = self.authenticated
+        # `strategy` is a Principal field this phase introduced (Task 4), so it was
+        # never part of the original five saved/restored here — but it is the same
+        # kind of fact as the other five (how we got in), and leaving it out means a
+        # second-identity login inside this context leaves `strategy` set to
+        # whichever was tried last instead of our own.
+        saved_strategy = self._ensure_principal().strategy
         try:
             browser._cookies = {}
             browser.auth_header = ""
@@ -3934,6 +3959,7 @@ class AssistSession:
             self.identity = saved_identity
             self._login_password = saved_password
             self.authenticated = saved_authed
+            self._ensure_principal().strategy = saved_strategy
 
     # Field names on a signup form, by role. Ordered: the first match wins, so
     # `cpassword`/`confirm` must be tested before the bare password pattern or a
