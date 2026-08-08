@@ -132,6 +132,71 @@ def test_json_auth_failure_is_not_a_session():
     assert SessionOracle().judge(attempt) is False
 
 
+def test_json_auth_guards_against_false_login_heuristic():
+    """The cookie_login=False guard stops a successful body parse from being
+    misread as a login. A body with no error keywords and matching _LOGGED_IN_RE
+    ("welcome") but no password field would be flagged as authenticated by the
+    cookie-login heuristic (lines 91-94 of oracle), EXCEPT that cookie_login=False
+    prevents entry to the heuristic branch at line 71."""
+
+    class _LoginPageLike:
+        """Returns a 200 with body that bypasses _FAIL_JSON_RE and _AUTH_ERROR_RE
+        but would match _LOGGED_IN_RE, fooling the cookie heuristic if applied."""
+
+        def __init__(self):
+            self.seen: list = []
+            self._cookies = {}
+            self.auth_header = ""
+
+        def run(self, action):
+            self.seen.append(action)
+            method = (getattr(action, "method", "") or "GET").upper()
+            if method == "GET":
+                return None, WebResult(status=200, url=action.url, body="")
+            return None, WebResult(status=200, url=action.url,
+                            body='{"result":"welcome back"}')
+
+    api = _LoginPageLike()
+    attempt = JsonAuth().authenticate(
+        api, LOGIN, Credentials(username="u", password="p"))
+    assert attempt.cookie_login is False
+    assert SessionOracle().judge(attempt) is False
+
+
+def test_json_auth_seeding_get_is_load_bearing():
+    """The seeding GET is not optional: it seeds cookies/CSRF tokens and the
+    snapshot must be taken AFTER it, not before. This test verifies both by using
+    a double that sets a cookie on GET (not POST): the cookie came from the GET,
+    so it must NOT be counted as gained by the login."""
+
+    class _GetSetsCookie:
+        def __init__(self):
+            self.seen: list = []
+            self._cookies = {}
+            self.auth_header = ""
+
+        def run(self, action):
+            self.seen.append(action)
+            method = (getattr(action, "method", "") or "GET").upper()
+            if method == "GET":
+                # The seeding GET sets a cookie (CSRF token, session, etc.)
+                self._cookies["csrf_token"] = "tok123"
+                return None, WebResult(status=200, url=action.url, body="")
+            # POST returns token but NO new cookies
+            return None, WebResult(
+                status=200, url=action.url,
+                body='{"access_token":"eyJhbGciOiJIUzI1NiJ9.payload.sig"}')
+
+    api = _GetSetsCookie()
+    attempt = JsonAuth().authenticate(
+        api, LOGIN, Credentials(username="u", password="p"))
+    # Verify the GET was actually issued
+    assert len(api.seen) >= 2, "seeding GET must be issued before POST"
+    assert (getattr(api.seen[0], "method", "") or "GET").upper() == "GET"
+    # The cookie from the GET is not "gained" by the login (snapshot was after GET)
+    assert attempt.gained_cookie is False
+
+
 def test_basic_auth_sets_the_header_without_making_a_request():
     class _NoCalls:
         _cookies: dict = {}
