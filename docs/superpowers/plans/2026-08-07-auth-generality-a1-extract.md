@@ -10,7 +10,12 @@
 
 ## Global Constraints
 
-- **Zero behaviour change.** The entire existing suite must pass **unchanged** — no test edits, no assertion loosening. If a test needs changing, the port is wrong.
+- **Zero behaviour change — Tasks 1 through 5.** The entire existing suite must pass
+  **unchanged** — no test edits, no assertion loosening. If a test needs changing, the
+  port is wrong.
+  **Task 6 is the sole, deliberate exception:** it fixes a latent bug and therefore
+  changes exactly one test together with the behaviour that test asserts. That
+  exception applies to Task 6 only; it does not license test edits anywhere else.
 - **`AssistSession.login()` keeps its exact signature:** `login(self, login_url, username, password, user_field="username", pass_field="password", extra_fields=None, login_type="form") -> bool`. It has 8 internal call sites (`assist.py` lines 2558, 3188, 3316, 4224, 4347, 4440, 4561, 4585) and 3 test files depend on it.
 - **`AssistSession._extract_token` stays a staticmethod** on `AssistSession` — `tests/test_auth_scan.py:202` calls `AssistSession._extract_token` directly, and `assist.py:2247` uses it outside login.
 - **Five safety invariants hold** (see `CLAUDE.md`). Strategies receive the `GovernedBrowser` only — never a cage, never the `kali` object. No LLM anywhere in this phase.
