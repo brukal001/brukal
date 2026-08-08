@@ -292,7 +292,7 @@ class BasicAuth:
 
 
 @dataclass
-class SessionState:
+class Principal:
     """Who we are and how we got in — one object instead of six attributes.
 
     Cookies and the Authorization header stay on GovernedBrowser: that is transport.

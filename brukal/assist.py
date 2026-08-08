@@ -364,11 +364,13 @@ class AssistSession:
         self.option_list: list = []    # last ranked list of next-move options
         self._rendered: set = set()    # web URLs already auto-rendered (reflex de-dup)
         self.surface = None            # webmap.AttackSurface once the site is crawled
-        from .auth import SessionState
-        # Session identity lives in one object. This MUST be assigned before anything
-        # sets identity/authenticated/last_jwt, because those are now properties that
-        # write through to it.
-        self.session = SessionState()
+        # Identity/authentication facts live in one object (Principal, in auth.py)
+        # instead of scattered across attributes. `_ensure_principal()` is the
+        # single creation path — calling it here just makes construction eager
+        # instead of lazy; it is also what makes identity/authenticated/last_jwt
+        # work on objects built via `AssistSession.__new__`, which some
+        # pre-existing tests do.
+        self._ensure_principal()
         self._seen_jwts: set = set()   # tokens already analysed (once each, offline)
         # What was actually ASSESSED, so a class with no finding can be reported as
         # "checked and clean" rather than left to read as "never tested". Brukal already
@@ -1719,68 +1721,72 @@ class AssistSession:
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
         return ok
 
-    # Session facts live on `self.session`; these keep the 40+ existing call sites
-    # and their tests working unchanged. Adding a new session fact means adding it
-    # to SessionState, not adding a seventh attribute here.
-    def _ensure_session(self):
-        """Lazily create `self.session` for objects built via `__new__` (some
+    # Identity/authentication facts live on `self.principal` (a `Principal`, in
+    # auth.py); these keep the 40+ existing call sites and their tests working
+    # unchanged. `Principal` was named `SessionState` until it collided with the
+    # pre-existing, unrelated `brukal.sessions.SessionState` (live-shell state,
+    # package-exported). Adding a new fact means adding it to `Principal`, not
+    # adding a seventh attribute here.
+    def _ensure_principal(self):
+        """Lazily create `self.principal` for objects built via `__new__` (some
         pre-existing tests construct AssistSession this way, skipping __init__
-        entirely). Real construction always assigns `self.session` first, so
-        this is a no-op on the normal path."""
-        s = getattr(self, "session", None)
+        entirely). This is the ONLY place that constructs a `Principal` — normal
+        `__init__` also calls this, rather than assigning separately, so there is
+        no second creation path that could race it and get silently discarded."""
+        s = getattr(self, "principal", None)
         if s is None:
-            from .auth import SessionState
-            s = SessionState()
-            self.session = s
+            from .auth import Principal
+            s = Principal()
+            self.principal = s
         return s
 
     @property
     def identity(self) -> str:
-        return self._ensure_session().identity
+        return self._ensure_principal().identity
 
     @identity.setter
     def identity(self, v: str) -> None:
-        self._ensure_session().identity = v or ""
+        self._ensure_principal().identity = v or ""
 
     @property
     def authenticated(self) -> bool:
-        return self._ensure_session().authenticated
+        return self._ensure_principal().authenticated
 
     @authenticated.setter
     def authenticated(self, v) -> None:
-        self._ensure_session().authenticated = bool(v)
+        self._ensure_principal().authenticated = bool(v)
 
     @property
     def last_jwt(self) -> str:
-        return self._ensure_session().last_jwt
+        return self._ensure_principal().last_jwt
 
     @last_jwt.setter
     def last_jwt(self, v: str) -> None:
-        self._ensure_session().last_jwt = v or ""
+        self._ensure_principal().last_jwt = v or ""
 
     @property
     def _login_url(self) -> str:
-        return self._ensure_session().login_url
+        return self._ensure_principal().login_url
 
     @_login_url.setter
     def _login_url(self, v: str) -> None:
-        self._ensure_session().login_url = v or ""
+        self._ensure_principal().login_url = v or ""
 
     @property
     def _login_type(self) -> str:
-        return self._ensure_session().login_type
+        return self._ensure_principal().login_type
 
     @_login_type.setter
     def _login_type(self, v: str) -> None:
-        self._ensure_session().login_type = v or ""
+        self._ensure_principal().login_type = v or ""
 
     @property
     def _login_password(self) -> str:
-        return self._ensure_session().login_password
+        return self._ensure_principal().login_password
 
     @_login_password.setter
     def _login_password(self, v: str) -> None:
-        self._ensure_session().login_password = v or ""
+        self._ensure_principal().login_password = v or ""
 
     def has_session(self) -> bool:
         """Whether we hold an authenticated session, HOWEVER it is carried.
