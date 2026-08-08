@@ -538,6 +538,11 @@ from brukal.auth import BasicAuth, JsonAuth, SessionOracle
 
 
 class _JsonApi:
+    """Stands in for the GovernedBrowser, so `run` returns the (decision, result)
+    TUPLE that GovernedBrowser.run returns — not a bare WebResult. A double that
+    returns the wrong shape raises on unpacking inside the strategy, which reads as
+    "the strategy is broken" when the double is what is wrong."""
+
     def __init__(self, ok=True):
         self.ok = ok
         self.seen: list = []
@@ -547,12 +552,12 @@ class _JsonApi:
     def run(self, action):
         self.seen.append(action)
         if (getattr(action, "method", "") or "GET").upper() != "POST":
-            return WebResult(status=404, url=action.url, body="")
+            return None, WebResult(status=404, url=action.url, body="")
         if self.ok:
-            return WebResult(
+            return None, WebResult(
                 status=200, url=action.url,
                 body='{"access_token":"eyJhbGciOiJIUzI1NiJ9.payload.sig"}')
-        return WebResult(status=200, url=action.url, body='{"status":"fail"}')
+        return None, WebResult(status=200, url=action.url, body='{"status":"fail"}')
 
 
 def test_json_auth_posts_a_json_body_and_returns_the_token():
