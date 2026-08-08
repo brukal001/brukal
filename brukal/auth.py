@@ -97,3 +97,115 @@ class SessionOracle:
         if a.responded and (a.status or 0) >= 400:
             ok = False
         return ok
+
+
+from typing import Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class Credentials:
+    username: str
+    password: str
+    user_field: str = "username"
+    pass_field: str = "password"
+    extra_fields: dict | None = None
+
+
+@runtime_checkable
+class AuthStrategy(Protocol):
+    """One way into an application.
+
+    `detect` is DETERMINISTIC and evidence-based — never a guess from names, and
+    never a model call. `authenticate` returns evidence; only SessionOracle judges.
+    """
+    name: str
+
+    def detect(self, probe: LoginProbe) -> float: ...
+
+    def authenticate(self, browser, url: str, creds: Credentials) -> AuthAttempt: ...
+
+
+def extract_token(body: str) -> str:
+    """Pull a bearer/JWT/session token out of a login response body — how token
+    (non-cookie) APIs authenticate. Handles a top-level or one-level-nested JSON
+    token field, with a regex fallback for non-JSON bodies. Real-world key names."""
+    if not body:
+        return ""
+    keys = ("access_token", "accessToken", "id_token", "idToken", "token",
+            "jwt", "authToken", "auth_token", "session_token", "sessionToken")
+    try:
+        import json as _json
+        d = _json.loads(body)
+        stack = [d]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, dict):
+                for k in keys:
+                    v = cur.get(k)
+                    if isinstance(v, str) and len(v) >= 12:
+                        return v
+                stack.extend(v for v in cur.values() if isinstance(v, dict))
+    except Exception:
+        pass
+    m = re.search(r'"?(?:access_?token|id_?token|token|jwt)"?\s*[:=]\s*"?'
+                  r'([A-Za-z0-9._~+/-]{16,})"?', body, re.I)
+    return m.group(1) if m else ""
+
+
+def _jar(browser) -> dict:
+    return dict(getattr(browser, "_cookies", {}) or {})
+
+
+class FormAuth:
+    """HTML form login carrying a cookie session.
+
+    GETs the login page first: that seeds the cookie session AND collects the hidden
+    and submit inputs (CSRF tokens) the app will require back. Omitting them is a 403
+    on any framework with CSRF enabled, which is most of them.
+    """
+
+    name = "form"
+
+    def detect(self, probe: LoginProbe) -> float:
+        if any(t.lower() == "password" for _n, t in probe.inputs):
+            return 0.9
+        return 0.0
+
+    def authenticate(self, browser, url: str, creds: Credentials) -> AuthAttempt:
+        from urllib.parse import urlencode
+
+        from .web import WebAction
+
+        _d, res = browser.run(WebAction("request", url=url, method="GET"))
+        carried: dict = {}
+        if res is not None and res.body:
+            for tag in re.finditer(r"<input\b[^>]*>", res.body, re.I):
+                t = tag.group(0)
+                typ = (re.search(r'type=["\']?([\w-]+)', t, re.I)
+                       or [None, "text"])[1].lower()
+                nm = re.search(r'name=["\']([^"\']+)["\']', t, re.I)
+                vl = re.search(r'value=["\']([^"\']*)["\']', t, re.I)
+                if nm and typ in ("hidden", "submit") and \
+                        nm.group(1) not in (creds.user_field, creds.pass_field):
+                    carried[nm.group(1)] = vl.group(1) if vl else ""
+
+        form = {creds.user_field: creds.username, creds.pass_field: creds.password,
+                **carried, **(creds.extra_fields or {})}
+        # What the jar held BEFORE the credentials went in. A login that works hands
+        # back something new; comparing tells us so positively, instead of inferring it.
+        before = set(_jar(browser).items())
+        _d2, res2 = browser.run(WebAction(
+            "request", url=url, method="POST", body=urlencode(form),
+            headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        gained = bool(set(_jar(browser).items()) - before)
+
+        return AuthAttempt(
+            strategy=self.name,
+            token=extract_token(res2.body if res2 is not None else ""),
+            gained_cookie=gained,
+            responded=res2 is not None,
+            status=res2.status if res2 is not None else None,
+            headers=(res2.headers or {}) if res2 is not None else {},
+            body=(res2.body or "") if res2 is not None else "",
+            pass_field=creds.pass_field,
+            cookie_login=True)
