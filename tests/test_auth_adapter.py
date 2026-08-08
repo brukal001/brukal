@@ -106,20 +106,18 @@ def test_basic_auth_needs_no_request():
     assert cage.calls == 0
 
 
-def test_basic_auth_currently_leaves_identity_empty():
-    """CHARACTERISATION, not endorsement. This pins a KNOWN LATENT BUG so that A1
-    cannot fix it by accident and A2 cannot regress it by accident.
+def test_basic_auth_sets_identity_like_every_other_strategy():
+    """Was a latent bug, pinned during the A1 refactor and fixed here deliberately.
 
-    Leaving `identity` empty is the same defect that silently disabled five checks on
-    cookie-session apps: every authz test that asks "whose objects are ours" reads
-    it. On a Basic-auth target those tests reason about the wrong principal.
-
-    A2 will invert this assertion together with the fix. If you are reading this
-    because it failed, check whether you MEANT to fix it — and if so, change the
-    assertion deliberately rather than deleting the test."""
+    Every authz check that asks "whose objects are ours" reads `identity`. Basic auth
+    left it empty, so on a Basic-auth target those checks reasoned about the wrong
+    principal — the same defect class that once disabled five checks on
+    cookie-session apps, which is why has_session() exists."""
     s = _session(_TokenApi())
     s.login(LOGIN, "u", "p", login_type="basic")
-    assert s.identity == ""
+    assert s.identity == "u"
+    assert s._login_password == "p"
+    # the distinct note is preserved; only the identity gap is closed
     assert any("HTTP Basic as u" in n for n in s.notes)
 
 

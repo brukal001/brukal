@@ -1642,28 +1642,21 @@ class AssistSession:
         # `self.principal` directly — this was the one place that did not.
         self._ensure_principal().strategy = strategy.name
 
-        if strategy.name == "basic":
-            # Preserved EXACTLY as the old early-return branch behaved: a distinct
-            # note, and `identity` deliberately left alone.
-            #
-            # KNOWN LATENT BUG, DEFERRED TO A2 ON PURPOSE. Leaving `identity` empty
-            # is the same defect that cost five checks on cookie-session apps — every
-            # authz test that asks "whose objects are ours" reads it, so on a
-            # Basic-auth target those tests reason about the wrong principal or do
-            # not run. It is NOT fixed here because this phase's contract is zero
-            # behaviour change, and a refactor that quietly also fixes things is a
-            # refactor whose regressions have two possible causes. A2 fixes it with
-            # its own failing test.
-            self.notes.append(
-                f"[login] HTTP Basic as {username} → Authorization header set")
-            return ok
-
         if ok and not self.identity:
             # Who we are was once set ONLY in the token branch, so a cookie-session
             # login left `identity` empty — and every authz check that asks "whose
             # objects are ours" reads it. Those checks simply never ran.
             self.identity = username
             self._login_password = password
+
+        if strategy.name == "basic":
+            # Basic auth makes no request, so there is no cookie count or token to
+            # describe — hence its own note. It DOES set identity above, like every
+            # other strategy: leaving that empty made authz checks reason about the
+            # wrong principal on Basic-auth targets.
+            self.notes.append(
+                f"[login] HTTP Basic as {username} → Authorization header set")
+            return ok
 
         jar = len(getattr(self.browser, "_cookies", {}) or {})
         how = "bearer token" if attempt.token else f"{jar} cookie(s)"
