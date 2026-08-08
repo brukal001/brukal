@@ -1160,7 +1160,10 @@ In `brukal/assist.py`, replace lines 1589–1719 (the body after the docstring) 
                 pass                  # analysis must never break authentication
 
         self.authenticated = ok
-        self.session.strategy = strategy.name
+        # NOTE: Task 4 shipped this class as `Principal` on `self.principal`, not
+        # `SessionState` on `self.session` — the earlier name collided with the
+        # already-exported `brukal.sessions.SessionState`.
+        self.principal.strategy = strategy.name
 
         if strategy.name == "basic":
             # Preserved EXACTLY as the old early-return branch behaved: a distinct
@@ -1212,7 +1215,9 @@ Run: `/home/brute/brukal-venv/bin/python -m pytest tests/test_auth_adapter.py -q
 Expected: PASS (8 tests) — same tests, same results, new implementation.
 
 Run: `/home/brute/brukal-venv/bin/python -m pytest -q`
-Expected: **807 passed.** Any pre-existing failure means the port changed behaviour.
+Expected: **810 passed.** (The plan originally said 807; Tasks 3 and 4 each gained
+regression tests during review, moving the running total to 802 before this task.)
+Any pre-existing failure means the port changed behaviour.
 Fix `brukal/auth.py`; do not edit the failing test.
 
 - [ ] **Step 7: Live parity check — the gate the suite cannot give you**
@@ -1274,7 +1279,7 @@ git commit -m "auth: login() is an adapter now, and the oracle is the only judge
 
 - `brukal/auth.py` exists with `SessionOracle`, `AuthStrategy`, `FormAuth`, `JsonAuth`, `BasicAuth`, `SessionState`, `Credentials`, `extract_token`.
 - `AssistSession.login()` is an adapter; its signature and every side effect are unchanged.
-- **807 tests pass.** None edited to accommodate the *refactor* (Tasks 1–5); Task 6
+- **810 tests pass.** None edited to accommodate the *refactor* (Tasks 1–5); Task 6
   changes exactly one test, deliberately, together with the behaviour it asserts.
 - Live logins against DVNA (form) and Juice Shop (json) behave exactly as before.
 - Basic auth sets `identity`, closing a latent authz-targeting bug (Task 6).
@@ -1384,7 +1389,7 @@ Expected: `test_basic_auth_sets_identity_like_every_other_strategy` FAILS. Rever
 - [ ] **Step 6: Run the whole suite and judge any failure on its merits**
 
 Run: `/home/brute/brukal-venv/bin/python -m pytest -q`
-Expected: 807 passed.
+Expected: 810 passed.
 
 If a pre-existing test fails, decide which case it is:
 - it asserted `identity == ""` after a Basic login → it was pinning the bug; update it
