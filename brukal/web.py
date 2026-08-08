@@ -99,12 +99,20 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
     action touches; the scheme must be http/https; unparseable => DENY (fail-closed).
     Returns the same Decision object the shell gate emits, so web and shell actions
     share one audit schema."""
+    from .identity import (CAPABILITY_DENIED_REASON, required_capability_for_web,
+                           resolve_identity)
+
     kind = (action.kind or "").lower()
     desc = action.describe()
+    # `agent` may be an AgentIdentity or the historical bare role string. Capabilities
+    # are re-derived from the role either way, so nothing handed in widens itself.
+    ident = resolve_identity(agent)
+    agent = ident.role or "unknown"
 
     def deny(reason, layer="hard:web"):
         return Decision(verdict="DENY", action=desc, target="", agent=agent,
-                        reason=reason, layer=layer)
+                        reason=reason, layer=layer,
+                        agent_id=ident.agent_id, engagement_id=ident.engagement_id)
 
     if kind not in _ALL_ACTIONS:
         return deny(f"unknown web action '{action.kind}'")
@@ -129,8 +137,20 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
     if not scope.contains_host(host):
         return deny(f"host '{host}' is out of scope", "hard:web-scope")
 
+    # CAPABILITY — last, so every earlier denial keeps its own reason and layer and
+    # this can only ever ADD denials. Same decision procedure as the shell path
+    # (identity.required_capability_for_web), no LLM, fail-closed on an unrecognised
+    # action kind.
+    needed = required_capability_for_web(action)
+    if not ident.can(needed):
+        d = deny(f"role '{agent}' lacks capability {needed} required by this web "
+                 f"action", "hard:web-capability")
+        d.reason_code = CAPABILITY_DENIED_REASON
+        return d
+
     return Decision(verdict="ALLOW", action=desc, target=host, agent=agent,
-                    reason=f"in-scope web {kind} on {host}", layer="web:allow")
+                    reason=f"in-scope web {kind} on {host}", layer="web:allow",
+                    agent_id=ident.agent_id, engagement_id=ident.engagement_id)
 
 
 # --------------------------------------------------------------------------- #

@@ -247,6 +247,44 @@ def required_capability(command: str) -> str:
     return EXPLOITATION
 
 
+# Web action kinds that only ever READ. Everything else either drives a
+# state-changing interaction or is unrecognised, and both are handled below.
+_READ_ONLY_WEB_KINDS = frozenset({"get", "navigate", "screenshot"})
+# Kinds that drive or modify an interaction with the page/request.
+_INTERACTIVE_WEB_KINDS = frozenset({"click", "fill", "eval", "intercept"})
+
+
+def required_capability_for_web(action) -> str:
+    """The capability one governed WEB action needs.
+
+    The web plane took a different gate (`web.check_web`) and consulted no capability
+    at all, so role separation held on the shell path and not here. This is the same
+    decision procedure as `required_capability`, expressed over a WebAction instead of
+    a command line: it shares the constants, shares `_HTTP_WRITE_METHODS`, and shares
+    the fail-closed rule. It is deliberately NOT a second classifier with its own
+    opinions.
+
+    Note the symmetry with the shell path: a payload carried in a QUERY STRING is
+    RECON in both places, because neither path inspects payload CONTENT. Detecting
+    "this looks like SQLi" would be a content classifier over target-influenced text,
+    which is exactly the kind of judgement the gate refuses to make (invariant 1).
+    What is classified is the SHAPE of the action, which the attacker does not get to
+    misrepresent.
+    """
+    kind = (getattr(action, "kind", "") or "").strip().lower()
+    if kind in _READ_ONLY_WEB_KINDS:
+        return RECON
+    if kind == "request":
+        method = (getattr(action, "method", "") or "GET").strip().lower()
+        if getattr(action, "body", "") or method in _HTTP_WRITE_METHODS:
+            return WEB_REQUEST
+        return RECON
+    if kind in _INTERACTIVE_WEB_KINDS:
+        return WEB_REQUEST
+    # Unrecognised kind -> most restrictive (invariant 2).
+    return EXPLOITATION
+
+
 def _writes_over_http(tokens: list[str]) -> bool:
     """A curl/wget invocation that sends a body or a write method changes remote
     state. Mirrors the signals risk.derive_reversibility already uses."""

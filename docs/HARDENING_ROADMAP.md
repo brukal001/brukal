@@ -189,15 +189,15 @@ A blanket multi-capability grant to `verify` is **rejected**: it gives narrower 
 (it still cannot follow a finding into a class nobody anticipated) *and* less containment
 (the capability persists for every later action), so it loses on both axes.
 
-### Carried forward
+### ~~Carried forward: web path ungoverned~~ — **CLOSED in Phase 2 Part 1**
 
-Capability enforcement covers the **shell path only**. Web actions route through
+Capability enforcement covered the **shell path only**. Web actions route through
 `web.check_web()` and consult no capability yet, so the `web` role's
 `{RECON, WEB_REQUEST}` entry is currently declarative rather than enforced.
 
 ---
 
-## Phase 2 Part 1 — the verifier per-action grant (2026-08-08)
+## Phase 2 Part 1 — closing the two capability holes (2026-08-08)
 
 ### A. The verifier can confirm without becoming an attacker — CLOSED
 
@@ -238,7 +238,28 @@ Tests: `test_verification_grant.py::test_a_verifier_may_run_its_sqli_confirmatio
 for human sign-off. Confirming a SQLi by running sqlmap *is* intrusive; the capability
 grant lets it past the capability check, not past risk or approval.
 
-### Residual risk — recorded, not fixed
+### B. Capability enforcement on the web plane — CLOSED
+
+**The problem.** Web actions take `web.check_web()`, which consulted no capability, so a
+recon-role identity could emit a WEB request carrying an injection payload and the
+capability layer never saw it. Role separation held on one plane and not the other.
+
+**The fix.** `identity.required_capability_for_web` sits beside `required_capability`,
+sharing its constants, its `_HTTP_WRITE_METHODS` predicate and its fail-closed rule —
+one module owning capability classification, not a parallel copy. `check_web` resolves
+the identity the same way `Gate.check` does and applies the capability as its LAST
+check, so every earlier denial keeps its own reason and layer and this can only add
+denials. Denials carry `CAPABILITY_NOT_GRANTED` at layer `hard:web-capability`.
+
+Tests: `test_web_capability.py::test_a_recon_role_web_action_carrying_an_injection_payload_is_denied`,
+`::test_a_web_role_plain_get_is_allowed`,
+`::test_an_unclassifiable_web_action_under_a_constrained_role_fails_closed`,
+`::test_scope_precedes_capability_on_the_web_path`,
+`::test_a_denied_web_action_never_reaches_the_cage`,
+`::test_an_interaction_under_a_recon_role_is_denied`,
+`::test_method_casing_and_padding_do_not_hide_a_write`
+
+### Residual risks — recorded, not fixed
 
 **A verifying agent can authorise any single command it emits.** The grant is bounded to
 one action, audited, and still subject to scope, risk and approval — but a
@@ -246,3 +267,20 @@ prompt-injected verifier could emit an exploitation command and have it authoris
 that action. This is inherent to "the verifier must reproduce the finding": narrowing it
 further would re-create the hole this part closed. The mitigations that matter are the
 soft layer's escalation and the audit record, both intact.
+
+**Payload CONTENT is not classified on either plane.** A payload in a query string is
+`RECON` on the shell path and on the web path alike, because neither inspects payload
+text. Detecting "this looks like SQLi" would mean a content classifier over
+target-influenced text — precisely the judgement the gate refuses to make (invariant 1).
+What is classified is the SHAPE of the action, which an attacker cannot misrepresent.
+
+**`eval` maps to `WEB_REQUEST`, not `EXPLOITATION`.** It executes JS in page context,
+which is arguably closer to exploitation, but mapping it higher would narrow below
+current behaviour — the Phase 1 lesson. Open question for a later phase.
+
+**The verification grant does not extend to the web plane.** It names a shell command and
+is matched against the command being judged; on the web path no command is matched, so it
+confers nothing. Pinned by
+`test_web_capability.py::test_a_verification_grant_does_not_leak_onto_the_web_path`. If a
+verifier ever needs to confirm a finding over the web plane, that is a deliberate design
+step, not an accident.
