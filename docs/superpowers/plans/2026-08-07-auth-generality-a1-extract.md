@@ -1264,22 +1264,132 @@ git commit -m "auth: login() is an adapter now, and the oracle is the only judge
 
 - `brukal/auth.py` exists with `SessionOracle`, `AuthStrategy`, `FormAuth`, `JsonAuth`, `BasicAuth`, `SessionState`, `Credentials`, `extract_token`.
 - `AssistSession.login()` is an adapter; its signature and every side effect are unchanged.
-- **807 tests pass**, none of them edited to accommodate the refactor.
+- **807 tests pass.** None edited to accommodate the *refactor* (Tasks 1–5); Task 6
+  changes exactly one test, deliberately, together with the behaviour it asserts.
 - Live logins against DVNA (form) and Juice Shop (json) behave exactly as before.
-- No new CLI flags, no user-visible change. A2 is what removes the tuning flags.
+- Basic auth sets `identity`, closing a latent authz-targeting bug (Task 6).
+- No new CLI flags. A2 is what removes the tuning flags.
 
-## Carried into A2
+---
 
-One latent bug is knowingly preserved rather than fixed, and it is pinned by
-`test_basic_auth_currently_leaves_identity_empty`:
+### Task 6: Fix the Basic-auth identity bug (deliberate behaviour change)
 
-**Basic auth never sets `identity`.** Every authz check that asks "whose objects are
-ours" reads `identity`, so on a Basic-auth target those checks reason about the wrong
-principal or do not run at all. This is the same defect class that silently disabled
-five checks on cookie-session apps. It is not fixed in A1 because this phase's whole
-value is that a regression has exactly one possible cause; a refactor that also
-changes behaviour forfeits that. A2 fixes it with its own failing test and flips the
-characterisation assertion deliberately.
+**Files:**
+- Modify: `brukal/assist.py` (the adapter written in Task 5)
+- Modify: `tests/test_auth_adapter.py`
+
+**Interfaces:**
+- Consumes: the adapter from Task 5
+- Produces: no new names. `login(..., login_type="basic")` now sets `identity` and
+  `_login_password`, like every other strategy.
+
+**Context — read this before starting.** Tasks 1–5 are a pure refactor: *any* test
+failure there means the port is wrong. **Task 6 is the opposite** — it changes
+behaviour on purpose. If a pre-existing test fails here, it may legitimately need
+updating, because it may be asserting the bug. Judge each one; do not blanket-edit.
+
+The bug: the old `basic` branch returned early and never set `identity`. Every authz
+check that asks "whose objects are ours" reads `identity`, so on a Basic-auth target
+those checks reason about the wrong principal or never run. This is the same defect
+class that once silently disabled five checks on cookie-session apps — the reason
+`has_session()` exists at all.
+
+- [ ] **Step 1: Flip the characterisation test**
+
+In `tests/test_auth_adapter.py`, **replace** `test_basic_auth_currently_leaves_identity_empty`
+entirely with:
+
+```python
+def test_basic_auth_sets_identity_like_every_other_strategy():
+    """Was a latent bug, pinned during the A1 refactor and fixed here deliberately.
+
+    Every authz check that asks "whose objects are ours" reads `identity`. Basic auth
+    left it empty, so on a Basic-auth target those checks reasoned about the wrong
+    principal — the same defect class that once disabled five checks on
+    cookie-session apps, which is why has_session() exists."""
+    s = _session(_TokenApi())
+    s.login(LOGIN, "u", "p", login_type="basic")
+    assert s.identity == "u"
+    assert s._login_password == "p"
+    # the distinct note is preserved; only the identity gap is closed
+    assert any("HTTP Basic as u" in n for n in s.notes)
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `/home/brute/brukal-venv/bin/python -m pytest tests/test_auth_adapter.py -q`
+Expected: FAIL — `assert '' == 'u'`
+
+- [ ] **Step 3: Fix the adapter**
+
+In `brukal/assist.py`, in the adapter body from Task 5, **replace** this block:
+
+```python
+        if strategy.name == "basic":
+            # Preserved EXACTLY as the old early-return branch behaved: a distinct
+            # note, and `identity` deliberately left alone.
+            ...
+            self.notes.append(
+                f"[login] HTTP Basic as {username} → Authorization header set")
+            return ok
+
+        if ok and not self.identity:
+```
+
+with:
+
+```python
+        if ok and not self.identity:
+```
+
+and then, immediately AFTER the `self.identity = username` /
+`self._login_password = password` block, insert:
+
+```python
+        if strategy.name == "basic":
+            # Basic auth makes no request, so there is no cookie count or token to
+            # describe — hence its own note. It DOES set identity above, like every
+            # other strategy: leaving that empty made authz checks reason about the
+            # wrong principal on Basic-auth targets.
+            self.notes.append(
+                f"[login] HTTP Basic as {username} → Authorization header set")
+            return ok
+```
+
+The ordering is the whole fix: identity is now assigned before the Basic-auth early
+return, instead of being skipped by it.
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `/home/brute/brukal-venv/bin/python -m pytest tests/test_auth_adapter.py -q`
+Expected: PASS (8 tests)
+
+- [ ] **Step 5: Verify the fix is real**
+
+Move the `if strategy.name == "basic": ... return ok` block back above the identity
+assignment.
+Run: `/home/brute/brukal-venv/bin/python -m pytest tests/test_auth_adapter.py -q`
+Expected: `test_basic_auth_sets_identity_like_every_other_strategy` FAILS. Revert.
+
+- [ ] **Step 6: Run the whole suite and judge any failure on its merits**
+
+Run: `/home/brute/brukal-venv/bin/python -m pytest -q`
+Expected: 807 passed.
+
+If a pre-existing test fails, decide which case it is:
+- it asserted `identity == ""` after a Basic login → it was pinning the bug; update it
+- it fails for any other reason → the fix is wrong; fix the code
+
+Report which happened rather than silently editing.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add brukal/assist.py tests/test_auth_adapter.py
+git commit -m "auth: basic auth knows who it logged in as"
+```
+
+---
 
 ## Self-review notes
 
