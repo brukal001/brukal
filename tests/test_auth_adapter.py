@@ -141,8 +141,7 @@ def test_a_rejected_token_still_sets_identity_and_password():
     a token-shaped string but a >=400 status still set identity, even though the
     login is correctly reported as failed. Do not 'fix' this here: the phase
     contract is zero behaviour change, and the underlying bug gets its own
-    deliberate fix and its own test later, same treatment as the Basic-auth
-    identity gap."""
+    deliberate fix and its own test in a later phase."""
     class _TokenButRejected:
         _cookies: dict = {}
         auth_header = ""

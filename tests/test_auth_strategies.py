@@ -135,9 +135,9 @@ def test_json_auth_failure_is_not_a_session():
 def test_json_auth_guards_against_false_login_heuristic():
     """The cookie_login=False guard stops a successful body parse from being
     misread as a login. A body with no error keywords and matching _LOGGED_IN_RE
-    ("welcome") but no password field would be flagged as authenticated by the
-    cookie-login heuristic (lines 91-94 of oracle), EXCEPT that cookie_login=False
-    prevents entry to the heuristic branch at line 71."""
+    ("welcome") but no password field would be flagged as authenticated by
+    SessionOracle's last-resort cookie heuristic, EXCEPT that cookie_login=False
+    stops that heuristic from ever being entered in the first place."""
 
     class _LoginPageLike:
         """Returns a 200 with body that bypasses _FAIL_JSON_RE and _AUTH_ERROR_RE
@@ -194,6 +194,38 @@ def test_json_auth_seeding_get_is_load_bearing():
     assert len(api.seen) >= 2, "seeding GET must be issued before POST"
     assert (getattr(api.seen[0], "method", "") or "GET").upper() == "GET"
     # The cookie from the GET is not "gained" by the login (snapshot was after GET)
+    assert attempt.gained_cookie is False
+
+
+def test_form_auth_does_not_count_a_cookie_set_by_the_seeding_get():
+    """Mirrors test_json_auth_seeding_get_is_load_bearing above: the existing
+    FormAuth cookie tests pass whether the `before` snapshot is taken above or
+    below the seeding GET, because their double only ever sets a cookie on the
+    POST. A double that sets a cookie on the GET and NONE on the POST is the only
+    way to distinguish the two orderings — if the snapshot were taken before the
+    GET, that GET-issued cookie would be miscounted as gained by the login."""
+
+    class _GetSetsCookieNoNewOneOnPost:
+        def __init__(self):
+            self.seen: list = []
+            self._cookies = {}
+            self.auth_header = ""
+
+        def run(self, action):
+            self.seen.append(action)
+            method = (getattr(action, "method", "") or "GET").upper()
+            if method == "GET":
+                self._cookies["sid"] = "anon"
+                return None, WebResult(status=200, url=action.url, body="")
+            # POST succeeds (redirect away) but sets no NEW cookie.
+            return None, WebResult(status=302, url=action.url, body="",
+                            headers={"Location": "/dashboard"})
+
+    app = _GetSetsCookieNoNewOneOnPost()
+    attempt = FormAuth().authenticate(
+        app, LOGIN, Credentials(username="u", password="p"))
+    assert len(app.seen) >= 2, "the seeding GET must be issued before the POST"
+    assert (getattr(app.seen[0], "method", "") or "GET").upper() == "GET"
     assert attempt.gained_cookie is False
 
 

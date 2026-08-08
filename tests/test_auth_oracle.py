@@ -71,12 +71,14 @@ def test_unauthorized_wording_outranks_a_missing_form():
 
 
 def test_the_cookie_fallback_does_not_apply_to_a_token_login():
-    """The guard that made this safe: a JSON API rejecting credentials answers
-    {"status":"fail"} — which contains no password field — so the cookie heuristic
-    would declare every failed API login a success."""
+    """The guard that made this safe: a JSON API rejecting credentials answers a
+    body with no password field AND no explicit error/fail wording — e.g.
+    {"result":"welcome back"} — which matches _LOGGED_IN_RE and would be read as
+    an authenticated session by the cookie heuristic. cookie_login=False stops the
+    heuristic from ever being entered, regardless of what the body says."""
     assert SessionOracle().judge(
         AuthAttempt(strategy="json", token="", responded=True, cookie_login=False,
-                    status=200, body='{"result":"nope"}')) is False
+                    status=200, body='{"result":"welcome back"}')) is False
 
 
 def test_last_resort_hint_only_when_nothing_else_is_available():

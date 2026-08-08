@@ -27,6 +27,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .audit import AuditLog
+from .auth import AUTH_ERROR_RE
 from .executor import Executor
 from .gate import Gate
 from .kali import DockerKali, FakeKali
@@ -1580,7 +1581,6 @@ class AssistSession:
         # the login page, and every cross-account proof needs somewhere to authenticate
         # a second principal.
         self._login_url = login_url
-        self._login_type = lt
 
         strategy = {"basic": BasicAuth(), "json": JsonAuth(),
                     "form": FormAuth()}.get(lt)
@@ -1592,11 +1592,21 @@ class AssistSession:
             # AUTHENTICATED. Refusing to guess removes that direction entirely, and
             # protects A2: a new strategy added but not yet wired here fails loudly
             # instead of silently inheriting form semantics.
+            #
+            # `_login_type` is deliberately NOT set on this path (see below) — it
+            # stays whatever it was, so confirm_default_credentials's `or "form"`
+            # fallback still recovers instead of being handed a type it also
+            # refuses, which would fail closed on every attempt while still
+            # emitting a coverage row that claims the detector ran.
             self.notes.append(
                 f"[login] unrecognised login type {lt!r} — refusing to guess "
                 f"(known: form, json, basic)")
             self.authenticated = False
             return False
+
+        # Only recorded once the type is known to resolve to a real strategy — see
+        # the comment on the refused branch above for why this must not move earlier.
+        self._login_type = lt
 
         creds = Credentials(username=username, password=password,
                             user_field=user_field, pass_field=pass_field,
@@ -1615,12 +1625,12 @@ class AssistSession:
             # unconditionally — before the ok verdict, and for every non-basic
             # strategy including form. Restored verbatim.
             #
-            # KNOWN LATENT BUG, DEFERRED ON PURPOSE (same treatment as the
-            # Basic-auth identity gap): a 4xx body containing a token-shaped
-            # string — `extract_token`'s regex fallback matches `token: "<16+>"`
-            # anywhere — sets identity and a bearer header from a REJECTED token.
-            # Not fixed here, because this phase's value is that a regression has
-            # exactly one possible cause.
+            # KNOWN LATENT BUG, DEFERRED ON PURPOSE: a 4xx body containing a
+            # token-shaped string — `extract_token`'s regex fallback matches
+            # `token: "<16+>"` anywhere — sets identity and a bearer header from a
+            # REJECTED token. Not fixed here, because this phase's value is that a
+            # regression has exactly one possible cause; the deliberate fix and its
+            # own test are reserved for a later phase.
             self.browser.auth_header = f"Bearer {attempt.token}"
             self.identity = username
             self._login_password = password
@@ -1635,11 +1645,6 @@ class AssistSession:
                 pass                  # analysis must never break authentication
 
         self.authenticated = ok
-        # NOTE: Task 4 shipped this class as `Principal` on `self.principal`, not
-        # `SessionState` on `self.session` — the earlier name collided with the
-        # already-exported `brukal.sessions.SessionState`. Routed through
-        # `_ensure_principal()`, like every other access in this class, rather than
-        # `self.principal` directly — this was the one place that did not.
         self._ensure_principal().strategy = strategy.name
 
         if ok and not self.identity:
@@ -2004,12 +2009,10 @@ class AssistSession:
         return True
 
     # An authentication failure the app itself describes — used to tell "the endpoint
-    # refused me" apart from "the endpoint served me data".
-    _AUTH_ERROR_RE = re.compile(
-        r"(?i)\b(?:unauthori[sz]ed|forbidden|access denied|not authenticated|"
-        r"authentication (?:required|failed)|no authorization token|missing token|"
-        r"invalid token|token (?:is )?(?:expired|missing)|login required|"
-        r"permission denied)\b")
+    # refused me" apart from "the endpoint served me data". Owned by auth.py
+    # (SessionOracle uses the identical pattern for the identical reason); imported
+    # rather than re-compiled here so the two can never drift apart.
+    _AUTH_ERROR_RE = AUTH_ERROR_RE
 
     def confirm_unauth_access(self, url: str, spec_path: str = "") -> bool:
         """Broken authentication: an endpoint the API's OWN SPEC declares as requiring

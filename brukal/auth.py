@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,20 @@ class AuthAttempt:
     cookie_login: bool = False
 
 
+# An authentication failure the app itself describes — used to tell "the endpoint
+# refused me" apart from "the endpoint served me data". Owned HERE, not duplicated:
+# assist.py imports this name rather than re-compiling its own copy, so a phrase
+# added to one can never silently fail to reach the other. The unsafe drift
+# direction is real — a phrase added only to a caller's copy makes the oracle LESS
+# able to see an explicit failure, which is the exact failure mode this module was
+# extracted to prevent.
+AUTH_ERROR_RE = re.compile(
+    r"(?i)\b(?:unauthori[sz]ed|forbidden|access denied|not authenticated|"
+    r"authentication (?:required|failed)|no authorization token|missing token|"
+    r"invalid token|token (?:is )?(?:expired|missing)|login required|"
+    r"permission denied)\b")
+
+
 class SessionOracle:
     """Does this attempt prove we hold a session?
 
@@ -55,11 +70,7 @@ class SessionOracle:
     """
 
     _REDIRECT = (301, 302, 303, 307, 308)
-    _AUTH_ERROR_RE = re.compile(
-        r"(?i)\b(?:unauthori[sz]ed|forbidden|access denied|not authenticated|"
-        r"authentication (?:required|failed)|no authorization token|missing token|"
-        r"invalid token|token (?:is )?(?:expired|missing)|login required|"
-        r"permission denied)\b")
+    _AUTH_ERROR_RE = AUTH_ERROR_RE
     _FAIL_JSON_RE = re.compile(r'"status"\s*:\s*"(?:fail|error)"', re.I)
     _LOGGED_IN_RE = re.compile(
         r"(?i)log ?out|sign ?out|welcome|dashboard|my account|profile")
@@ -97,9 +108,6 @@ class SessionOracle:
         if a.responded and (a.status or 0) >= 400:
             ok = False
         return ok
-
-
-from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -256,8 +264,14 @@ class JsonAuth:
             headers={"Content-Type": "application/json"}))
         gained = bool(set(_jar(browser).items()) - before)
         token = extract_token(res.body if res is not None else "")
-        if token:
-            browser.auth_header = f"Bearer {token}"
+        # Do NOT write browser.auth_header here. This strategy returns EVIDENCE; the
+        # adapter (assist.py login()) is what arms transport state, and only after
+        # the oracle has judged the attempt a success. Writing it here too was a
+        # no-op while only one strategy ever runs, but it becomes a trap once a
+        # negotiator tries strategies in order (phase A2): a rejected JSON attempt
+        # could arm a Bearer header from a token-shaped string in its body, be
+        # judged a failure, and then leave that stale header riding on every
+        # request after a DIFFERENT strategy succeeds on cookies.
         return AuthAttempt(
             strategy=self.name,
             token=token,
@@ -287,6 +301,11 @@ class BasicAuth:
         import base64
         tok = base64.b64encode(
             f"{creds.username}:{creds.password}".encode()).decode()
+        # Unlike JsonAuth, THIS write is not redundant with the adapter: Basic makes
+        # no request and has no oracle-judged verdict to wait for (there is nothing
+        # to negotiate — see the class docstring), and the adapter deliberately
+        # skips arming the header for the "basic" strategy. This is the only place
+        # it happens, so it stays.
         browser.auth_header = f"Basic {tok}"
         return AuthAttempt(strategy=self.name, token=tok, responded=False)
 
@@ -311,4 +330,11 @@ class Principal:
         return dict(self.__dict__)
 
     def restore(self, snap: dict) -> None:
-        self.__dict__.update(snap)
+        # Filtered to the dataclass's own fields — an unfiltered __dict__.update
+        # would let any foreign dict graft arbitrary attributes onto a live
+        # Principal. `snap` is normally this object's own prior snapshot(), but the
+        # method's contract should not depend on that being the only caller.
+        known = self.__dataclass_fields__
+        for k, v in snap.items():
+            if k in known:
+                setattr(self, k, v)
