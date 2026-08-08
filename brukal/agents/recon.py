@@ -44,9 +44,15 @@ def _build_user_prompt(task: str, context: str) -> str:
 
 
 class ReconAgent:
-    def __init__(self, llm: LLMClient, executor: Executor):
+    def __init__(self, llm: LLMClient, executor: Executor, identity=None):
         self._llm = llm
         self._executor = executor
+        # Identity is BOUND here, by the code that constructs the agent — never read
+        # from the model's Action Request. `proposing_agent` is a field the LLM writes,
+        # and it used to be handed straight to the executor, so a model that claimed
+        # `"proposing_agent": "operator"` promoted itself past its own role. Invariant 3.
+        from ..identity import mint
+        self._identity = identity or mint("recon")
 
     def propose(self, task: str, context: str = ""):
         """Generate — but do NOT execute — the next command as an ActionRequest,
@@ -71,6 +77,6 @@ class ReconAgent:
             return None, None
 
         decision, result = self._executor.run(
-            request.command, request.target_host, agent=request.proposing_agent
+            request.command, request.target_host, agent=self._identity
         )
         return request, (decision, result)

@@ -65,9 +65,14 @@ class VerifyResult:
 
 
 class VerifyAgent:
-    def __init__(self, llm: LLMClient, executor: Executor):
+    def __init__(self, llm: LLMClient, executor: Executor, identity=None):
         self._llm = llm
         self._executor = executor
+        # Bound identity. This agent already hardcoded agent="verify" rather than
+        # trusting the request, which was correct; minting it makes the binding
+        # explicit and carries agent_id/engagement_id into the audit record.
+        from ..identity import mint
+        self._identity = identity or mint("verify")
         # last turn's raw pieces, for the orchestrator adapter / inspection
         self.last_result: VerifyResult | None = None
         self._last_request = None
@@ -95,7 +100,7 @@ class VerifyAgent:
 
         # 2. run it through the one door
         decision, result = self._executor.run(
-            request.command, request.target_host, agent="verify")
+            request.command, request.target_host, agent=self._identity)
         self._last_decision, self._last_exec = decision, result
 
         if result is None:

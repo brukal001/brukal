@@ -80,6 +80,14 @@ class Decision:
     reversibility: str | None = None    # "reversible" | "unknown" | "irreversible"
     blast_radius: str | None = None     # "host" | "subnet" | "wide"
     trust: float | None = None          # proposing agent's T_i fed to the soft layer (M6)
+    # Bound identity of the proposing principal. `agent` above stays the ROLE string
+    # (audit filters and the trust model key on it); these two say WHICH run of that
+    # role asked, and under which engagement — neither is self-reported.
+    agent_id: str = ""
+    engagement_id: str = ""
+    # Machine-readable code for the capability check only. Every other layer still
+    # carries prose in `reason`; the full reason-code refactor is a later phase.
+    reason_code: str = ""
 
     @property
     def allowed(self) -> bool:
@@ -164,12 +172,32 @@ class Gate:
 
     # -- the gate ------------------------------------------------------------
 
-    def check(self, command: str, target: str, agent: str = "unknown") -> Decision:
+    def check(self, command: str, target: str, agent="unknown") -> Decision:
         """Run the hard gate over one proposed action.
 
         Order matters: the cheapest, most absolute checks come first, and any
         single failure denies. Read this as a logical AND of all constraints.
+
+        `agent` may be an `AgentIdentity` minted by the dispatcher, or a bare role
+        string (the historical form). Either way its capabilities are re-derived from
+        the role, so nothing a caller hands in can widen its own authority.
         """
+        from .identity import resolve_identity
+
+        ident = resolve_identity(agent)
+        decision = self._check_inner(command, target, ident)
+        # Every decision carries WHICH run of the role asked, and under which
+        # engagement. Stamped here so no return path can forget it.
+        decision.agent_id = ident.agent_id
+        decision.engagement_id = ident.engagement_id
+        return decision
+
+    def _check_inner(self, command: str, target: str, ident) -> Decision:
+        """The hard gate + soft layer. `ident` is already resolved and trusted to
+        carry role-derived capabilities."""
+
+        agent = ident.role or "unknown"
+
         # 0. Injection guard — reject shell chaining / substitution outright.
         if any(c in command for c in _SHELL_METACHARACTERS) or \
            any(p in command for p in _SUBSTITUTION_PATTERNS):
@@ -215,6 +243,7 @@ class Gate:
         if not self._rate_ok():
             return self._deny(command, target, agent,
                               "rate limit exceeded", "hard:rate")
+
 
         # ---- Passed the hard gate. Now the SOFT risk layer (milestone 3). ----
         # The hard gate can only DENY; the soft layer can only add caution on top
