@@ -1550,30 +1550,10 @@ class AssistSession:
 
     @staticmethod
     def _extract_token(body: str) -> str:
-        """Pull a bearer/JWT/session token out of a login response body — how token
-        (non-cookie) APIs authenticate. Handles a top-level or one-level-nested JSON
-        token field, with a regex fallback for non-JSON bodies. Real-world key names."""
-        if not body:
-            return ""
-        keys = ("access_token", "accessToken", "id_token", "idToken", "token",
-                "jwt", "authToken", "auth_token", "session_token", "sessionToken")
-        try:
-            import json as _json
-            d = _json.loads(body)
-            stack = [d]
-            while stack:
-                cur = stack.pop()
-                if isinstance(cur, dict):
-                    for k in keys:
-                        v = cur.get(k)
-                        if isinstance(v, str) and len(v) >= 12:
-                            return v
-                    stack.extend(v for v in cur.values() if isinstance(v, dict))
-        except Exception:
-            pass
-        m = re.search(r'"?(?:access_?token|id_?token|token|jwt)"?\s*[:=]\s*"?'
-                      r'([A-Za-z0-9._~+/-]{16,})"?', body, re.I)
-        return m.group(1) if m else ""
+        """Kept on the session because tests and assist.py:2247 call it directly.
+        The implementation now lives with the strategies that need it."""
+        from .auth import extract_token
+        return extract_token(body)
 
     def login(self, login_url: str, username: str, password: str,
               user_field: str = "username", pass_field: str = "password",
@@ -1589,133 +1569,72 @@ class AssistSession:
         Cookie sessions AND token/bearer/basic auth are propagated (see GovernedBrowser).
         Gate untouched — each request passes check_web (scope+scheme), never a shell.
         Returns True if we appear authenticated."""
-        import base64
-        from urllib.parse import urlencode
-
-        from .web import WebAction
+        from .auth import (AuthAttempt, BasicAuth, Credentials, FormAuth,
+                           JsonAuth, SessionOracle)
         if self.browser is None:
             self.notes.append("[login] no governed browser wired — cannot authenticate.")
             return False
+
         lt = (login_type or "form").lower()
-        # Remember it: an authenticated crawl cannot rediscover the login page, and
-        # every cross-account proof needs somewhere to authenticate a second principal.
+        # Remember it BEFORE authenticating: an authenticated crawl cannot rediscover
+        # the login page, and every cross-account proof needs somewhere to authenticate
+        # a second principal.
         self._login_url = login_url
         self._login_type = lt
 
-        if lt == "basic":                          # HTTP Basic — no request needed
-            tok = base64.b64encode(f"{username}:{password}".encode()).decode()
-            self.browser.auth_header = f"Basic {tok}"
-            self.authenticated = True
-            self.notes.append(f"[login] HTTP Basic as {username} → Authorization header set")
-            return True
+        strategy = {"basic": BasicAuth(), "json": JsonAuth()}.get(lt, FormAuth())
+        creds = Credentials(username=username, password=password,
+                            user_field=user_field, pass_field=pass_field,
+                            extra_fields=extra_fields)
+        try:
+            attempt = strategy.authenticate(self.browser, login_url, creds)
+        except Exception:
+            attempt = AuthAttempt(strategy=strategy.name, responded=False)
 
-        # 1) GET the login endpoint: seeds a cookie session + (form) carries CSRF/submit.
-        _d, res = self.browser.run(WebAction("request", url=login_url, method="GET"))
-        carried: dict = {}
-        if lt == "form" and res is not None and res.body:
-            for tag in re.finditer(r"<input\b[^>]*>", res.body, re.I):
-                t = tag.group(0)
-                typ = (re.search(r'type=["\']?([\w-]+)', t, re.I) or [None, "text"])[1].lower()
-                nm = re.search(r'name=["\']([^"\']+)["\']', t, re.I)
-                vl = re.search(r'value=["\']([^"\']*)["\']', t, re.I)
-                if nm and typ in ("hidden", "submit") and nm.group(1) not in (user_field, pass_field):
-                    carried[nm.group(1)] = vl.group(1) if vl else ""
+        ok = SessionOracle().judge(attempt)
 
-        # 2) POST the credentials — JSON body for an API login, else url-encoded form.
-        if lt == "json":
-            import json as _json
-            body = _json.dumps({user_field: username, pass_field: password, **(extra_fields or {})})
-            ctype = "application/json"
-        else:
-            form = {user_field: username, pass_field: password, **carried, **(extra_fields or {})}
-            body, ctype = urlencode(form), "application/x-www-form-urlencoded"
-        # What the jar held BEFORE the credentials went in. A login that works hands
-        # back something new; comparing tells us so positively, instead of inferring it.
-        jar_before = set((getattr(self.browser, "_cookies", {}) or {}).items())
-        _d2, res2 = self.browser.run(WebAction(
-            "request", url=login_url, method="POST", body=body,
-            headers={"Content-Type": ctype}))
-        gained_cookie = bool(
-            set((getattr(self.browser, "_cookies", {}) or {}).items()) - jar_before)
-
-        # 3) A token (bearer/JWT) session: extract it and carry it as Authorization.
-        token = self._extract_token(res2.body if res2 is not None else "")
-        if token:
-            self.browser.auth_header = f"Bearer {token}"
-            self.identity = username          # whose objects are "ours" for authz tests
-            self._login_password = password    # the revocation check must re-authenticate
-            # The token the app just handed us is itself evidence: its header names the
-            # algorithm and its signature exposes a weak key. Reading it costs nothing
-            # and needs no further request.
+        if attempt.token and strategy.name != "basic":
+            # The token the app just handed us is itself evidence: its header names
+            # the algorithm and its signature exposes a weak key. Reading it costs
+            # nothing and needs no further request.
             try:
-                self._seen_jwts.add(token)
-                self.last_jwt = token
-                self.scan_jwt(token, source=login_url)
+                self._seen_jwts.add(attempt.token)
+                self.last_jwt = attempt.token
+                self.scan_jwt(attempt.token, source=login_url)
             except Exception:
-                pass                          # analysis must never break authentication
+                pass                  # analysis must never break authentication
 
-        # 4) Confirm: a token, OR a redirect away from the login page, OR the response no
-        #    longer shows the password field (cookie session established).
-        ok = bool(token)
-        # The "no password field in the response" fallback is a COOKIE-session heuristic
-        # and must not be applied to a token login: a JSON API rejecting credentials
-        # answers {"status":"fail"}, which contains no password field either, so the
-        # fallback declared every failed API login a success. Brukal would then believe
-        # it held a session it never got — and a default-credential check built on it
-        # would call any endpoint vulnerable.
-        if not ok and res2 is not None and lt == "form":
-            hdrs = res2.headers or {}
-            loc = hdrs.get("Location", "") or hdrs.get("location", "")
-            redirected_away = (res2.status in (301, 302, 303, 307, 308)
-                               and "login" not in loc.lower())
-            no_login_form = bool(res2.body) and pass_field not in (res2.body or "")
-            # An explicit failure in the body outranks the absence of a form.
-            failed = bool(self._AUTH_ERROR_RE.search((res2.body or "")[:2000])
-                          or re.search(r'"status"\s*:\s*"(?:fail|error)"',
-                                       (res2.body or "")[:2000], re.I))
-            # A REDIRECT is decided by its destination, not by the shape of its body.
-            # A 302 carries little or no body, so `no_login_form` — "the answer no
-            # longer shows a password field" — is vacuously true for it, and a failed
-            # login bounced straight back to /login was read as AUTHENTICATED. The body
-            # heuristic is only meaningful when the server actually returned a page.
-            if res2.status in (301, 302, 303, 307, 308):
-                ok = bool(redirected_away and not failed)
-            else:
-                # POSITIVE evidence of a session, not merely the absence of a form.
-                # "The answer no longer shows a password field" has now been wrong three
-                # times in three different ways — for a redirect, for a 400, and for any
-                # 200 that simply is not the login page ("your account is locked" has no
-                # password field either). A login that worked hands back a credential;
-                # requiring that is the difference between observing success and failing
-                # to observe failure.
-                ok = bool(gained_cookie and not failed)
-                if not ok and no_login_form and not failed and gained_cookie is False:
-                    # No new cookie at all: the only remaining honest signal is that the
-                    # app replaced the form with something that is not an error, and an
-                    # app that authenticates without issuing anything is rare enough to
-                    # be worth doubting. Left as a last resort so a session carried in a
-                    # way we cannot see is not called a failure outright.
-                    ok = bool(re.search(r"(?i)log ?out|sign ?out|welcome|dashboard|"
-                                        r"my account|profile", (res2.body or "")[:4000]))
-        # An error status is never a successful login, whatever the body looks like.
-        # The `no_login_form` heuristic — "the answer no longer shows a password field"
-        # — is vacuously true for a 400 or a 500 as well as for a redirect, so a JSON
-        # API answering {"message":"malformed"} to a urlencoded body read as
-        # AUTHENTICATED. That is the third distinct way this function has claimed a
-        # session it did not have; all three were the same mistake, inferring success
-        # from the ABSENCE of a form rather than from evidence of a session.
-        if res2 is not None and (res2.status or 0) >= 400:
-            ok = False
         self.authenticated = ok
+        # NOTE: Task 4 shipped this class as `Principal` on `self.principal`, not
+        # `SessionState` on `self.session` — the earlier name collided with the
+        # already-exported `brukal.sessions.SessionState`.
+        self.principal.strategy = strategy.name
+
+        if strategy.name == "basic":
+            # Preserved EXACTLY as the old early-return branch behaved: a distinct
+            # note, and `identity` deliberately left alone.
+            #
+            # KNOWN LATENT BUG, DEFERRED TO A2 ON PURPOSE. Leaving `identity` empty
+            # is the same defect that cost five checks on cookie-session apps — every
+            # authz test that asks "whose objects are ours" reads it, so on a
+            # Basic-auth target those tests reason about the wrong principal or do
+            # not run. It is NOT fixed here because this phase's contract is zero
+            # behaviour change, and a refactor that quietly also fixes things is a
+            # refactor whose regressions have two possible causes. A2 fixes it with
+            # its own failing test.
+            self.notes.append(
+                f"[login] HTTP Basic as {username} → Authorization header set")
+            return ok
+
         if ok and not self.identity:
-            # Who we are is set in the token branch above and was set NOWHERE else, so a
-            # cookie-session login left `identity` empty — and every authz check that
-            # asks "whose objects are ours" reads it. Checks that need a username we
-            # control simply never ran on a form-login app.
+            # Who we are was once set ONLY in the token branch, so a cookie-session
+            # login left `identity` empty — and every authz check that asks "whose
+            # objects are ours" reads it. Those checks simply never ran.
             self.identity = username
             self._login_password = password
+
         jar = len(getattr(self.browser, "_cookies", {}) or {})
-        how = "bearer token" if token else f"{jar} cookie(s)"
+        how = "bearer token" if attempt.token else f"{jar} cookie(s)"
         self.notes.append(
             f"[login] {login_url} as {username} ({lt}) → "
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
