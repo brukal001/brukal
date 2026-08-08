@@ -24,9 +24,13 @@ hard check it can only DENY; it can never widen an action the earlier checks ref
 """
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, replace
 
+from .risk import (_ATTACK_TOOLS, _CURL_BODY_FLAGS, _HTTP_WRITE_METHODS,
+                   _IRREVERSIBLE_SCRIPT_CATS, _READ_ONLY_TOOLS,
+                   _script_categories, _tokens)
 
 # --- the capability vocabulary ---------------------------------------------- #
 # Deliberately small. Five capabilities that map onto boundaries the codebase
@@ -52,6 +56,23 @@ AGENT_VERSION = "1"
 # --- which attack tools belong to which capability --------------------------- #
 # Subsets of risk._ATTACK_TOOLS. Anything in _ATTACK_TOOLS not named here is
 # EXPLOITATION — the most restrictive of the three, so the fallback is the safe way.
+_INJECTION_TOOLS = frozenset({"sqlmap", "commix", "nosqlmap", "tplmap"})
+_CREDENTIAL_TOOLS = frozenset({
+    "hydra", "medusa", "ncrack", "patator", "crowbar", "brutespray",
+    "kerbrute", "john", "hashcat", "sshpass"})
+
+_WEB_CLIENTS = frozenset({"curl", "wget"})
+
+# netexec/crackmapexec are attack-CAPABLE but are used read-only for AD enumeration.
+# `AssistSession.ad_enum_commands()` already draws this line in prose — the proactive
+# set is "UNAUTHENTICATED and read-only ONLY ... no dump/relay/roast/exploit — those
+# stay with the planner". These flags are what cross it: credentials, execution, and
+# secret dumping. Codifying an existing documented boundary, not inventing one.
+_NETEXEC_TOOLS = frozenset({"netexec", "crackmapexec", "nxc"})
+_NETEXEC_PRIVILEGED_FLAGS = frozenset({
+    "-u", "--username", "-p", "--password", "-H", "--hash", "--hashes",
+    "-x", "-X", "--exec", "--exec-method", "-M", "--module",
+    "--sam", "--lsa", "--ntds", "--dpapi", "--laps", "--local-auth"})
 
 # --- role -> capabilities ---------------------------------------------------- #
 # These CODIFY the boundaries the roles already had in prose; they do not shrink
@@ -130,3 +151,70 @@ def resolve_identity(agent) -> AgentIdentity:
     role = (str(agent or "")).strip().lower()
     return AgentIdentity(agent_id=f"{role or 'unnamed'}-unbound", role=role,
                          capabilities=capabilities_for(role))
+
+
+def required_capability(command: str) -> str:
+    """The single capability `command` needs. Deterministic; no LLM; fail-closed.
+
+    Reuses risk.py's tool vocabulary rather than introducing a second classifier —
+    one list to keep correct, and the capability boundary can never drift away from
+    the risk boundary it is derived from.
+    """
+    tokens = _tokens(command)
+    if not tokens:
+        # Unparseable or empty -> most restrictive (invariant 2).
+        return EXPLOITATION
+
+    tool = os.path.basename(tokens[0]).lower()
+
+    if tool in _INJECTION_TOOLS:
+        return INJECTION_TEST
+    if tool in _CREDENTIAL_TOOLS:
+        return CREDENTIAL_TEST
+    if tool in _NETEXEC_TOOLS:
+        # Unauthenticated enumeration is recon; credentials, execution or dumping
+        # are not. This is the boundary ad_enum_commands() already documents.
+        # Case is LOAD-BEARING for short flags: -H (hash) is not -h (help), and
+        # -X (powershell exec) is not -x (command exec) — both are privileged, but
+        # lowercasing them once let `-H <hash>` through as plain recon. Long options
+        # are normalised; short ones are compared exactly.
+        flags = set()
+        for tok in tokens[1:]:
+            if not tok.startswith("-"):
+                continue
+            head = tok.split("=", 1)[0]
+            flags.add(head if len(head) == 2 and not head.startswith("--")
+                      else head.lower())
+        return EXPLOITATION if flags & _NETEXEC_PRIVILEGED_FLAGS else RECON
+    if tool in _ATTACK_TOOLS:
+        return EXPLOITATION
+
+    if tool in _READ_ONLY_TOOLS:
+        # An nmap script category that exploits is exploitation, whatever the binary.
+        if _script_categories(tokens) & _IRREVERSIBLE_SCRIPT_CATS:
+            return EXPLOITATION
+        if tool in _WEB_CLIENTS and _writes_over_http(tokens):
+            return WEB_REQUEST
+        return RECON
+
+    # Unrecognised binary -> most restrictive. An unknown tool is never recon.
+    return EXPLOITATION
+
+
+def _writes_over_http(tokens: list[str]) -> bool:
+    """A curl/wget invocation that sends a body or a write method changes remote
+    state. Mirrors the signals risk.derive_reversibility already uses."""
+    lowered = [t.lower() for t in tokens]
+    for i, tok in enumerate(lowered):
+        if tok in ("-x", "--request") and i + 1 < len(lowered):
+            if lowered[i + 1] in _HTTP_WRITE_METHODS:
+                return True
+        if tok.startswith("--request="):
+            if tok.split("=", 1)[1] in _HTTP_WRITE_METHODS:
+                return True
+        if tok in _CURL_BODY_FLAGS or any(
+                tok.startswith(f + "=") for f in _CURL_BODY_FLAGS):
+            return True
+        if tok in ("--method", "--post-data", "--post-file"):
+            return True
+    return False

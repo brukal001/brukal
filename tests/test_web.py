@@ -150,11 +150,16 @@ def test_broad_allowlist_mode_safe_runs_dangerous_asks_human(tmp_path):
     assert scope.broad_tools and scope.tool_allowed("any-kali-tool")
     g = Gate(scope)
     T = "10.10.10.5"
-    assert g.check("nmap -sV 10.10.10.5", T).verdict == "ALLOW"       # safe enum -> auto
-    assert g.check("feroxbuster -u http://10.10.10.5", T).verdict == "ALLOW"
-    assert g.check("hydra -l a -P w ssh://10.10.10.5", T).verdict == "ESCALATE"  # attack -> human
-    assert g.check("some-unknown-tool 10.10.10.5", T).verdict == "ESCALATE"       # unknown -> human
-    assert g.check("nmap -sV 8.8.8.8", "8.8.8.8").verdict == "DENY"   # scope still absolute
+    # This test is about the ALLOWLIST and the SOFT RISK layer, not about capabilities.
+    # It is stated as the OPERATOR principal (full capability, as at the CLI) so the
+    # per-agent capability check cannot intercept first and mask what is under test.
+    # An agentless Gate.check now fails closed — see tests/test_agent_identity.py.
+    op = "operator"
+    assert g.check("nmap -sV 10.10.10.5", T, agent=op).verdict == "ALLOW"   # safe enum -> auto
+    assert g.check("feroxbuster -u http://10.10.10.5", T, agent=op).verdict == "ALLOW"
+    assert g.check("hydra -l a -P w ssh://10.10.10.5", T, agent=op).verdict == "ESCALATE"  # attack -> human
+    assert g.check("some-unknown-tool 10.10.10.5", T, agent=op).verdict == "ESCALATE"      # unknown -> human
+    assert g.check("nmap -sV 8.8.8.8", "8.8.8.8", agent=op).verdict == "DENY"  # scope still absolute
 
 
 def test_parse_web_action_grammar():

@@ -154,8 +154,12 @@ def test_soft_deny_never_runs_and_never_asks_human():
     approver = RecordingApprover(True)   # would approve anything, if asked
     executor, kali, audit, tmp = _build(approver)
     try:
+        # Stated as the EXPLOIT role: this test is about the SOFT layer refusing an
+        # irreversible + wide action without asking a human. Under the recon role the
+        # new capability check would (correctly) deny it one layer earlier, which would
+        # exercise a different mechanism than the one named in this test.
         decision, result = executor.run(
-            "nmap --script exploit 10.10.10.0/24", "10.10.10.5", agent="recon")
+            "nmap --script exploit 10.10.10.0/24", "10.10.10.5", agent="exploit")
         assert decision.verdict == "DENY"
         assert decision.layer == "soft:deny"
         assert decision.risk_band == "HIGH"

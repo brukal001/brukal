@@ -195,6 +195,7 @@ class Gate:
     def _check_inner(self, command: str, target: str, ident) -> Decision:
         """The hard gate + soft layer. `ident` is already resolved and trusted to
         carry role-derived capabilities."""
+        from .identity import CAPABILITY_DENIED_REASON, required_capability
 
         agent = ident.role or "unknown"
 
@@ -244,6 +245,24 @@ class Gate:
             return self._deny(command, target, agent,
                               "rate limit exceeded", "hard:rate")
 
+        # 6. CAPABILITY — is this principal permitted to take THIS KIND of action?
+        #    Placed last among the hard checks on purpose: every earlier denial
+        #    (scope, allowlist, smuggled host) keeps its own reason and layer, so
+        #    this can only ever add denials, never relabel or rescue existing ones.
+        #
+        #    The requirement is derived deterministically from the command text via
+        #    the same tool vocabulary the soft layer uses (identity.required_capability
+        #    -> risk.py). No LLM (invariant 1); an unclassifiable tool maps to the most
+        #    restrictive capability and is refused (invariant 2); the capability set
+        #    comes from the ROLE, never from the caller's claim (invariant 3).
+        needed = required_capability(command)
+        if not ident.can(needed):
+            d = self._deny(
+                command, target, agent,
+                f"role '{agent}' lacks capability {needed} required by this action",
+                "hard:capability")
+            d.reason_code = CAPABILITY_DENIED_REASON
+            return d
 
         # ---- Passed the hard gate. Now the SOFT risk layer (milestone 3). ----
         # The hard gate can only DENY; the soft layer can only add caution on top
