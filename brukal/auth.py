@@ -209,3 +209,83 @@ class FormAuth:
             body=(res2.body or "") if res2 is not None else "",
             pass_field=creds.pass_field,
             cookie_login=True)
+
+
+class JsonAuth:
+    """API login that answers with a bearer/JWT token.
+
+    `cookie_login=False` is load-bearing. The cookie heuristics read the ABSENCE of a
+    password field as success, and a JSON API rejecting credentials answers
+    {"status":"fail"} — which has no password field either. Applying them here once
+    declared every failed API login a success.
+    """
+
+    name = "json"
+
+    def detect(self, probe: LoginProbe) -> float:
+        ctype = ""
+        for k, v in (probe.headers or {}).items():
+            if k.lower() == "content-type":
+                ctype = (v or "").lower()
+        if "json" in ctype:
+            return 0.7
+        if probe.inputs:
+            return 0.1          # an HTML form is present; FormAuth fits better
+        return 0.4
+
+    def authenticate(self, browser, url: str, creds: Credentials) -> AuthAttempt:
+        import json as _json
+
+        from .web import WebAction
+
+        # The seeding GET is NOT optional. The old login() issued it for every
+        # non-basic type before posting credentials, and some APIs hand back an
+        # anti-CSRF or session cookie there. Dropping it would change the request
+        # count, the cookie jar, and the rate-limit accounting — a behaviour change
+        # disguised as a tidy-up.
+        browser.run(WebAction("request", url=url, method="GET"))
+
+        body = _json.dumps({creds.user_field: creds.username,
+                            creds.pass_field: creds.password,
+                            **(creds.extra_fields or {})})
+        # Measured AFTER the seeding GET, exactly as the original did — otherwise the
+        # cookie the GET set would be miscounted as one the login earned.
+        before = set(_jar(browser).items())
+        _d, res = browser.run(WebAction(
+            "request", url=url, method="POST", body=body,
+            headers={"Content-Type": "application/json"}))
+        gained = bool(set(_jar(browser).items()) - before)
+        token = extract_token(res.body if res is not None else "")
+        if token:
+            browser.auth_header = f"Bearer {token}"
+        return AuthAttempt(
+            strategy=self.name,
+            token=token,
+            gained_cookie=gained,
+            responded=res is not None,
+            status=res.status if res is not None else None,
+            headers=(res.headers or {}) if res is not None else {},
+            body=(res.body or "") if res is not None else "",
+            pass_field=creds.pass_field,
+            cookie_login=False)
+
+
+class BasicAuth:
+    """HTTP Basic. Makes NO request — there is nothing to negotiate, the header simply
+    accompanies every later request. `responded=False` keeps the oracle's status and
+    cookie clauses inert; the header itself is the evidence."""
+
+    name = "basic"
+
+    def detect(self, probe: LoginProbe) -> float:
+        for k, v in (probe.headers or {}).items():
+            if k.lower() == "www-authenticate" and "basic" in (v or "").lower():
+                return 0.95
+        return 0.0
+
+    def authenticate(self, browser, url: str, creds: Credentials) -> AuthAttempt:
+        import base64
+        tok = base64.b64encode(
+            f"{creds.username}:{creds.password}".encode()).decode()
+        browser.auth_header = f"Basic {tok}"
+        return AuthAttempt(strategy=self.name, token=tok, responded=False)

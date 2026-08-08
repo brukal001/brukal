@@ -83,3 +83,70 @@ def test_extract_token_handles_nested_json():
 
 def test_extract_token_ignores_a_short_value():
     assert extract_token('{"token":"short"}') == ""
+
+
+from brukal.auth import BasicAuth, JsonAuth, SessionOracle
+
+
+class _JsonApi:
+    """Stands in for the GovernedBrowser, so `run` returns the (decision, result)
+    TUPLE that GovernedBrowser.run returns — not a bare WebResult. A double that
+    returns the wrong shape raises on unpacking inside the strategy, which reads as
+    "the strategy is broken" when the double is what is wrong."""
+
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.seen: list = []
+        self._cookies = {}
+        self.auth_header = ""
+
+    def run(self, action):
+        self.seen.append(action)
+        if (getattr(action, "method", "") or "GET").upper() != "POST":
+            return None, WebResult(status=404, url=action.url, body="")
+        if self.ok:
+            return None, WebResult(
+                status=200, url=action.url,
+                body='{"access_token":"eyJhbGciOiJIUzI1NiJ9.payload.sig"}')
+        return None, WebResult(status=200, url=action.url, body='{"status":"fail"}')
+
+
+def test_json_auth_posts_a_json_body_and_returns_the_token():
+    api = _JsonApi(ok=True)
+    attempt = JsonAuth().authenticate(
+        api, LOGIN, Credentials(username="u", password="p", user_field="email"))
+    posted = api.seen[-1]
+    assert posted.headers["Content-Type"] == "application/json"
+    assert '"email": "u"' in posted.body or '"email":"u"' in posted.body
+    assert attempt.token.startswith("eyJ")
+    assert SessionOracle().judge(attempt) is True
+
+
+def test_json_auth_failure_is_not_a_session():
+    """The guard that matters: {"status":"fail"} contains no password field, so a
+    cookie-style heuristic would have called this a successful login."""
+    api = _JsonApi(ok=False)
+    attempt = JsonAuth().authenticate(
+        api, LOGIN, Credentials(username="u", password="p"))
+    assert attempt.cookie_login is False
+    assert SessionOracle().judge(attempt) is False
+
+
+def test_basic_auth_sets_the_header_without_making_a_request():
+    class _NoCalls:
+        _cookies: dict = {}
+        auth_header = ""
+
+        def run(self, action):
+            raise AssertionError("basic auth must not make a request")
+
+    b = _NoCalls()
+    attempt = BasicAuth().authenticate(b, LOGIN, Credentials(username="u", password="p"))
+    assert b.auth_header == "Basic dTpw"
+    assert SessionOracle().judge(attempt) is True
+
+
+def test_basic_auth_recognises_a_www_authenticate_challenge():
+    probe = LoginProbe(url=LOGIN, status=401,
+                       headers={"WWW-Authenticate": 'Basic realm="x"'})
+    assert BasicAuth().detect(probe) > 0.5
