@@ -240,6 +240,58 @@ targets, then add `CsrfHeaderAuth`, `MultiStepAuth`, `OAuth2PkceAuth` and
 target.** A strategy whose target is not up does not ship — shipping it would
 recreate the 2026-08-07 failure exactly.
 
+## A2 backlog — carried out of A1 (2026-08-08)
+
+A1 shipped on branch `auth-generality-a1`, 774 → 822 tests. These are the items A1
+deliberately did **not** fix, because the phase's contract was zero behaviour change
+and its value was that any regression had exactly one possible cause. Each is real;
+each is pinned by a characterisation test so it cannot regress silently or be fixed by
+accident.
+
+**1. The rejected-token bug — do this FIRST.** `extract_token`'s regex fallback matches
+`token: "<16+ chars>"` anywhere in a body, so a 4xx response mentioning a token sets
+`identity` *and* a `Bearer` header from a token the server REJECTED. Demonstrated in the
+final review:
+
+```
+login()       -> False
+has_session() -> True
+identity      -> 'dave'
+auth_header   -> Bearer eyJhbGciOiJIUzI1NiJ9...
+```
+
+`login()` correctly reports failure while `has_session()` — the function written
+precisely so "am I logged in" could never be answered by a proxy — returns `True`,
+because it reads `auth_header`. **This defeats A2's "blocked — no session" requirement
+before it is built**: every session-dependent detector would run believing it holds a
+session it does not have. Fix before anything else in A2.
+
+**2. `_separate_identity` does not save `last_jwt`.** Acting as a second principal
+permanently swaps our token while `identity` says otherwise:
+
+```
+ours   last_jwt: .ours-token-aaaa | identity alice
+after  last_jwt: .victim-token-bb | identity alice | session_token .victim-token-bb
+```
+
+`session_token()` and every JWT-forgery proof downstream then reason about the wrong
+account, and `confirm_default_credentials` drives exactly this path. Two-line fix, but
+a behaviour change. `Principal.snapshot()`/`restore()` already exist for this and have
+no production caller — wiring them in is the fix, and it also removes the
+forgot-a-field class of defect permanently. Note that `_separate_identity` deliberately
+does not save `login_url`/`login_type`, so switching to `snapshot()` wholesale changes
+more than intended; decide that explicitly.
+
+**3. `AuthAttempt` has no token scheme.** The adapter gates bearer-arming on
+`strategy.name != "basic"`, a string comparison. Any A2 strategy whose token is not a
+bearer token — an opaque header value like Betclic's `BC-TOKEN`, an OAuth `id_token` —
+would get `"Bearer "` prefixed anyway. Add an explicit field rather than keying on the
+strategy name.
+
+**4. `LoginProbe` has no producer.** Its `inputs: tuple[(name, type)]` shape is only
+ever built by hand in tests, so A2 may find the shape wrong the moment a real crawl has
+to fill it. Cheap to discover, but discover it early.
+
 ## Out of scope
 
 YAGNI, explicitly: SAML, NTLM, Kerberos, client certificates; solving MFA or CAPTCHA
