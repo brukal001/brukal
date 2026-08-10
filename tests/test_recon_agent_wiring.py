@@ -62,7 +62,7 @@ def test_in_scope_proposal_executes():
         request, (decision, result) = agent.run_task("Enumerate 10.10.10.5")
         assert decision.allowed is True
         assert result is not None
-        assert kali.executed == ["nmap -sV 10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]
         assert audit.verify() is True
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

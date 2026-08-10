@@ -66,7 +66,7 @@ def test_thinking_response_still_yields_a_parseable_command(monkeypatch):
     text = _backend().propose("sys", "user", 800)
     assert "<think>" not in text and text.startswith("PHASE: recon")
     # and the strategist actually gets a command out of it
-    assert _parse(text, "10.10.10.5").command == "nmap -sV 10.10.10.5"
+    assert _parse(text, "10.10.10.5").command == "nmap -n -sV 10.10.10.5"
 
 
 # -- retries on transient errors ---------------------------------------------

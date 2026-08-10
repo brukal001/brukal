@@ -151,7 +151,7 @@ def test_specialist_miss_falls_back_to_strategist_and_dings_trust():
     try:
         sess.make_plan()
         result = loop.run()
-        assert kali.executed == ["nmap -sV 10.10.10.5"]            # strategist fallback ran
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]            # strategist fallback ran
         assert result.stop_reason == "manual"
         assert trust.of("exploit") < 1.0                           # miss lowered its trust
     finally:
@@ -263,7 +263,7 @@ def test_single_strategist_mode_unchanged_when_no_agents():
     try:
         sess.make_plan()
         result = loop.run()
-        assert kali.executed == ["nmap -sV 10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]
         assert result.stop_reason == "manual"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

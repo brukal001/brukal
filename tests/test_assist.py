@@ -65,7 +65,7 @@ def test_strategist_strips_trailing_parenthetical():
     llm = StubLLM("REASONING: Comprehensive scan first.\n"
                   "RUN: nmap -sV -p- 10.129.51.151   (to enumerate all services)")
     s = StrategistAgent(llm).advise("10.129.51.151", "")
-    assert s.command == "nmap -sV -p- 10.129.51.151"
+    assert s.command == "nmap -n -sV -p- 10.129.51.151"
 
 
 def test_strategist_strips_wrapping_backticks():
@@ -99,12 +99,12 @@ def test_suggested_command_still_goes_through_the_gate():
         sug = sess.advise()
         d, r, _ = sess.run(sug.command)
         assert d.verdict == "ALLOW" and r is not None
-        assert kali.executed == ["nmap -sV 10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]
 
         # a suggestion pointed off-scope is STILL denied when the operator runs it
         d2, r2, _ = sess.run("nmap -sV 8.8.8.8", "8.8.8.8")
         assert d2.verdict == "DENY" and r2 is None
-        assert kali.executed == ["nmap -sV 10.10.10.5"]     # not executed
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]     # not executed
 
         sess.note("found /admin panel")
         sess.manual("got a shell as www-data")
@@ -351,7 +351,7 @@ def test_strategist_options_parses_ranked_list():
     from brukal.agents.strategist import StrategistAgent
     opts = StrategistAgent(StubLLM(_OPTIONS_REPLY)).options("10.10.10.5", "ports open")
     assert len(opts) == 2
-    assert opts[0].command == "nmap -sV 10.10.10.5" and opts[0].phase == "recon"
+    assert opts[0].command == "nmap -n -sV 10.10.10.5" and opts[0].phase == "recon"
     assert opts[1].command.startswith("hydra") and opts[1].phase == "exploitation"
 
 
@@ -406,7 +406,7 @@ def test_options_capture_conversational_read_before_the_moves():
     opts = ag.options("10.10.10.5", "findings")
     assert ag.last_read.startswith("gobuster returned nothing")   # captured
     assert [o.command for o in opts] == ["whatweb http://10.10.10.5/",
-                                         "nmap -sV -p 22 10.10.10.5"]
+                                         "nmap -n -sV -p 22 10.10.10.5"]
 
 
 def test_advise_options_falls_back_to_single_when_unformatted():
@@ -414,7 +414,7 @@ def test_advise_options_falls_back_to_single_when_unformatted():
     sess = AssistSession("10.10.10.5", None,
                          StrategistAgent(StubLLM("RUN: nmap -sV 10.10.10.5")))
     opts = sess.advise_options()
-    assert len(opts) == 1 and opts[0].command == "nmap -sV 10.10.10.5"
+    assert len(opts) == 1 and opts[0].command == "nmap -n -sV 10.10.10.5"
     assert sess.last is opts[0]
 
 
@@ -458,7 +458,7 @@ def test_plain_loop_option_pick_runs_through_gate():
             _plain_loop(sess, audit, "10.10.10.5", "fake")
         finally:
             sys.stdin = old
-        assert kali.executed == ["nmap -sV 10.10.10.5"]   # option ran via the gate
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]   # option ran via the gate
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -536,7 +536,7 @@ def test_auto_mode_runs_the_safe_step_by_itself():
         finally:
             sys.stdin = old
         # the command ran WITHOUT the operator typing `run`
-        assert kali.executed == ["nmap -sV 10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

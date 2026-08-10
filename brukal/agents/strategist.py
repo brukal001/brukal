@@ -18,6 +18,7 @@ import shlex
 from dataclasses import dataclass
 
 from ..llm import LLMClient
+from ..schema import apply_no_resolve
 
 log = logging.getLogger(__name__)
 
@@ -399,6 +400,10 @@ def _parse(text: str, default_target: str) -> Suggestion:
             command = command[:command.index(" (")].strip()
         command = command.strip("`\"'").strip()   # re-peel: the paren trim can re-expose a backtick
         command = _repair_command(command or None)  # balance a truncated trailing quote
+        # Under the egress lock a name lookup can only time out, so a tool that resolves
+        # by default is given its no-resolve flag here rather than being left to the
+        # model's memory of the rule (it has forgotten three times).
+        command = apply_no_resolve(command) if command else command
     if manual and manual.lower() in ("none", "n/a", "-"):
         manual = None
 

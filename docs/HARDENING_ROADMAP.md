@@ -389,7 +389,49 @@ own pinned-IP accept rule, so it does not need the blanket interface rule to sur
 
 ## P3 — operational notes
 
-### GATED NMAP NEEDS `-n`
+### ~~GATED NMAP NEEDS `-n`~~ — **CLOSED 2026-08-10** (and it was never a P3)
+
+**This was misfiled.** It is not an operational note; it is a total recon blocker, and
+it went on to kill a third engagement after being written down as a nice-to-have. On
+`10.129.101.3`, **14 of 14 shell commands failed** (7 × `rc=124`), the loop never reached
+the web plane, and the strategist then diagnosed the cause **wrongly** — blaming an
+"output-file permission wall" that does not exist (the cage's cwd is writable and a
+relative `-oN` scan completes in 3.02 s) — and spent further steps optimising against an
+imaginary constraint. Severity should track *what a defect costs when it fires*, not how
+small the fix looks.
+
+**Fixed by deterministic command normalisation**, not by telling the model again. The
+model had already been told; it forgot on `10.129.100.21`, on `10.129.100.61`, and on
+`10.129.101.3`. A correctness property that depends on a model remembering is not a
+property.
+
+`schema.apply_no_resolve()` adds the no-resolve flag to a proposed command when the
+egress lock is active (on unless `BRUKAL_EGRESS_LOCK=0`), from an **explicit tool → flag
+allowlist** (`{"nmap": "-n"}`) — never a guess at what flag a tool might have. It is
+idempotent, leaves non-listed commands byte-identical, and matches the program name
+rather than a substring. It is applied at both places a command is constructed:
+`parse_action_request()` (the recon / exploit / verify agents) and the strategist's
+`RUN:` parse (the auto loop, which issued all 14 failing commands).
+
+**No invariant moved.** This shapes how a command is *constructed*, not how it is
+gated or executed: there is still one execution path, the gate still re-reads the
+command it is handed, and nothing here can widen scope, authorise a tool, or turn a
+DENY into an ALLOW.
+
+masscan is deliberately **not** in the allowlist: it takes addresses and does not
+resolve, and its failures in the same runs had a different cause. The allowlist stays
+small and explicit rather than becoming a "guess the flag" heuristic.
+
+Tests: `tests/test_recon_no_resolve.py` — the rule, its idempotence, non-nmap commands
+left untouched, program-name-not-substring matching, the lock-off case, and both real
+proposal paths end to end. Eighteen existing assertions that pinned the verbatim command
+were **restated, not weakened**: each still asserts what it always did (the command
+reached the cage, was gated, was deduplicated), against the now-correct text.
+
+Suite: **899 tests** (898 passed, 1 skipped).
+
+<details>
+<summary>Original note, kept for the record</summary>
 
 Without `-n`, nmap attempts reverse-DNS on its targets. Those lookups go to resolvers
 the egress lock blocks (only `tun0`, the pinned VPN server, and the scope IP are
@@ -404,6 +446,8 @@ a silent coverage failure of the kind this project treats as its worst mode.
 
 **Design note (not this session):** default recon proposals to `-n`, or have the
 executor add it for DNS-capable tools when the egress lock is active.
+
+</details>
 
 ---
 

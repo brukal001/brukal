@@ -73,7 +73,7 @@ def test_loop_drives_safe_steps_then_hands_back_on_manual():
     try:
         sess.make_plan()
         result = loop.run()
-        assert kali.executed == ["nmap -sV 10.10.10.5", "whatweb http://10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5", "whatweb http://10.10.10.5"]
         assert result.stop_reason == "manual"
         assert result.executed == 2
         assert result.paused_for_human
@@ -93,7 +93,7 @@ def test_loop_stops_when_a_command_is_re_proposed():
     try:
         sess.make_plan()
         result = loop.run()
-        assert kali.executed == ["nmap -sV 10.10.10.5"]              # ran exactly once
+        assert kali.executed == ["nmap -n -sV 10.10.10.5"]              # ran exactly once
         assert result.stop_reason == "stalled"
         assert result.executed == 1
     finally:
@@ -296,7 +296,7 @@ def test_loop_coaches_a_repeat_then_proceeds_to_a_new_move():
     try:
         sess.make_plan()
         result = loop.run()
-        assert kali.executed == ["nmap -sV 10.10.10.5", "whatweb http://10.10.10.5"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5", "whatweb http://10.10.10.5"]
         assert result.stop_reason == "manual"     # progressed, did NOT stall on the repeat
         assert result.executed == 2
     finally:

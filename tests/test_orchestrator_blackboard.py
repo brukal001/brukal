@@ -78,7 +78,7 @@ def test_sequential_run_executes_and_records():
         assert summary == {"executed": 2, "failed": 0, "blocked": 0}
 
         # both ran in the cage, in order
-        assert kali.executed == ["nmap -sV 10.10.10.5", "whatweb http://10.10.10.7"]
+        assert kali.executed == ["nmap -n -sV 10.10.10.5", "whatweb http://10.10.10.7"]
         # both tasks marked done
         assert [t.status for t in tree.all_tasks()] == [TaskStatus.DONE, TaskStatus.DONE]
         # per-agent findings written
