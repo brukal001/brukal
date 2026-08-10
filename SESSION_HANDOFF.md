@@ -1,3 +1,17 @@
+> ## ⛔ SUPERSEDED — THIS IS **NOT** THE HTB CAP RECORD
+>
+> **Workstream:** local Docker lab — DVGA `172.20.0.5:5013`, Juice Shop `172.20.0.4:3000`, DVNA.
+> **Covers:** 2026-08-04 → 2026-08-07. **State described:** HEAD `c6fae09`, **767 tests**.
+>
+> **This does not describe current state.** As of **2026-08-09** the repo is at HEAD
+> **`048db2e`** with **886 tests** (885 passed + 1 skipped) and an uncommitted IDOR
+> recognition fix in `brukal/assist.py` + `tests/test_idor_path_ids.py`.
+>
+> **The Cap engagements are a different workstream entirely** — see
+> `docs/CASE_STUDY_CAP.md` (target `10.129.100.21`) and the `.61` run artifacts under
+> `runs/vault/10.129.100.61/` + `runs/audit_cap61.jsonl`. Do not read the numbers below
+> as Cap results. Retained for history only.
+
 # Brukal — session handoff (2026-08-04 → 08-07)
 
 Paste this into a new session. Canonical long-term memory is still the vault note

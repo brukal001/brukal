@@ -284,3 +284,161 @@ confers nothing. Pinned by
 `test_web_capability.py::test_a_verification_grant_does_not_leak_onto_the_web_path`. If a
 verifier ever needs to confirm a finding over the web plane, that is a deliberate design
 step, not an accident.
+
+---
+
+## P1 — open, not fixed
+
+### EGRESS LOCK FAILS OPEN ON RULESET-APPLY FAILURE
+
+**Severity: P1.** This is a fail-OPEN on the kernel-enforced-scope control — the exact
+claim the Phase 1 docs work just made honest.
+
+`docker/entrypoint.sh` guards one failure mode: a scope file that is missing or
+unparseable installs a drop-all ruleset and exits non-zero. It has **no guard for the
+ruleset failing to APPLY**.
+
+**Observed during Cap engagement setup (2026-08-08), on the 881-test baseline:**
+
+The `oif "tun0" accept` rule failed to parse because `tun0` did not exist at cage start
+— OpenVPN had not yet brought the tunnel up:
+
+```
+/dev/stdin:5:9-14: Error: Interface does not exist
+    oif "tun0" accept
+        ^^^^^^
+[cage] egress locked to scope. Ruleset:
+```
+
+nftables aborts the whole load on a parse error, so **no rules were installed at all**.
+`nft list ruleset` returned empty (0 lines, exit 0) — not drop-all, not degraded, empty.
+The container started anyway with `BRUKAL_EGRESS_LOCK=1` and **unrestricted egress**,
+while the entrypoint printed `egress locked to scope.`
+
+The scope itself parsed fine, so the existing missing-scope guard never triggered. The
+success message is printed unconditionally after the load attempt, so nothing in the log
+distinguishes "locked" from "silently wide open".
+
+Harmless only incidentally on this occasion: with no tunnel there was nothing to reach.
+That is luck, not containment — the same failure with a tunnel already up would leave the
+cage able to egress anywhere while reporting itself locked.
+
+**Intended fix (design note — NOT implemented, later phase):**
+
+1. After building the ruleset, **verify it actually loaded** — `nft list ruleset` is
+   non-empty and the expected default-drop policy is present — and **fail closed**
+   (exit non-zero) if it did not, matching the existing missing-scope behaviour. The
+   success message must be emitted only after that verification passes, never before.
+2. **Decouple the `tun0`-dependent allow rule from the rest of the ruleset**, so a
+   not-yet-existent VPN interface cannot abort the whole default-drop policy. The
+   base deny-by-default must install even when the tunnel is still coming up; the
+   tunnel allow rule can be added once the interface appears.
+
+No code, tunnel, or configuration was changed when recording this.
+
+### EGRESS LOCK DOES NOT CONSTRAIN IN-TUNNEL TRAFFIC
+
+**Severity: P1.** The kernel lock blocks egress that leaves by the wrong interface. It
+does **not** constrain where traffic goes once it is on the tunnel.
+
+The ruleset accepts the tunnel interface wholesale:
+
+```
+oif "tun0" accept
+```
+
+Because the VPN pushes `route 10.129.0.0/16`, that single rule permits the **entire
+VPN-side network** — every other subscriber's machine on a shared lab network — not
+just the authorised scope /32. The `ip daddr <scope> accept` rule below it is
+effectively dead code for tunnel traffic: `oif "tun0"` has already matched.
+
+**Proven by the drop counter (2026-08-08, Cap engagement setup):**
+
+```
+drop counter BEFORE:                                4
+probe 10.129.93.131  (out-of-scope, INSIDE tunnel): 4   <- NOT dropped
+probe 8.8.8.8        (out-of-scope, via eth0):     10   <- dropped (+6)
+```
+
+An out-of-scope host inside the tunnel was reached without incrementing the counter.
+Only the non-tunnel probe was dropped. Every in-tunnel probe run during setup behaved
+the same way.
+
+**Consequence.** For in-tunnel destinations — precisely the ones that matter on a
+shared lab/VPN network — the kernel lock provides no containment, and the software
+gate is the SOLE line of defence. This breaks the "two independent lines of defence"
+property exactly where it is most needed.
+
+Combined with the fail-open-on-apply P1 above, **the kernel backstop cannot be relied
+on for in-tunnel scope on a shared network.** One defect means the lock may not install
+at all; this one means that even when it does install, it does not enforce scope where
+the targets live.
+
+Note that `docker/verify_egress.sh` cannot detect this: it probes an out-of-scope
+*internet* address (8.8.8.8), which is dropped correctly, and then prints
+`scope enforced at the kernel`. The test passes while the property it names does not
+hold for tunnel traffic.
+
+**Intended fix (design note — NOT implemented, later phase):** scope the tunnel allow
+rule to the authorised CIDR(s) over `tun0` — `oif "tun0" ip daddr <scope> accept`,
+everything else dropped — rather than blanket-accepting the interface, so the kernel
+lock enforces the SAME scope on-tunnel as off. The VPN server itself already has its
+own pinned-IP accept rule, so it does not need the blanket interface rule to survive.
+
+---
+
+## P3 — operational notes
+
+### GATED NMAP NEEDS `-n`
+
+Without `-n`, nmap attempts reverse-DNS on its targets. Those lookups go to resolvers
+the egress lock blocks (only `tun0`, the pinned VPN server, and the scope IP are
+permitted), so the lookup hangs and `Executor.run` kills the command at its 180s cap.
+
+The failure is **indistinguishable from an unreachable host**: the command returns
+`exit 124` with `Starting Nmap ...` and nothing else. Observed twice during Cap setup
+before the cause was identified; the same scan with `-n` completed in **9.8 seconds**.
+
+A hunt would burn its command budget on timeouts and read them as "nothing there" —
+a silent coverage failure of the kind this project treats as its worst mode.
+
+**Design note (not this session):** default recon proposals to `-n`, or have the
+executor add it for DNS-capable tools when the egress lock is active.
+
+---
+
+## P2 — recorded 2026-08-10, not fixed (found while auditing the Cap `.61` run)
+
+### SELF-REPORT DISAGREES WITH THE LEDGER (invariant 3)
+
+**Severity: P2.** The generated report for `10.129.100.61` states
+`Autonomous steps | 13` and `Commands executed | 13`. The hash-chained audit log
+(`runs/audit_cap61.jsonl`) holds **10** `execution` entries, and `checkpoint.json`
+lists **10** commands in `executed_cmds`. The report's count is almost certainly
+summing web-plane actions into a row labelled "commands executed".
+
+Invariant 3 says never trust an agent's self-report — but here it is the **reporting
+layer itself** that publishes a number the ledger does not support. The audit log is
+the evidence; a report that disagrees with it undermines the one artifact a reader is
+supposed to be able to check. Whatever the row means, it must be derived from the
+ledger and labelled as what it actually counts.
+
+**Fix (not this session):** compute every count in the report from the audit log, and
+separate "shell commands executed" from "governed web actions" as two labelled rows.
+
+### TESTS WRITE INTO THE LIVE `runs/vault/` (evidence isolation)
+
+**Severity: P2.** Running `python -m pytest` writes `report.md`, `report.json`,
+`findings.json` and `brukal.sarif` into `runs/vault/` **at top level** — observed
+2026-08-09 22:23, immediately after a suite run, alongside the real per-target
+engagement directories.
+
+The audit logs are hash-chained and unaffected, so this is not a tamper issue. It is an
+**evidence-isolation** issue: test fixtures deposit synthetic findings into the same
+tree that holds real engagement output, where a later reader — or a future run's
+lesson-learning pass — cannot tell them apart by location alone. Engagement evidence
+should be inert to the test suite.
+
+**Fix (not this session):** point the vault root at a `tmp_path` fixture for the whole
+suite (an autouse fixture or a `BRUKAL_VAULT` env override), and assert in CI that a
+test run leaves `runs/` byte-identical.
