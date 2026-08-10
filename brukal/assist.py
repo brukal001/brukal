@@ -2895,7 +2895,40 @@ class AssistSession:
                 out = out.replace(piece, "")
         return out
 
-    def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
+    # A concrete numeric final path segment IS an object identifier. Templated routes
+    # (`/users/{id}`) only exist when a spec was found; a crawled app without one
+    # presents `/data/1`, and nothing recognised that as id-addressed, so the
+    # access-control differential was never handed the endpoint at all. The class then
+    # reported nothing while the coverage table counted the endpoint as seen. Measured
+    # on HTB Cap 2026-08-09: the record belonging to another user sat at id 0 and was
+    # never requested.
+    _NUMERIC_TAIL_RE = re.compile(r"^(?P<head>https?://[^?#]*/)(?P<id>\d{1,9})/?$")
+    # Segments that are numeric but are not object ids — versions and years.
+    _NOT_AN_ID = frozenset({"v1", "v2", "v3", "api"})
+
+    @staticmethod
+    def id_addressed_endpoints(urls) -> list:
+        """(template, param, observed_id) for every URL whose final path segment is a
+        numeric object id. The template carries a `{id}` placeholder so the existing
+        PATH probe machinery drives it — no second code path."""
+        out, seen = [], set()
+        for u in urls or ():
+            m = AssistSession._NUMERIC_TAIL_RE.match((u or "").strip())
+            if not m:
+                continue
+            head, ident = m.group("head"), m.group("id")
+            # A year-like or version-like tail is usually a route, not a record.
+            if head.rstrip("/").rsplit("/", 1)[-1].lower() in AssistSession._NOT_AN_ID:
+                continue
+            template = f"{head}{{id}}"
+            if template in seen:
+                continue
+            seen.add(template)
+            out.append((template, "{id}", int(ident)))
+        return out
+
+    def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None,
+                     observed: int | None = None) -> bool:
         """Heuristic IDOR check: a numeric object id, when changed, returns a DIFFERENT
         valid object (200, same template, different content) with no access-control block.
         Recorded as a CANDIDATE (medium) — true IDOR needs the operator to confirm the
@@ -2903,12 +2936,26 @@ class AssistSession:
         import difflib
         from urllib.parse import parse_qsl, urlsplit
         cur = dict(parse_qsl(urlsplit(url).query)).get(param, "")
-        n = int(cur) if cur.isdigit() else 1
+        if observed is not None:
+            n = int(observed)
+        else:
+            n = int(cur) if cur.isdigit() else 1
         from types import SimpleNamespace as _NS
         base, _s, _h = self._probe(url, param, str(n), method, extra)
         if not base or self._refused(_NS(status=_s, body=base, headers=_h or {}), base):
             return False
-        for nb in (str(n + 1), str(max(0, n - 1)), str(n + 2)):
+        # A BOUNDED neighbourhood, direction-independent, that always includes the
+        # boundary. Walking only upward misses a record that sits below the observed id
+        # — and the first id in a store is exactly where another principal's row tends
+        # to live. Capped so a target answering 200 for every id cannot turn this into
+        # an unbounded enumeration; the request budget still applies on top.
+        neighbourhood, seen_ids = [], {n}
+        for cand in (n + 1, n - 1, 0, 1, n + 2):
+            if cand < 0 or cand in seen_ids:
+                continue
+            seen_ids.add(cand)
+            neighbourhood.append(str(cand))
+        for nb in neighbourhood[:5]:
             body, _s2, _h2 = self._probe(url, param, nb, method, extra)
             got = _NS(status=_s2, body=body, headers=_h2 or {})
             if not body or self._refused(got, body):
@@ -5271,6 +5318,18 @@ class AssistSession:
                         others = {n: "1" for n, t in fields
                                   if n != fname and t.lower() != "file"}
                         enqueue(action, fname, method="MULTIPART", extra=others)
+            # 4b) CONCRETE numeric path ids — /data/1. Templated `{id}` routes below only
+            #     exist when a spec was found; a crawled app without one presents the id
+            #     as a literal segment, and nothing recognised it, so the access-control
+            #     differential never saw the endpoint while the coverage table counted it
+            #     as seen. Enqueued as a PATH probe so it rides the SAME machinery.
+            _pages = list(getattr(self.surface, "pages", {}) or {})
+            for _tpl, _pp, _observed in self.id_addressed_endpoints(_pages):
+                if tried >= max_params:
+                    break
+                tried += 1
+                enqueue(_tpl, _pp, method="PATH", extra={"_observed_id": _observed})
+
             # 5) REST PATH parameters — /users/v1/{username}. On an API this is where the
             #    object identifier lives, so injection and broken object-level authz
             #    concentrate here, and nothing above reaches it: there is no query string
