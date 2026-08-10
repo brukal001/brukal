@@ -2927,6 +2927,89 @@ class AssistSession:
             out.append((template, "{id}", int(ident)))
         return out
 
+    # ---- ownership signal -------------------------------------------------- #
+    # An access-control differential is a question about PRINCIPALS, not about byte
+    # distance. Two users' records rendered through one template are near-identical by
+    # construction — measured at sim ~0.9997 on HTB Cap (10.129.100.21 and .100.61,
+    # 2026-08-09), which the old `sim < 0.98` ceiling discarded as "too similar". But the
+    # ceiling cannot simply be raised: re-fetching your OWN record also lands at ~0.999
+    # once the page carries a nonce or a timestamp. So the decider is whether the two
+    # responses name DIFFERENT principals.
+    #
+    # This is a structural key/value read, never a language model and never a prose
+    # judgement over target text (invariant 1). It fails closed: no principal found means
+    # no confirmation, not a guess.
+    _PRINCIPAL_KEYS = frozenset({
+        "owner", "owner_id", "ownername", "owner_name", "user", "username", "user_name",
+        "userid", "user_id", "account", "account_id", "accountname", "account_name",
+        "email", "mail", "customer", "customer_id", "principal", "login", "created_by",
+        "createdby", "belongs_to", "belongsto", "author", "uid",
+    })
+    # Keys that move on every render and identify nobody. Checked as substrings so
+    # `csrf_token`, `request_token` and `session_id` are all covered.
+    _VOLATILE_KEY_PARTS = ("token", "csrf", "nonce", "session", "time", "date", "stamp",
+                           "expire", "issued", "generated", "random", "seed", "hash",
+                           "signature", "etag", "request_id", "trace")
+    # A value that is plausibly an identifier. Bounded length so a whole page body
+    # captured by a greedy match can never become a "principal".
+    _PRINCIPAL_VALUE_RE = re.compile(r"^[\w.@+\- ]{1,64}$")
+    _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+\.[\w.\-]+")
+    # The three shapes a field/value pair actually arrives in: JSON, key=value or
+    # key: value in text, and an HTML table/definition pair.
+    _KV_SHAPES = (
+        re.compile(r'"(?P<k>\w{2,24})"\s*:\s*"(?P<v>[^"]{1,64})"'),
+        re.compile(r'(?P<k>\w{2,24})\s*[=:]\s*(?P<v>[^<>&"\'\n;,}]{1,64})'),
+        re.compile(r'<t[hd][^>]*>\s*(?P<k>\w{2,24})\s*:?\s*</t[hd]>\s*'
+                   r'<t[hd][^>]*>\s*(?P<v>[^<]{1,64})\s*</t[hd]>', re.I),
+        re.compile(r'<dt[^>]*>\s*(?P<k>\w{2,24})\s*:?\s*</dt>\s*'
+                   r'<dd[^>]*>\s*(?P<v>[^<]{1,64})\s*</dd>', re.I),
+    )
+
+    @staticmethod
+    def principal_tokens(body: str) -> set:
+        """Every value in `body` that structurally names a principal — an owner, user,
+        account or email. Volatile fields (nonce, CSRF, session, timestamp) are excluded
+        by name, because they differ on every render and identify nobody.
+
+        Bounded: only the first 200 KB is scanned and at most 64 tokens are returned, so
+        a hostile page cannot turn this into unbounded work."""
+        if not body:
+            return set()
+        window = body[:200_000]
+        out: set = set()
+        for rx in AssistSession._KV_SHAPES:
+            for m in rx.finditer(window):
+                key = (m.group("k") or "").strip().lower()
+                if key not in AssistSession._PRINCIPAL_KEYS:
+                    continue
+                if any(part in key for part in AssistSession._VOLATILE_KEY_PARTS):
+                    continue
+                val = (m.group("v") or "").strip()
+                if not val or not AssistSession._PRINCIPAL_VALUE_RE.match(val):
+                    continue
+                out.add(val.lower())
+                if len(out) >= 64:
+                    return out
+        for m in AssistSession._EMAIL_RE.finditer(window):
+            out.add(m.group(0).lower())
+            if len(out) >= 64:
+                break
+        return out
+
+    @staticmethod
+    def _names_a_different_principal(base: str, other: str) -> tuple:
+        """(differs, evidence). True only when BOTH responses name a principal and the
+        sets are not the same — the structural form of 'this record is somebody else's'.
+        Either side yielding nothing means we cannot tell, so we say no."""
+        a = AssistSession.principal_tokens(base)
+        b = AssistSession.principal_tokens(other)
+        if not a or not b or a == b:
+            return False, ""
+        only_b = sorted(b - a)
+        if not only_b:
+            return False, ""
+        return True, f"{sorted(a)[:3]} -> {only_b[:3]}"
+
     def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None,
                      observed: int | None = None) -> bool:
         """Heuristic IDOR check: a numeric object id, when changed, returns a DIFFERENT
@@ -2967,8 +3050,24 @@ class AssistSession:
             substantive = profile.is_substantive(got) if profile is not None else None
             if substantive is False or (substantive is None and len(body) < 50):
                 continue
+            if body == base:
+                continue
+            # The ownership signal decides FIRST, and independently of byte distance: a
+            # record naming another principal is the finding, whether the two pages are
+            # 99.97% identical (one template, two users) or padded far apart.
+            owned_elsewhere, who = self._names_a_different_principal(base, body)
+            if owned_elsewhere:
+                self._record_candidate(
+                    url, "Potential IDOR (unauthorised object access)", "medium", param,
+                    f"changing {param}={n}→{nb} returns a record naming a DIFFERENT "
+                    f"principal ({who}) with no authz block")
+                return True
+            # Fallback for records that carry no ownership field at all: the original
+            # shape heuristic, unchanged. It cannot fire on a near-identical page, so a
+            # nonce-bearing re-fetch of the caller's own record stays silent — which is
+            # exactly why the ceiling stays where it is instead of being raised.
             sim = difflib.SequenceMatcher(None, base, body).ratio()
-            if body != base and 0.3 < sim < 0.98:      # different object, same page shape
+            if 0.3 < sim < 0.98:                       # different object, same page shape
                 self._record_candidate(
                     url, "Potential IDOR (unauthorised object access)", "medium", param,
                     f"changing {param}={n}→{nb} returns a different object with no authz block")
