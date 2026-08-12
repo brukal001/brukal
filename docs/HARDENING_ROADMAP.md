@@ -287,9 +287,9 @@ step, not an accident.
 
 ---
 
-## P1 — open, not fixed
+## P1 — one CLOSED, one open
 
-### EGRESS LOCK FAILS OPEN ON RULESET-APPLY FAILURE
+### ~~EGRESS LOCK FAILS OPEN ON RULESET-APPLY FAILURE~~ — **CLOSED 2026-08-12**
 
 **Severity: P1.** This is a fail-OPEN on the kernel-enforced-scope control — the exact
 claim the Phase 1 docs work just made honest.
@@ -323,18 +323,49 @@ Harmless only incidentally on this occasion: with no tunnel there was nothing to
 That is luck, not containment — the same failure with a tunnel already up would leave the
 cage able to egress anywhere while reporting itself locked.
 
-**Intended fix (design note — NOT implemented, later phase):**
-
-1. After building the ruleset, **verify it actually loaded** — `nft list ruleset` is
-   non-empty and the expected default-drop policy is present — and **fail closed**
-   (exit non-zero) if it did not, matching the existing missing-scope behaviour. The
-   success message must be emitted only after that verification passes, never before.
-2. **Decouple the `tun0`-dependent allow rule from the rest of the ruleset**, so a
-   not-yet-existent VPN interface cannot abort the whole default-drop policy. The
-   base deny-by-default must install even when the tunnel is still coming up; the
-   tunnel allow rule can be added once the interface appears.
-
 No code, tunnel, or configuration was changed when recording this.
+
+**Fixed 2026-08-12, both halves, in `docker/entrypoint.sh`:**
+
+1. **The ruleset is verified before it is announced.** After the load, the entrypoint
+   requires `nft list ruleset` to show the default-drop policy; if it does not, it
+   prints FATAL, installs drop-all and returns non-zero, so the caller's existing
+   `refusing to run open` path exits the container. The success message is emitted only
+   after that check passes. This matters precisely because `apply_egress_lock` is
+   invoked inside an `if !` condition, where `set -e` does not apply — an unchecked
+   `nft -f -` failure was silently survivable.
+2. **The `tun0` rule is emitted only when tun0 exists**, so a not-yet-existent VPN
+   interface can no longer abort the whole default-drop policy. It is a condition, not
+   a deletion: with a tunnel up the rule is still written, so VPN-reached labs are
+   unchanged. (This does **not** touch P1 #2 below — when the rule IS emitted it is
+   still a blanket interface accept.)
+
+**Test-first, against the real shipping file.** `tests/test_egress_failclosed.py` runs
+`docker/entrypoint.sh` itself under stub `nft` / `ip` / `sleep` on `PATH` — no Docker, no
+`NET_ADMIN`, no kernel nftables, ~0.5s. The stub `nft` models the property that makes
+this defect possible: a load that fails installs **nothing**, so `list ruleset` stays
+empty. Stubbing `sleep` also supplies the evidence that matters — whether the cage ever
+reached its idle step, i.e. whether the executor could have run commands in it.
+
+Verified red against the pre-fix entrypoint (`git show HEAD:docker/entrypoint.sh`) and
+red for the right reason — it reproduced the Cap-setup output exactly:
+
+```
+[cage] egress locked to scope. Ruleset:
+                                        <- empty; exit 0; error only on stderr
+```
+
+Tests: `test_egress_failclosed.py::test_a_ruleset_that_does_not_load_fails_closed`
+(exit non-zero, no "locked" message, never idles, the rejected ruleset is not live),
+`::test_an_absent_tun0_does_not_abort_the_default_drop_policy` (no `oif "tun0"`,
+default-drop and the scope CIDR both present, cage comes up),
+`::test_a_present_tun0_still_gets_its_rule` (the fix did not delete the rule).
+
+Suite: **902 tests** (901 passed, 1 skipped).
+
+Note `docker/verify_egress.sh` remains a manual, cage-up probe and is unchanged; it
+could not have caught this, since it asks whether a specific host is dropped, not
+whether the ruleset exists at all.
 
 ### EGRESS LOCK DOES NOT CONSTRAIN IN-TUNNEL TRAFFIC
 
@@ -369,10 +400,10 @@ shared lab/VPN network — the kernel lock provides no containment, and the soft
 gate is the SOLE line of defence. This breaks the "two independent lines of defence"
 property exactly where it is most needed.
 
-Combined with the fail-open-on-apply P1 above, **the kernel backstop cannot be relied
-on for in-tunnel scope on a shared network.** One defect means the lock may not install
-at all; this one means that even when it does install, it does not enforce scope where
-the targets live.
+The fail-open-on-apply P1 above is now closed, so the lock no longer *silently fails to
+install*. This one is untouched: **even when the lock does install, it does not enforce
+scope where the targets live.** On a shared lab network the software gate remains the
+sole containment for in-tunnel destinations.
 
 Note that `docker/verify_egress.sh` cannot detect this: it probes an out-of-scope
 *internet* address (8.8.8.8), which is dropped correctly, and then prints

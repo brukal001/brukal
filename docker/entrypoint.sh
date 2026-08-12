@@ -92,12 +92,19 @@ PY
     # to the one resolver, the authorised CIDRs, and the pinned host IPs; log+drop
     # the rest.
     rf="$(_family "$RESOLVER")"
+    # Only emit the tunnel rule when tun0 actually exists. nftables aborts the WHOLE
+    # load on an unknown interface, so on a local (no-VPN) target an unconditional
+    # `oif "tun0" accept` installs NOTHING while the cage still reports itself locked.
+    TUN=""
+    if ip link show tun0 >/dev/null 2>&1; then
+        TUN="    oif \"tun0\" accept
+"
+    fi
     RULES="table inet brukal {
   chain output {
     type filter hook output priority 0; policy drop;
     oif \"lo\" accept
-    oif \"tun0\" accept
-    ct state established,related accept
+$TUN    ct state established,related accept
     $rf daddr $RESOLVER udp dport 53 accept
     $rf daddr $RESOLVER tcp dport 53 accept
 "
@@ -126,6 +133,14 @@ PY
 "
     nft flush ruleset 2>/dev/null || true
     printf '%s' "$RULES" | nft -f -
+    # VERIFY the ruleset actually loaded before claiming it did. nft aborts the whole
+    # load on any parse error, and this function runs in an `if !` condition where
+    # `set -e` does not apply, so an unchecked failure leaves egress WIDE OPEN under a
+    # "locked" message. Fail closed instead.
+    if ! nft list ruleset 2>/dev/null | grep -q 'policy drop'; then
+        echo "[cage] FATAL: egress ruleset did not load (no default-drop policy present)."
+        lock_drop_all; return 1
+    fi
     echo "[cage] egress locked to scope. Ruleset:"
     nft list ruleset
 }
