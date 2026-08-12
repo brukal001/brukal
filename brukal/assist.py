@@ -7600,6 +7600,8 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         "aborted": "STOPPED by kill switch",
         "budget": "hit an engagement budget cap",
         "done": "nothing left to safely automate",
+        "truncated": "the model's reply was cut off before it named an action — "
+                     "retried once and still incomplete, so this is NOT 'nothing left to do'",
     }.get(result.stop_reason, result.stop_reason)
     spend = _spend_line(session)
 

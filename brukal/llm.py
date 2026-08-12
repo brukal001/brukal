@@ -77,6 +77,12 @@ _PRESETS = {
 }
 _ANTHROPIC_DEFAULT = "claude-sonnet-5"
 
+# The stop reasons that mean "the model ran out of allowance", in both vocabularies:
+# Anthropic says `max_tokens`, every OpenAI-compatible endpoint says `length`. A reply
+# that ended this way is INCOMPLETE — a caller that could not parse what it needed out
+# of one must retry rather than treat it as the model's answer.
+TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
+
 # $ per 1M tokens (input, output). Substring-matched against the model id, longest
 # key first, so "claude-opus-4-8" wins over a hypothetical "claude-opus". Models not
 # listed here (local Ollama/LM Studio, or a provider we haven't priced) meter their
@@ -304,6 +310,7 @@ class _OpenAICompatBackend:
         self.retries = retries        # total attempts on transient failures
         self.backoff = backoff        # base seconds; exponential
         self.last_usage: dict = {}
+        self.last_stop_reason: str = ""
 
     def _post(self, body: bytes) -> dict:
         """POST once, retrying transient network/5xx/429 errors with backoff. A 4xx
@@ -365,7 +372,13 @@ class _OpenAICompatBackend:
             "cache_read": cached,
             "cache_write": 0,                 # not separately billed/reported here
         }
-        message = (data.get("choices") or [{}])[0].get("message") or {}
+        choice = (data.get("choices") or [{}])[0]
+        # Same reason the Anthropic backend records it: WHY a reply ended decides what a
+        # caller should do about it. `length` here is `max_tokens` there, and without it
+        # a truncated plan is indistinguishable from a finished one on every non-Anthropic
+        # provider.
+        self.last_stop_reason = choice.get("finish_reason") or ""
+        message = choice.get("message") or {}
         return _strip_think(self._message_text(message))
 
 

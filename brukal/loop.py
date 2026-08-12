@@ -642,6 +642,13 @@ class GroundedLoop:
             if not action:
                 if suggestion.manual:
                     return self._finish("manual", suggestion.manual)
+                # No action because the model never finished writing one is not the same
+                # ending as no action because there is nothing left to do. Reporting the
+                # first as the second is how a live engagement quietly stopped at step 5
+                # of 10 while printing the very step it meant to take next.
+                if suggestion.truncated:
+                    return self._finish("truncated", suggestion.goal or
+                                        (suggestion.rationale or "").strip()[:160])
                 return self._finish("done", suggestion.goal or
                                     (suggestion.rationale or "").strip()[:160])
 

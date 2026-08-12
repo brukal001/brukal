@@ -17,7 +17,7 @@ import re
 import shlex
 from dataclasses import dataclass
 
-from ..llm import LLMClient
+from ..llm import TRUNCATED_STOP_REASONS, LLMClient
 from ..schema import apply_no_resolve
 
 log = logging.getLogger(__name__)
@@ -262,6 +262,16 @@ class Suggestion:
     goal: str = ""            # the concrete objective of this step
     web: str | None = None    # a gated WEB action (navigate/get/request/fill/...), if any
     session: str | None = None  # a stateful live-shell directive (open/close/[N]/line), if any
+    # True when the model ran out of allowance before it wrote an action line, even after
+    # a retry. It means "we never got an answer", NOT "there is nothing left to do" — the
+    # loop must not report those the same way.
+    truncated: bool = False
+
+
+def _has_action(s: "Suggestion") -> bool:
+    """Did the reply actually give us something to do? MANUAL counts: it is the model
+    handing the step to the operator, which is a decision, not a missing answer."""
+    return bool(s.command or s.web or s.session or s.manual)
 
 
 _PLAN_LINE = re.compile(r"^\s*\d+[.)]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
@@ -510,11 +520,35 @@ class StrategistAgent:
         return self._llm.propose(STRATEGIST_ANSWER_SYSTEM, "\n\n".join(parts),
                                  max_tokens=700).strip()
 
+    # A reply cut off before its action line is not an answer. One retry with room to
+    # finish; a model that overruns four times the allowance will not land it on a third
+    # call either, and the loop is told rather than left to guess.
+    _TRUNCATION_RETRY_FACTOR = 4
+
     def advise(self, target: str, findings: str, notes: str = "",
                reference: str = "", objectives: str = "", plan: str = "",
                known: str = "", tried: str = "") -> Suggestion:
         parts = self._context_parts(target, findings, notes, reference, objectives,
                                     plan, known=known, tried=tried)
         parts.append("Give me the next step in the template.")
-        text = self._llm.propose(STRATEGIST_SYSTEM, "\n\n".join(parts), max_tokens=800)
-        return _parse(text, target)
+        prompt, budget = "\n\n".join(parts), 800
+        text = self._llm.propose(STRATEGIST_SYSTEM, prompt, max_tokens=budget)
+        suggestion = _parse(text, target)
+        if _has_action(suggestion) or not self._was_truncated():
+            return suggestion
+        # The action line (RUN:/WEB:) comes last in the template, so an overrun eats the
+        # action and leaves reasoning that reads like a decision. Ask again with room.
+        text = self._llm.propose(STRATEGIST_SYSTEM, prompt,
+                                 max_tokens=budget * self._TRUNCATION_RETRY_FACTOR)
+        retried = _parse(text, target)
+        if _has_action(retried) or not self._was_truncated():
+            return retried
+        retried.truncated = True
+        return retried
+
+    def _was_truncated(self) -> bool:
+        """Did the last reply stop because it hit the token ceiling? `max_tokens` is
+        Anthropic's name for it, `length` the OpenAI-compatible one. An LLM that reports
+        nothing (a test double, a provider that omits it) is treated as NOT truncated —
+        this may only ever add a retry, never suppress a genuine answer."""
+        return getattr(self._llm, "last_stop_reason", "") in TRUNCATED_STOP_REASONS

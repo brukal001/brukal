@@ -287,7 +287,107 @@ step, not an accident.
 
 ---
 
-## P1 — one CLOSED, one open
+## P1 — found live on Juice Shop, 2026-08-12 (one CLOSED, one open)
+
+Both found in the Part 2B engagement — full evidence in
+`docs/CASE_STUDY_JUICESHOP_2B.md`. Measured, deliberately not fixed in that session.
+
+### SESSION MATERIAL IS NOT REDACTED FROM ANY RECORD
+
+**Severity: P1.** With a real JWT session carried by the governed browser, the token appears
+in cleartext on **5 of 6 surfaces**: the audit log (`decision.action`), `checkpoint.json`
+(`executed_cmds`), **every model prompt** (`ALREADY TRIED` / `RECENT ACTIVITY` blocks),
+`findings.jsonl` (evidence `command`), and the blackboard (`engagement.md` + agent
+transcripts). Only the generated report is clean, and only incidentally — it is built from
+titles and summaries, not command text.
+
+Juice Shop's JWT payload is the user row, so what leaks is the account id, the email, the
+role **and the password hash** — a working session plus a credential to crack.
+
+**The site is `assist.py:757 _session_auth_for()`**, which appends
+`-H 'Authorization: Bearer <jwt>'` to a SHELL command so tools run behind the login. It runs
+BEFORE the gate, which is correct and must stay that way — the gate has to judge the bytes
+that will really execute (invariant 3). The consequence is structural: **every artifact that
+records a gated shell command records the token with it.** A DENIED command is recorded too,
+so a denial does not contain the log.
+
+The leak also GROWS: two surfaces at the first authenticated request, five by the end of the
+run, as the first allowed token-bearing command propagates into evidence and transcripts.
+
+**Fix (not yet done):** redact at the point of RECORD, never at the point of injection.
+One shared redactor over the three writers (`AuditLog.append`, the checkpoint writer, the
+prompt builder) plus the evidence path, keyed on the session material the `GovernedBrowser`
+already holds (`auth_header`, `_cookies`) so it never has to guess what a secret looks like.
+Test-first: a run with a known token must leave that token in none of the six surfaces.
+
+### ~~THE LOOP TERMINATES ON A TRUNCATED MODEL REPLY, REPORTING "NOTHING LEFT TO DO"~~ — **CLOSED 2026-08-12**
+
+**Severity: P1.** `loop.py:645` returns `stop_reason="done"` — printed as *"nothing left to
+safely automate"* — whenever `session.advise()` yields no command and no web action. The
+strategist's reply format puts the action line (`RUN:` / `WEB:`) **last, after 2-4 sentences
+of `REASONING:`**, and the call is made with `max_tokens=800` (`strategist.py:519`). A reply
+that spends its allowance on reasoning is cut off before the action line and the loop reads
+that as a considered "nothing left to do".
+
+Observed twice in two segments of the same engagement. Both stop lines quoted the model's own
+`GOAL:` — the loop announced it had nothing to do while printing the thing it wanted to do
+next. 12 of 20 budgeted steps and $3.75 of a $4 cap went unused; the engagement never reached
+the business-logic half of its own methodology.
+
+This is a silent capability ceiling: it looks like judgement, not failure, so it does not
+appear as an error anywhere.
+
+**Fixed 2026-08-12.** The property shipped is *a reply that never finished is not a
+decision*, enforced in three small pieces:
+
+1. **The signal now exists on every backend.** `TRUNCATED_STOP_REASONS = {"max_tokens",
+   "length"}` in `llm.py` carries both vocabularies (Anthropic's and every
+   OpenAI-compatible endpoint's), and `_OpenAICompatBackend` **records `finish_reason` at
+   all** — it previously recorded none, so on `--provider ollama/openrouter/deepseek` a
+   truncated plan was indistinguishable from a finished one and this fix would have been
+   Anthropic-only.
+2. **`StrategistAgent.advise()` retries once, with room.** If the reply parses to no
+   action (`RUN:` / `WEB:` / `SESSION:` / `MANUAL:`) **and** it stopped at the ceiling, it
+   asks again at 4× the allowance. `MANUAL:` counts as an action: handing the step to the
+   operator is a decision, not a missing answer. A model reporting no stop reason at all
+   is treated as NOT truncated, so this can only ever add a retry, never suppress a real
+   answer.
+3. **The loop stops lying about why it stopped.** A still-truncated reply sets
+   `Suggestion.truncated`, and `loop.py` finishes with `stop_reason="truncated"` — "the
+   model's reply was cut off before it named an action" — instead of "nothing left to
+   safely automate".
+
+The existing `propose` retry was NOT the same thing and did not cover this: it fires only
+on an EMPTY reply whose whole allowance went on thinking, and explicitly returns a
+truncated reply that did emit text ("it answered and was cut off; not this case"). That
+comment names this defect from the other side — text arrived, the action did not.
+
+Tests: `tests/test_truncated_reply.py::test_a_truncated_reply_with_no_action_is_retried`,
+`::test_the_retry_asks_for_a_bigger_allowance`,
+`::test_an_openai_style_length_finish_counts_as_truncated`,
+`::test_a_finished_reply_with_no_action_is_accepted_as_done` (the boundary — a model that
+finished and offered nothing HAS decided, and must not be re-asked),
+`::test_a_truncated_reply_that_still_carries_an_action_is_used_as_is`,
+`::test_a_reply_truncated_twice_is_flagged_rather_than_retried_forever`,
+`::test_the_loop_does_not_report_done_when_the_reply_was_truncated`,
+`::test_the_loop_still_reports_done_when_the_model_really_finished`,
+`::test_the_openai_compatible_backend_records_its_finish_reason`.
+Verified red first: 7 of the 9 failed against the pre-fix tree.
+
+Suite: **911 tests** (910 passed, 1 skipped).
+
+**Deliberately NOT changed.** The template still puts the action line last. Moving it
+ahead of `REASONING:` would change what the model is asked to do — reasoning before
+answering is doing work, not padding — and would silently move every published metric.
+The retry makes the ordering survivable; reordering it is a separate, measured experiment.
+**Out of scope too:** `StrategistAgent.options()` (operator-facing menu — a truncation
+there costs an option, not the engagement; it falls back to `advise()` when empty) and the
+recon/exploit/verify specialists, whose truncated replies fail a single step rather than
+ending the loop.
+
+---
+
+## P1 — one CLOSED, one open (egress)
 
 ### ~~EGRESS LOCK FAILS OPEN ON RULESET-APPLY FAILURE~~ — **CLOSED 2026-08-12**
 
@@ -453,6 +553,31 @@ masscan is deliberately **not** in the allowlist: it takes addresses and does no
 resolve, and its failures in the same runs had a different cause. The allowlist stays
 small and explicit rather than becoming a "guess the flag" heuristic.
 
+> ### ⚠️ PARTIALLY REOPENED 2026-08-12 — there is a THIRD construction site
+>
+> The claim above — "it is applied at both places a command is constructed" — is wrong.
+> **`loop.py:408` builds the web-port sweep directly** and hands it to `session.run()`,
+> bypassing both `parse_action_request()` and the strategist `RUN:` parse, so
+> `apply_no_resolve()` never sees it. Observed live on Juice Shop: the loop issued
+> `nmap -Pn -sV --open -p <18 ports> 172.20.0.3` with no `-n`, and it was killed at the
+> 180s cap having produced only `Starting Nmap 7.99 …` — the exact Cap signature.
+>
+> Measured directly in the cage afterwards, same command, same target:
+>
+> | Command | Result |
+> |---|---|
+> | `nmap -Pn -sV --open -p …` (as issued) | **killed at 185s**, no output |
+> | `nmap -n -Pn -sV --open -p …` | **completed in 11.31s**, full service detection |
+>
+> So the defect still costs an entire recon step when it fires, and it fired on the very
+> first command of the engagement. The rule is right; its coverage is not.
+>
+> **Fix (not this session):** apply the normalisation where the command reaches the ONE
+> execution path (`session.run` / `Executor.run`) rather than at each construction site,
+> so a future built-in reflex cannot reintroduce this by being written somewhere new. A
+> test should assert that every nmap reaching the executor carries the flag, whatever
+> built it.
+
 Tests: `tests/test_recon_no_resolve.py` — the rule, its idempotence, non-nmap commands
 left untouched, program-name-not-substring matching, the lock-off case, and both real
 proposal paths end to end. Eighteen existing assertions that pinned the verbatim command
@@ -479,6 +604,30 @@ a silent coverage failure of the kind this project treats as its worst mode.
 executor add it for DNS-capable tools when the egress lock is active.
 
 </details>
+
+---
+
+## P2 — recorded 2026-08-12 (found during the Juice Shop 2B run)
+
+### AN ENGAGEMENT IS IDENTIFIED BY ITS TARGET IP ALONE, SO A RECYCLED ADDRESS RESUMES ANOTHER RUN
+
+**Severity: P2 (evidence isolation).** Starting the Juice Shop engagement at `172.20.0.3`
+printed `↻ resumed from checkpoint — 25 step(s) already spent, 21 command(s) known` and
+`resumed — loaded 35 prior finding(s)`. Those belonged to a **DVGA** engagement from 28 July
+that Docker had given the same bridge address. Another target's findings, spent-step count and
+command history were loaded into this run.
+
+On a local bridge, private IPs are recycled across unrelated targets, so the bare IP is not an
+engagement identity. This is the sibling of "tests write into the live `runs/vault/`" below —
+same root cause: the vault has no notion of which engagement an artifact belongs to beyond a
+directory name.
+
+Contained by hand for the 2B run: the stale tree was archived to
+`runs/vault/_archived_dvga_172.20.0.3_pre-2b/` and the engagement restarted with `--no-resume`.
+
+**Fix (not this session):** key the vault directory and the checkpoint on the scope
+fingerprint (`Scope.fingerprint()` already exists) or an explicit engagement id, and refuse to
+resume a checkpoint whose scope fingerprint differs from the current scope.
 
 ---
 
