@@ -8,6 +8,21 @@ audit.jsonl
 results*.json              # experiment-harness dumps
 scope.local.json           # personal/live scope files
 
+# Per-engagement scope files are authorisation state for ONE target, not project code.
+# Ignored by default so a `git add -A` mid-engagement cannot commit one; the lab scopes
+# below are the deliberate exceptions. (`scope.json` needs no exception — it has a single
+# dot and does not match this pattern.)
+scope.*.json
+!scope.htb.json
+!scope.nexus.json
+
+# Generated knowledge graph + the ignore files that keep it out of context. Regenerable
+# from the source tree with `graphify extract . --code-only`; committing it would put a
+# large derived artifact under review for no gain.
+graphify-out/
+.claudeignore
+.graphifyignore
+
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -32,9 +47,17 @@ ENV/
 .env.*
 *.key
 *.pem
-# HTB / lab VPN configs (may embed private keys)
-docker/vpn/*.ovpn
-docker/vpn/*.conf
+# HTB / lab VPN configs — the WHOLE directory, not an extension pattern.
+#
+# These files embed a client PRIVATE KEY and an OpenVPN tls-crypt static key: publishing
+# one hands over the lab identity itself. The rule here used to be `docker/vpn/*.ovpn`,
+# which is correct-looking and wrong: a suffix lands AFTER the extension, so
+# `config.ovpn.disabled` did not match it and was committed. (Purged from history
+# 2026-08-13, before the repo was ever pushed.) Ignoring the directory means no rename,
+# suffix, or backup copy — `.disabled`, `.disabled-for-2b`, `.bak`, `.orig` — can slip
+# through the same gap again.
+docker/vpn/*
+!docker/vpn/.gitkeep
 
 # Local engagement output (audit logs, per-run scope files)
 runs/
