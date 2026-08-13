@@ -1,0 +1,5 @@
+# Keep the knowledge graph to Brukal's own source. Vendored and generated trees
+# swamp the real code and make `graphify query` answer from site-packages.
+.venv/
+graphify-out/
+runs/
