@@ -33,6 +33,8 @@ import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
+from . import redact
+
 _GENESIS = "0" * 64  # the hash that precedes the very first record
 
 
@@ -137,6 +139,12 @@ class AuditLog:
         """
         if is_dataclass(data):
             data = asdict(data)
+        # Redact at the point of RECORD, never at the point of injection: the gate has
+        # already judged, and the executor already ran, the REAL bytes (invariant 3) —
+        # what lands in the ledger is the same command with the engagement's own
+        # credential values masked. Applied here rather than at each caller so every
+        # record kind (decision, execution, note) inherits it. See redact.py.
+        data = redact.data(data)
         with self._lock:
             # Inside the thread lock: concurrent workers in ONE process share this
             # AuditLog and must not race to claim the cross-process lock.

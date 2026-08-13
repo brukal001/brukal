@@ -33,6 +33,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import redact
+
 _WORD = re.compile(r"[a-z0-9][a-z0-9.\-]+")
 _MAX_LESSONS = 500          # cap per tier; evict the least-reinforced when full
 
@@ -130,8 +132,13 @@ class LessonStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         for p, lessons in ((self.path, self._trusted), (self._cand_path, self._candidates)):
             tmp = p.with_suffix(p.suffix + ".tmp")
-            tmp.write_text("\n".join(json.dumps(asdict(l)) for l in lessons) + "\n",
-                           encoding="utf-8")
+            # Redact at the record boundary (see redact.py). A lesson's provenance holds
+            # the command that earned it, and this store OUTLIVES the engagement — an
+            # unredacted credential here would be carried into a later run's prompts,
+            # against a different target. Applied at the one save funnel, so both tiers
+            # are covered by construction.
+            tmp.write_text("\n".join(json.dumps(redact.data(asdict(l))) for l in lessons)
+                           + "\n", encoding="utf-8")
             tmp.replace(p)
 
     @property

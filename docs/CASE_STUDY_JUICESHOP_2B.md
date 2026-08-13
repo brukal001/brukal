@@ -146,6 +146,14 @@ logged, which is why the web plane's `web_decision` entries are clean.)*
 
 ### Not fixed this session — deliberately
 
+> **FIXED 2026-08-13** — `brukal/redact.py` + `tests/test_redaction.py`; see
+> `HARDENING_ROADMAP.md`. The measurement below stands as the record of this run. Two
+> corrections it earned: the fix needed **eight** write sites, not the three named here
+> (the lesson store and the task tree also record commands, and the lesson store outlives
+> the engagement), and **report/SARIF were clean only by luck** — `export.py` writes
+> `Finding.source` as `reproduce`, so they were one confirmed token-bearing finding away
+> from leaking too.
+
 Per the engagement instruction, this was measured and recorded, not repaired. The fix is its
 own test-first piece of work. Design note for whoever takes it: redaction has to happen at
 the point of **record**, not at the point of injection (the gate must still see the real

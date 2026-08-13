@@ -287,12 +287,12 @@ step, not an accident.
 
 ---
 
-## P1 — found live on Juice Shop, 2026-08-12 (one CLOSED, one open)
+## P1 — found live on Juice Shop, 2026-08-12 (both CLOSED)
 
 Both found in the Part 2B engagement — full evidence in
 `docs/CASE_STUDY_JUICESHOP_2B.md`. Measured, deliberately not fixed in that session.
 
-### SESSION MATERIAL IS NOT REDACTED FROM ANY RECORD
+### ~~SESSION MATERIAL IS NOT REDACTED FROM ANY RECORD~~ — **CLOSED 2026-08-13**
 
 **Severity: P1.** With a real JWT session carried by the governed browser, the token appears
 in cleartext on **5 of 6 surfaces**: the audit log (`decision.action`), `checkpoint.json`
@@ -314,11 +314,97 @@ so a denial does not contain the log.
 The leak also GROWS: two surfaces at the first authenticated request, five by the end of the
 run, as the first allowed token-bearing command propagates into evidence and transcripts.
 
-**Fix (not yet done):** redact at the point of RECORD, never at the point of injection.
-One shared redactor over the three writers (`AuditLog.append`, the checkpoint writer, the
-prompt builder) plus the evidence path, keyed on the session material the `GovernedBrowser`
-already holds (`auth_header`, `_cookies`) so it never has to guess what a secret looks like.
-Test-first: a run with a known token must leave that token in none of the six surfaces.
+**Fixed 2026-08-13.** Redaction at the point of RECORD, never at the point of injection.
+
+`brukal/redact.py` is the single redactor and the single answer to "what is a secret":
+the credential set THIS engagement actually injects, registered by `_session_auth_for`
+at the moment it reads `auth_header` / `_cookies` off the `GovernedBrowser`. It replaces
+those exact values and nothing else — no regex is trusted to recognise a token, so
+ordinary content is recorded byte-identical, and no LLM is anywhere near it (invariant 1).
+`_session_auth_for` itself is **unchanged**: the gate still judges, and the cage still
+runs, the real bytes (invariant 3), pinned by
+`test_redaction.py::test_the_executor_still_runs_the_real_bytes`.
+
+It masks the VALUE, never the structure. An audit line still reads
+
+```
+nuclei -u http://172.20.0.3:3000/rest/products -H 'Authorization: Bearer [REDACTED:1f3a9c02]'
+```
+
+so the record stays meaningful and the gate's decision stays auditable. The placeholder
+is `sha256(value)[:8]`, stable across every surface, so an operator can still correlate
+two records as the same session without the value being recoverable. **ASCII delimiters
+deliberately:** every one of these surfaces serialises with `json.dumps` at its default
+`ensure_ascii=True`, which escapes a decorative `«…»` to `«…»` — still redacted,
+but no longer greppable, which is the one property an operator checking an artifact needs.
+Caught by the tests, not by review: the first implementation used `«»` and four surfaces
+went green on "the token is absent" while the placeholder was unfindable in the file.
+
+**Eight write sites, each a single funnel every caller already routes through** — so a
+future writer inherits the boundary instead of having to remember it:
+
+| # | Surface | Funnel |
+|---|---|---|
+| 1 | audit log | `AuditLog.append` (`audit.py`) — whole record, so `decision.action`, captured stdout and any field added later are all covered |
+| 2 | checkpoint | `checkpoint.snapshot` |
+| 3 | every model prompt | `LLMClient.propose` — covers all callers and both backends |
+| 4 | findings.jsonl, report.md, report.json, brukal.sarif | `Finding.__post_init__` |
+| 5 | blackboard pages (`engagement.md`, `plan.md`) | `Blackboard.write_page` |
+| 6 | findings stream + agent transcripts | `Blackboard.write_finding` |
+| 7 | **lesson store** | `LessonStore._save` |
+| 8 | **task tree** | `Blackboard.save_task_tree` |
+
+**Rows 7 and 8 were not in the observed five.** They were found by walking every
+persistence call in the package rather than trusting the run's inventory — the lesson the
+`-n` fix taught when it turned out to have a third construction site. Row 7 is the worst
+of the eight: a lesson's provenance holds the command that earned it and the store
+**outlives the engagement**, so an unredacted credential there is carried into a later
+run's prompts against a *different target*.
+
+**Row 4 corrects the case study.** It read report/SARIF as clean, and they were — but
+only because that run produced no confirmed token-bearing finding. `export.py` writes
+`Finding.source` as a `reproduce` field, so the report was one finding away from leaking.
+It is now clean by construction rather than by luck.
+
+Tests: `tests/test_redaction.py` — one per surface
+(`::test_the_audit_log_does_not_record_the_session_token`,
+`::test_the_checkpoint_does_not_record_the_session_token`,
+`::test_no_model_prompt_carries_the_session_token`,
+`::test_the_findings_evidence_does_not_carry_the_session_token`,
+`::test_the_blackboard_does_not_carry_the_session_token`,
+`::test_the_lesson_store_does_not_carry_the_session_token`,
+`::test_the_task_tree_page_does_not_carry_the_session_token`,
+`::test_the_report_and_its_exports_stay_clean`), plus both directions of the boundary:
+`::test_the_redacted_audit_line_still_shows_the_command_and_the_header_name` (structure
+preserved — the command and the header NAME survive),
+`::test_a_command_carrying_no_secret_is_recorded_byte_identical` and
+`::test_the_redactor_never_touches_text_that_holds_no_registered_secret` (non-secret
+content untouched), `::test_a_short_value_is_never_registered_as_a_secret` (a 1–2
+character cookie value is not a credential, and redacting it would shred every ordinary
+record it appears in), `::test_a_cookie_session_is_redacted_on_every_surface` (the
+credential set is not only bearer tokens), `::test_a_denied_token_bearing_command_is_
+redacted_on_every_surface` (the 2B leak came through a DENIED command — a denial is not
+containment of the log), and `::test_the_executor_still_runs_the_real_bytes`.
+
+Verified red first: 11 of the 16 failed before their write site was wired, each for the
+right reason — the cleartext token present in the artifact. The other five are the
+"must not break" direction (non-secret content untouched, the executor still running the
+real bytes) and pass in both trees by design.
+
+Suite: **927 tests** (926 passed, 1 skipped).
+
+**Deliberately NOT changed.** The redaction set is process-global module state, because
+the writers that need it (`AuditLog.append`, deep inside the executor; the LLM client)
+are constructed long before a login happens and have no path to the session object.
+Threading a credential set through every constructor would be a wide refactor for no
+security gain, and would create the second source of truth this item exists to avoid.
+`redact.clear()` is the engagement/test boundary.
+
+**Residual, recorded not fixed.** The operator's own terminal still shows the real
+command (`notes`), which is correct — the human running the engagement holds the session
+already. And a model that copies a redacted command out of its `ALREADY TRIED` block will
+re-propose a placeholder-bearing command; the gate rejects it and the dedup memory exists
+precisely to stop that repeat, so the cost is at most one wasted step.
 
 ### ~~THE LOOP TERMINATES ON A TRUNCATED MODEL REPLY, REPORTING "NOTHING LEFT TO DO"~~ — **CLOSED 2026-08-12**
 

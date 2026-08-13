@@ -27,6 +27,8 @@ import time
 import urllib.error
 import urllib.request
 
+from . import redact
+
 # Reasoning/thinking models wrap their private chain-of-thought in <think>...</think>
 # (or leave the answer empty and put it in a separate `reasoning_content` field). We
 # strip the think block and fall back to reasoning_content so the strategist parser
@@ -408,6 +410,13 @@ class LLMClient:
         self.usage = UsageMeter(self.model, free=self.provider in _LOCAL_PROVIDERS)
 
     def propose(self, system: str, user: str, max_tokens: int = 1024) -> str:
+        # A prompt is a RECORD too — it is persisted by the provider and, in the 2B run,
+        # was the widest surface of all (34 hits, every call, via the ALREADY TRIED and
+        # RECENT ACTIVITY history blocks). The model has no use for the credential: the
+        # real one is re-injected at execution by `_session_auth_for`, from the browser,
+        # never from the model's reply. Redacting here covers every caller and every
+        # backend at once. See redact.py.
+        system, user = redact.text(system), redact.text(user)
         text = self._backend.propose(system, user, max_tokens)
         # Carried up from whichever backend answered, so callers can say WHY a reply was
         # unusable instead of only that it was.

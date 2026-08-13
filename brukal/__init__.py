@@ -27,6 +27,7 @@ from .loop import GroundedLoop, LoopStep, LoopResult
 from .killswitch import KillSwitch
 from .budget import EngagementBudget
 from . import checkpoint
+from . import redact
 from .experiment import BENCH_SCOPE, ExperimentResult, run_all, render
 from . import eval as capability_eval
 from . import benchmark

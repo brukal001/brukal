@@ -31,6 +31,7 @@ import os
 import time
 from pathlib import Path
 
+from . import redact
 from .scope import Scope
 
 
@@ -100,6 +101,11 @@ class Blackboard:
         markdown note in the agent's folder and appended to the shared JSONL
         stream. `finding` is expected to be a short summary, never a raw dump."""
         self._seq += 1
+        # Redact at the record boundary (see redact.py): a digest carries the `command`
+        # that produced it, and on an authenticated engagement that command carries the
+        # injected session credential. Both writers below are fed from this one dict,
+        # so the JSONL stream and the per-agent transcript are covered together.
+        finding = redact.data(finding)
         record = {"ts": time.time(), "seq": self._seq, "agent": agent, **finding}
 
         # machine-readable shared stream (append-only)
@@ -140,7 +146,9 @@ class Blackboard:
     def write_page(self, filename: str, markdown: str) -> None:
         """Write a human-readable page (plan, engagement notebook) at the vault
         root. Plain file I/O — no authority, just a note a human can open."""
-        (self.root / filename).write_text(markdown, encoding="utf-8")
+        # engagement.md's timeline quotes executed commands verbatim; redact here so
+        # every page written through this one funnel is covered. See redact.py.
+        (self.root / filename).write_text(redact.text(markdown), encoding="utf-8")
 
     def read_page(self, filename: str) -> str:
         path = self.root / filename
@@ -170,4 +178,6 @@ class Blackboard:
         return "\n".join(lines)
 
     def save_task_tree(self, markdown: str) -> None:
-        (self.root / "task_tree.md").write_text(markdown, encoding="utf-8")
+        # A task's recorded digests carry the command that produced them; redact here
+        # for the same reason as write_page above. See redact.py.
+        (self.root / "task_tree.md").write_text(redact.text(markdown), encoding="utf-8")

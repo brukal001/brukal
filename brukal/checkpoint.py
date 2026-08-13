@@ -18,10 +18,16 @@ import json
 import time
 from pathlib import Path
 
+from . import redact
+
 
 def snapshot(session, *, steps_done: int = 0, stop_reason: str = "") -> dict:
     meter = getattr(getattr(session.strategist, "_llm", None), "usage", None)
-    return {
+    # `executed_cmds` is the command text as it was gated — including any session
+    # credential `_session_auth_for` injected. Redact at this record boundary (see
+    # redact.py); the checkpoint is DATA for resuming a plan, not a credential store,
+    # and a restored redacted command still de-duplicates against a re-proposal.
+    return redact.data({
         "version": 1,
         "target": session.target,
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -36,7 +42,7 @@ def snapshot(session, *, steps_done: int = 0, stop_reason: str = "") -> dict:
             "input": getattr(meter, "input_tokens", 0),
             "output": getattr(meter, "output_tokens", 0),
         } if meter is not None else {},
-    }
+    })
 
 
 def save(path, session, *, steps_done: int = 0, stop_reason: str = "") -> dict:

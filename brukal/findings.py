@@ -29,6 +29,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import redact
+
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 _SEV_ORDER = {s: i for i, s in enumerate(SEVERITIES)}
 
@@ -55,6 +57,17 @@ class Finding:
     def __post_init__(self):
         if self.severity not in _SEV_ORDER:
             self.severity = "info"
+        # A Finding IS a record — it is persisted to findings.jsonl, mirrored to the
+        # blackboard, and exported as `reproduce` in report.json / brukal.sarif. Its
+        # `source` is the command that produced the evidence, so on an authenticated
+        # engagement it carries the injected session credential. Redact at construction:
+        # that is the one point every one of those writers is downstream of. See
+        # redact.py. (The 2B case study read report/SARIF as clean; they were one
+        # confirmed token-bearing finding away from leaking too.)
+        self.target = redact.text(self.target)
+        self.evidence = redact.text(self.evidence)
+        self.source = redact.text(self.source)
+        self.param = redact.text(self.param)
 
     @property
     def signature(self) -> tuple:

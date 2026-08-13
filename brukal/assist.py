@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+from . import redact
 from .audit import AuditLog
 from .auth import AUTH_ERROR_RE
 from .executor import Executor
@@ -771,6 +772,15 @@ class AssistSession:
         _bad = "'\";&|`$<>\n\r"
         # token / bearer / basic session -> Authorization header
         ah = getattr(self.browser, "auth_header", "") or ""
+        # THE source of truth for "what is a secret": the credential set this engagement
+        # actually injects, registered at the moment it is read off the browser — never
+        # a regex guessing at what a token looks like. Registered unconditionally (not
+        # only when injection succeeds) so any other path that records the same value is
+        # covered too. The injection below is deliberately UNREDACTED: the gate must
+        # judge, and the cage must run, the real bytes (invariant 3). Redaction happens
+        # at each point of RECORD instead — see redact.py.
+        redact.register_auth_header(ah)
+        redact.register(*(getattr(self.browser, "_cookies", {}) or {}).values())
         if ah and not any(c in ah for c in _bad):
             tmpl = _HEADER_INJECT.get(tool)
             if tmpl:
