@@ -87,6 +87,8 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
 - **Smallest secure change; diff-based; preserve CLI compat; no unrelated refactors.**
 - **Secrets never reach the cage.** Provider keys live in the orchestrator env only, never in the container
   env or a mounted path. Audit key persisted outside the repo, mode 600, value out of transcripts.
+- **Written rules don't self-enforce.** A SessionStart hook (ponytail) overrode this file's own rule until the
+  hook was disabled. Policy must be enforced, not just stated.
 
 ---
 
@@ -97,7 +99,8 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
   capability from the emitted command's own bytes — no finding-class label; structurally pinned by test).
   Web-plane capability enforcement (`required_capability_for_web`, applied last inside `check_web`).
 - **Phase 2 Part 2 (capability, live) — IN PROGRESS.** Cap (HTB) fully exercised; Juice Shop 2B run done.
-  Currently building the redaction boundary (see roadmap). Business-logic capability NOT yet measured.
+  **Redaction boundary CLOSED (`66185da`)** — one redactor, eight write sites, per-surface tests green.
+  Business-logic capability NOT yet measured.
 
 ## Deferred (documented, not abandoned — future phases, not paper blockers)
 Artifact analysis (pcap/binary fetch+parse — Cap's confirmed missing capability class); enterprise API /
@@ -108,12 +111,11 @@ limits in the paper, not fixed before writing.
 
 ## Live findings — see docs/HARDENING_ROADMAP.md for the authoritative list
 Open at last update: egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel
-traffic; dodged-by-construction on local single-host nets but unfixed for VPN); redaction P1 (session
-material / JWT leaked cleartext across 5 of 6 record surfaces — building the fix now); `-n` third construction
+traffic; dodged-by-construction on local single-host nets but unfixed for VPN); `-n` third construction
 site (`loop.py:408` bypasses both patched paths — reopened); P2s (report self-count vs audit ledger mismatch;
 pytest writes into live `runs/vault/`). Closed recently: egress P1 #1 (fail-open on ruleset-apply failure);
 loop-truncation P1 (a truncated reply no longer terminates the loop — keyed on `finish_reason`/stop reason at
-the backend layer so it holds across providers).
+the backend layer so it holds across providers); redaction P1 (`66185da`).
 
 **Truncation caveat for the paper:** runs recorded BEFORE the loop-truncation fix (commit that closed it) may
 be truncation-limited — a run that quit mid-reasoning looks identical in the ledger to a considered one. Any
@@ -124,11 +126,15 @@ pre-fix step-counts / finding-counts cited in the paper must be re-run on the fi
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
 Start the paper skeleton NOW in parallel (architecture + threat-model sections are done and won't change).
 Trigger the evaluation write-up when ALL three hold:
-1. Redaction boundary CLOSED (no session material on any record surface; per-surface tests green).
+1. ~~Redaction boundary CLOSED~~ — **MET (`66185da`)**. No session material on any record surface; eight
+   write sites, per-surface tests green, 11 of 16 verified red first.
 2. ONE clean authenticated capability run where the loop REACHES business logic, nothing leaks, chain keyed
    + intact, containment proven — result publishable whether it finds flaws or not (an honest "governed
    autonomy vs ungoverned tools, trade-off measured" framing, NOT "we beat tool X").
-3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited).
+   **REMAINS.** Both structural blockers are now closed (truncation `be94446`, redaction `66185da`), so the
+   run is unblocked in principle — but redaction interacts with the authenticated path and that interaction
+   is not yet verified end to end, so confirm it before paying for a run.
+3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
 
