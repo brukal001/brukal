@@ -268,7 +268,7 @@ the wiring), `--yes-authorised` (confirm authorisation for a live run),
 ## Quickstart
 
 ```bash
-# 1. run the test suite (927 tests, no infra, no key needed)
+# 1. run the test suite (936 tests, no infra, no key needed)
 python -m pytest -q
 
 # 2. reproduce the benchmark metrics (fake cage)
@@ -723,7 +723,7 @@ brukal/
 ├── experiment.py     # the four-metric governance benchmark harness
 ├── eval.py           # the capability eval (steps-to-foothold, governed vs ungated)
 └── agents/           # recon · exploit · verify · strategist
-tests/                # 927 tests — the invariants, in code
+tests/                # 936 tests — the invariants, in code
 docker/               # the Kali cage (Dockerfile + compose, chromium + VPN)
 run_experiments.py · run_eval.py · run_engagement.py · run_recon.py
 HOW_IT_WORKS.md · CODE_WALKTHROUGH.md · BUILD_ROADMAP.md · COMPARISON.md · SECURITY.md · CONTRIBUTING.md

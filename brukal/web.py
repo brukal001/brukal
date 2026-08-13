@@ -34,6 +34,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from . import redact
 from .audit import AuditLog
 from .gate import Decision
 from .scope import Scope
@@ -452,14 +453,28 @@ class GovernedBrowser:
         after a login — cookies for cookie sessions, an Authorization header for
         token/bearer/basic auth. Real-world apps use one or the other (or both); this
         carries whichever the login produced. Never overrides a value the caller set."""
-        hdrs = action.headers or {}
+        original = action.headers or {}
+        # A credential header carrying a REDACTION PLACEHOLDER is not a credential — it is
+        # a record artifact that has looped back into an action (the model was shown a
+        # masked token and copied it). Left in place it would count as "the caller set
+        # one" below and SUPPRESS the real session, so the request would go out
+        # unauthenticated with no denial and no error: an authenticated run silently
+        # becomes a logged-out one, and the ledger cannot tell the difference. Dropped
+        # here so the real credential is attached in its place. Only the placeholder
+        # shape is treated this way; a genuine caller-set header still wins, because that
+        # is how a cross-account prover issues a request as the OTHER principal.
+        hdrs = {k: v for k, v in original.items()
+                if not (k.lower() in ("authorization", "cookie") and redact.has_placeholder(v))}
+        dropped = len(hdrs) != len(original)
         have = {k.lower() for k in hdrs}
         add = {}
         if self._cookies and "cookie" not in have:
             add["Cookie"] = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
         if self.auth_header and "authorization" not in have:
             add["Authorization"] = self.auth_header
-        if add:
+        # `dropped` covers the case where a placeholder was removed and there was no real
+        # credential to put back: the masked value must still not be SENT.
+        if add or dropped:
             action.headers = {**hdrs, **add}
 
     def _absorb_cookies(self, result) -> None:

@@ -293,16 +293,34 @@ def test_the_model_is_given_the_base_url_not_the_bare_target():
     assert "http://127.0.0.1:5000" in _FakeLLM.last_user
 
 
-def test_a_real_session_token_is_supplied_rather_than_a_placeholder():
-    """The model wrote `Bearer <userA_token>` literally; the target rejected it, so every
-    authenticated experiment tested nothing."""
+def test_the_model_is_told_auth_is_automatic_rather_than_handed_the_token():
+    """RESTATED, not weakened — same subject, corrected mechanism.
+
+    The original property stands: an authenticated experiment must really be
+    authenticated (the model once wrote `Bearer <userA_token>` literally, the target
+    rejected it, and every experiment tested nothing). What changed is HOW that is
+    guaranteed. This test used to pin the fix of handing the model the real token, and
+    that mechanism was later shown to CAUSE the same failure it was preventing: once the
+    token was masked at the record boundary the model copied `Bearer [REDACTED:...]`
+    instead, and `_apply_cookies` withholds the real session whenever the request already
+    carries an Authorization header — so the experiment ran logged out, silently.
+
+    The token was never needed. `_as_identity` swaps the principal for
+    "as": self/second/anonymous and the governed browser attaches whatever it holds, so a
+    model-set header defeats that machinery even when the value is real. The other half of
+    the original property — that the request really does go out authenticated — is pinned
+    end to end by
+    test_auth_not_placeholder.py::test_the_real_credential_reaches_the_network_through_the_governed_path.
+    """
     _FakeLLM.reply = "[]"
     sess = _session(_Cage({}))
     sess.last_jwt = "eyJhbGciOi.real.token"
     sess.identity = "brk"
     sess.run_hypotheses()
-    assert "eyJhbGciOi.real.token" in _FakeLLM.last_user
-    assert "Never write a placeholder" in _FakeLLM.last_user
+    assert "eyJhbGciOi.real.token" not in _FakeLLM.last_user
+    assert "Never write a placeholder" not in _FakeLLM.last_user
+    assert "automatically" in _FakeLLM.last_user
+    assert "do not set a cookie or authorization header" in _FakeLLM.last_user.lower()
 
 
 def test_the_attempt_is_recorded_even_when_nothing_parses():

@@ -763,6 +763,13 @@ class AssistSession:
             return command
         tool = _tool_of(command)
         # Already carrying auth? (NB: not -u/--user — sqlmap's -u is the target URL.)
+        # A command carrying a REDACTION PLACEHOLDER is NOT carrying auth: the model was
+        # shown a masked token in its history and copied it back. Treating that as a
+        # credential skips the injection below and runs the tool logged OUT — the shell
+        # twin of the same defect on the web plane. Strip the masked header instead, so
+        # the real session is injected in its place. See redact.has_placeholder.
+        if redact.has_placeholder(command):
+            command = _PLACEHOLDER_AUTH_ARG_RE.sub("", command).rstrip()
         if re.search(r"(?:^|\s)(?:-b|--cookie|--cookie-string|-c|-H|--header)\b"
                      r"|Cookie:|Authorization:", command, re.I):
             return command
@@ -3552,14 +3559,25 @@ class AssistSession:
             base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
             auth = ""
             if self.session_token():
-                # Give it the real session rather than let it invent a placeholder: the
-                # model wrote `Bearer <userA_token>` literally, which the target
-                # correctly rejected, so every authenticated experiment tested nothing.
-                auth = (f"\n\nYou are authenticated as '{self.identity}'. Use this "
-                        f"header verbatim where a request should be authenticated:\n"
-                        f'  "Authorization": "Bearer {self.session_token()}"\n'
-                        f"Never write a placeholder like <token>; a request carrying one "
-                        f"is rejected and the experiment proves nothing.")
+                # The model is NEVER given the credential — not the real one, and not the
+                # redacted one either. It used to be handed the real token here, because
+                # an earlier version invented `Bearer <userA_token>` and the target
+                # rejected it. Once the token was masked at the record boundary the model
+                # started copying `Bearer [REDACTED:...]` instead, and because
+                # `_apply_cookies` only attaches the session when the request carries no
+                # Authorization header, that placeholder SUPPRESSED the real credential:
+                # every "authenticated" experiment silently ran logged out.
+                #
+                # The token was never needed. `_as_identity` already swaps the principal
+                # for "as": self/second/anonymous and the governed browser attaches
+                # whatever that principal holds — so a model-set header defeats the
+                # principal machinery even when the value is real. Same wording as the
+                # cookie branch below, because it is the same instruction.
+                auth = (f"\n\nYou are already authenticated as '{self.identity}', and the "
+                        f"session is attached to every request you propose automatically. "
+                        f"Do NOT include a login step and do NOT set a Cookie or "
+                        f"Authorization header yourself — use \"as\" to choose the "
+                        f"principal instead.")
             elif self.authenticated:
                 # A COOKIE session was never mentioned to the model at all — this whole
                 # block was gated on holding a JWT. The governed browser attaches the
@@ -7001,6 +7019,14 @@ _COOKIE_INJECT = {
 }
 # How each web tool takes an arbitrary header, for a bearer/basic Authorization session
 # (token APIs). `{H}` is the full header line "Authorization: Bearer <token>".
+# One whole auth ARGUMENT whose value is a redaction placeholder — `-H 'Authorization:
+# Bearer [REDACTED:1f3a9c02]'`, `--cookie='sid=[REDACTED:...]'`, and the long forms. Only
+# ever used to REMOVE a masked credential from a proposed command so the real one can be
+# injected; it never adds, authorises, or widens anything.
+_PLACEHOLDER_AUTH_ARG_RE = re.compile(
+    r"""\s*(?:-H|--header|-b|--cookie|--cookie-string|-c|-Add-header)(?:=|\s+)"""
+    r"""(['"])[^'"]*\[REDACTED:[0-9a-f]{8}\][^'"]*\1""", re.I)
+
 _HEADER_INJECT = {
     "curl": "-H '{H}'", "sqlmap": "-H '{H}'", "ffuf": "-H '{H}'", "nuclei": "-H '{H}'",
     "gobuster": "-H '{H}'", "feroxbuster": "-H '{H}'", "wget": "--header='{H}'",

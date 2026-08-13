@@ -38,6 +38,7 @@ No LLM is involved (invariant 1) — this is a dict lookup and a string replace.
 from __future__ import annotations
 
 import hashlib
+import re
 
 # secret value -> stable placeholder. Process-global because the writers that need it
 # (AuditLog.append deep inside the executor, the LLM client) are constructed long before
@@ -47,6 +48,10 @@ _SECRETS: dict[str, str] = {}
 # Below this length a value is not a credential, and redacting it would shred every
 # ordinary record it happens to appear in. A session id or token is far longer.
 _MIN_SECRET_LEN = 8
+
+# The shape `placeholder_for` emits. Used to recognise a marker that has come BACK
+# round from a record into an action — see `has_placeholder`.
+_PLACEHOLDER_RE = re.compile(r"\[REDACTED:[0-9a-f]{8}\]")
 
 
 def placeholder_for(value: str) -> str:
@@ -78,6 +83,21 @@ def register_auth_header(header: str) -> None:
         return
     parts = header.strip().split(" ", 1)
     register(parts[1].strip() if len(parts) == 2 else header.strip())
+
+
+def has_placeholder(value) -> bool:
+    """True if `value` carries a redaction marker — i.e. a RECORD artifact has looped
+    back round into somewhere it is about to be USED.
+
+    Matched by SHAPE, not against the registry, and deliberately so: a placeholder
+    restored from an old checkpoint belongs to an engagement whose credential set is long
+    gone, and it is no more a usable credential for being unrecognised. Deterministic
+    string matching, no LLM (invariant 1).
+
+    The caller that matters is authentication. A masked token is not a credential, and
+    sending one where a real session was expected fails OPEN in the worst way — the
+    request simply goes out unauthenticated, with no denial and no error to notice."""
+    return isinstance(value, str) and bool(_PLACEHOLDER_RE.search(value))
 
 
 def known() -> tuple:

@@ -83,6 +83,6 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
   LLM client (M2) · soft risk layer + human escalation (M3) · orchestrator +
   Obsidian blackboard + Pentesting Task Tree (M4) · exploit + verify agents (M5) ·
   adaptive per-agent trust (M6) · four-metric experiment harness (M7).
-- **927 tests** — 926 pass, 1 skipped (`python -m pytest`). Reproduce the benchmark metrics with
+- **936 tests** — 935 pass, 1 skipped (`python -m pytest`). Reproduce the benchmark metrics with
   `python run_experiments.py` (fake cage — no Docker, network, key, or target
   needed).

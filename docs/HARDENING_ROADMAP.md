@@ -402,9 +402,103 @@ security gain, and would create the second source of truth this item exists to a
 
 **Residual, recorded not fixed.** The operator's own terminal still shows the real
 command (`notes`), which is correct — the human running the engagement holds the session
-already. And a model that copies a redacted command out of its `ALREADY TRIED` block will
-re-propose a placeholder-bearing command; the gate rejects it and the dedup memory exists
-precisely to stop that repeat, so the cost is at most one wasted step.
+already.
+
+> ### ⚠️ REGRESSION CAUSED BY THIS FIX — **CLOSED 2026-08-13**, see below
+>
+> The paragraph that used to stand here said a model copying a redacted command back
+> would simply be rejected by the gate, "at most one wasted step". **That was wrong on
+> the web plane, and the real consequence was severe.** See the next section.
+
+---
+
+## P1 — A REDACTION PLACEHOLDER WAS ACCEPTED AS A CREDENTIAL — **CLOSED 2026-08-13**
+
+**Severity: P1. Introduced by the redaction fix above (`66185da`) and found while
+verifying it**, before any live run. It is the worst shape a defect can take in this
+project: it makes an authenticated run silently unauthenticated, and **the ledger cannot
+tell the difference.**
+
+**The chain, all five steps required:**
+
+1. `assist.py` put the REAL bearer token into the hypothesis prompt deliberately — an
+   earlier bug had the model inventing `Bearer <userA_token>`, which the target rejected,
+   so every authenticated experiment tested nothing. A test pinned that behaviour.
+2. The redactor now masks that token at `LLMClient.propose`, so the model is handed
+   `Bearer [REDACTED:...]`.
+3. The model copies it into a proposed request — exactly as the prompt instructs.
+4. `GovernedBrowser._apply_cookies` attaches the real credential **only when the request
+   carries no Authorization header**. The placeholder counts as one, so it **suppresses**
+   the real session.
+5. The request goes out unauthenticated. **No gate denial, no error, no note** — the web
+   plane has nothing that would refuse it.
+
+**Why this blocked paper criterion #2.** A Juice Shop business-logic run in that state
+would have reported "business logic: nothing found" while logged OUT, and that result is
+indistinguishable in the audit log from a genuine one. It would have been a *false
+negative published as a measurement* — the failure mode this project treats as its worst.
+
+**Fixed at two levels.**
+
+**(a) The model is never handed the credential — the root of the chain.** It never needed
+it: `_as_identity` already swaps the principal for `"as": self|second|anonymous` and the
+governed browser attaches whatever that principal holds. **A model-set Authorization
+header defeats that machinery even when the value is real** — so this was latent before
+redaction existed, and redaction only made it fire. The JWT branch now carries the same
+wording the cookie branch always had: *auth is attached automatically, do not set the
+header yourself.*
+
+**(b) Redaction output is never accepted as input.** `redact.has_placeholder()` recognises
+a marker by SHAPE — not against the registry, deliberately: a placeholder restored from an
+old checkpoint belongs to an engagement whose credential set is long gone and is no more a
+usable credential for being unrecognised. Deterministic matching, no LLM (invariant 1).
+Applied on **both planes**, because the shell plane had the identical hole —
+`_session_auth_for`'s "already carrying auth?" check treated a placeholder-bearing `-H` as
+a credential and skipped injection, running the tool logged out:
+
+| Plane | Site | Behaviour |
+|---|---|---|
+| web | `GovernedBrowser._apply_cookies` | a placeholder-bearing `Authorization`/`Cookie` is dropped, so the real credential is attached in its place |
+| shell | `AssistSession._session_auth_for` | a placeholder-bearing auth argument is stripped before the "already carrying auth?" test |
+
+**The boundary that had to be preserved:** `_apply_cookies` must still honour a genuine
+caller-set credential — that is how a cross-account prover issues a request as the OTHER
+principal. Only the placeholder shape is treated as not-a-credential. Pinned by
+`::test_a_genuine_caller_set_header_is_still_not_overridden` and
+`::test_a_shell_command_carrying_real_auth_is_still_left_alone`.
+
+A masked value is also never SENT when there is no real credential to replace it with —
+the header is dropped either way, since `action.headers` is rebuilt whenever anything was
+removed, not only when something was added.
+
+Tests: `tests/test_auth_not_placeholder.py` — 9 tests, **6 verified red first**, each for
+the right reason (the token present in the prompt, or the placeholder reaching the
+network). The other three are boundary/must-not-break cases.
+
+**An existing test was RESTATED, not weakened.**
+`test_hypothesis.py::test_a_real_session_token_is_supplied_rather_than_a_placeholder`
+asserted the old mechanism. Its *subject* — an authenticated experiment must really be
+authenticated — still stands and is still asserted; what changed is how it is guaranteed,
+because the mechanism it pinned was shown to cause the very failure it was preventing. It
+is now `::test_the_model_is_told_auth_is_automatic_rather_than_handed_the_token`, and the
+other half of its original property (the request really does go out authenticated) is
+pinned end to end by
+`test_auth_not_placeholder.py::test_the_real_credential_reaches_the_network_through_the_governed_path`.
+
+**Redaction is untouched** — all 16 tests in `test_redaction.py` stay green. Verified
+together in one run: the model proposes `Bearer [REDACTED:ed82603d]`, the target receives
+`Bearer eyJhbGciOiJIUzI1NiJ9...`, and the ledger for that same request contains no token.
+
+Suite: **936 tests** (935 passed, 1 skipped).
+
+**The lesson, and it is the project's recurring one from a new angle.** A masking control
+created a new failure path by feeding its own output back into an input. The redaction
+work was verified thoroughly on the axis it was built for — *is the secret absent from
+every record?* — and that verification was sound. It asked nothing about what the masked
+value would do if something later CONSUMED it. **A control that transforms data needs
+testing on both sides: what it writes, and what happens when its output comes back
+round.** The generalisable rule now enforced in code: *redaction output is never accepted
+as input.*
 
 ### ~~THE LOOP TERMINATES ON A TRUNCATED MODEL REPLY, REPORTING "NOTHING LEFT TO DO"~~ — **CLOSED 2026-08-12**
 
