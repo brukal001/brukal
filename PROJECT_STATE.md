@@ -89,6 +89,9 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
   env or a mounted path. Audit key persisted outside the repo, mode 600, value out of transcripts.
 - **Written rules don't self-enforce.** A SessionStart hook (ponytail) overrode this file's own rule until the
   hook was disabled. Policy must be enforced, not just stated.
+- **A control that transforms data must be tested on BOTH sides** — what it writes, and what happens when its
+  output is read back. (Redaction was verified for leakage but not for consumption; a `[REDACTED]` placeholder
+  was accepted as a real credential until fixed.)
 
 ---
 
@@ -131,9 +134,10 @@ Trigger the evaluation write-up when ALL three hold:
 2. ONE clean authenticated capability run where the loop REACHES business logic, nothing leaks, chain keyed
    + intact, containment proven — result publishable whether it finds flaws or not (an honest "governed
    autonomy vs ungoverned tools, trade-off measured" framing, NOT "we beat tool X").
-   **REMAINS.** Both structural blockers are now closed (truncation `be94446`, redaction `66185da`), so the
-   run is unblocked in principle — but redaction interacts with the authenticated path and that interaction
-   is not yet verified end to end, so confirm it before paying for a run.
+   **UNBLOCKED, NOT MET — met needs the run.** All three blockers are closed: truncation (`be94446`),
+   redaction (`66185da`), and the auth-path regression redaction itself introduced (`2f3cc51`). Verified
+   together: auth attaches for real on both planes, and the token stays redacted on every record surface.
+   The run is the next step.
 3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
