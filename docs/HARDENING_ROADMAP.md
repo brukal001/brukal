@@ -1016,3 +1016,159 @@ notes), the chain verified intact under `BRUKAL_AUDIT_KEY`, containment was prov
 a same-bridge off-scope control, and the result was publishable. Only *reaches business
 logic* failed, and all three reasons it failed are now closed. Suite: **965 passed, 1
 skipped** (was 935). The measurement is the next session's work; this one was the plumbing.
+
+---
+
+## P1 — the experiment engine never got to ask (2026-08-21, BOTH OPEN)
+
+Found by auditing the **Juice Shop 2C2 run of 2026-08-20/21** — the re-run built to
+satisfy paper criterion #2 on the loop the section above had just fixed. Three of those
+four fixes are confirmed live in production by this run: the planner floor appended
+business-logic as phase 11 and the plan was worked to `plan_cursor: 12/12`, the evidence
+body arrived on the exact endpoint it was built for, and the `-n` sweep completed instead
+of dying at the 180 s cap. **The fourth — setup substitution — remains unexercised
+against a live target**, because of the first defect below.
+
+The run is honest about its own limits: 50/70 steps, 44 commands, 6 blocked, 73 calls,
+$3.89, `stop_reason: target-unhealthy`, chain keyed and intact, containment clean (every
+one of 102 requests to `172.20.0.3`, zero to the same-bridge `172.20.0.2` control), zero
+JWT cleartext on any of eight surfaces **including the newly-captured bodies**. It
+produced four findings — one medium, three low — and **nothing business-logic**.
+
+**The model's reasoning was not the limitation, and this time it was never even
+consulted.** Zero `[experiment]` records exist anywhere — `findings.jsonl`,
+`engagement.md`, all 70 agent notes — and the report's coverage table has no
+`Model-proposed experiments` row at all, which by that table's own footnote means the
+class "was not reached at all". Full narrative: `docs/CASE_STUDY_JUICESHOP_2C.md`.
+
+### A. THE THINKING-RETRY ESCALATES PAST THE SDK'S NON-STREAMING CEILING, AND THE ERROR IS ERASED
+
+`run_hypotheses` asks for experiments at `max_tokens=8000` (`assist.py:3606`). On a rich
+surface the model spends the entire allowance on thinking and returns `""` with
+`stop_reason=max_tokens` and no text block. `LLMClient.propose` (`llm.py:239`) **correctly
+recognises that case** — it is the exact failure the retry was built for — and retries
+with room: `bigger = min(max_tokens * 4, 32_000)` = **32,000** (`llm.py:257`), still
+non-streaming, because `_propose_once` (`llm.py:263`) calls `messages.create` without
+`stream=`.
+
+The Anthropic SDK then refuses **before sending a request**:
+
+```
+ValueError: Streaming is required for operations that may take longer than 10 minutes.
+```
+
+Reproduced deterministically against `anthropic 0.116.0` with **no API call**, via
+`Anthropic._calculate_nonstreaming_timeout(max_tokens, None)`: 8,000 passes, 16,000
+passes, the ceiling is **21,333**, and 32,000 always raises. `claude-sonnet-5` is absent
+from the SDK's `MODEL_NONSTREAMING_TOKENS` table, so the generic ten-minute estimator
+applies and there is no model-specific exemption to fall back on. **The retry cannot
+succeed on any call that needs it.**
+
+`run_hypotheses`' `except Exception: return 0` (`assist.py:3607`) then swallows it — no
+note, no coverage row, no trace on any surface. REFLEX 0b is `_confirmed_done`-gated to
+fire **exactly once**, so that single erased error removed model-proposed experiments
+from the **entire engagement**.
+
+**This is the recurring lesson for the fourth time, and the sharpest instance yet: the
+thinking-retry was built to fix a silent failure and introduced a silent failure of its
+own.** Its own docstring says the old behaviour "looked like a model with nothing to say
+about the target. It had plenty to say; it never got to the part where it says it." That
+is now true again, one layer down.
+
+**It is worst exactly where it matters most.** The failure requires the model to exhaust
+8,000 tokens thinking, which happens when the surface is rich. On a hand-made three-route
+surface the call succeeded and parsed 5–6 proposals; on the live 43-route crawl it failed
+**3/3**. *The more interesting the target, the more certain the capability disappears* —
+and it passes every small-fixture test while doing so.
+
+**The capability itself is intact and was verified independently.** With the call
+succeeding, the model proposes exactly the right experiments in the documented syntax the
+section above gave it — including Juice Shop's `{status, data:{…}}` envelope, which it
+could only target because the contract now tells it how:
+
+```json
+{"title": "Cross-account modification of another user's basket item quantity",
+ "comparator": "a_denied_b_allowed",
+ "setup":   [{"url": ".../api/BasketItems", "method": "POST",
+              "body": {"ProductId": 1, "BasketId": 1, "quantity": 1}, "as": "self"}],
+ "control": {"url": ".../api/BasketItems/{{setup.0.data.id}}", "method": "PUT", "as": "self"},
+ "variant": {"url": ".../api/BasketItems/{{setup.0.data.id}}", "method": "PUT", "as": "second"}}
+```
+
+Last run the model invented `{{setup.0.BasketId}}` and it went out as literal text. It now
+writes `{{setup.0.data.id}}` because that is the contract. But nothing dispatched it, so
+**zero literal `{{` reached the wire and zero `UnresolvedReference` fired — and both facts
+are vacuous.** The substitution path shipped above has still never run against a live
+target.
+
+**Fix (not this session), two parts, and the second is the important one:**
+
+1. `propose`'s retry must not escalate a non-streaming request past the SDK's limit —
+   either stream the retry, or cap `_THINKING_RETRY_CEILING` below the ceiling. Capping is
+   the smaller change; streaming is the one that survives the next model whose useful
+   answer is longer than 21,333 tokens. A cap that is a bare number will rot silently the
+   next time the SDK's estimator changes, so it must be derived or asserted, not guessed.
+2. **`run_hypotheses`' bare `except Exception: return 0` must record what it swallowed.**
+   This run had a P1 in the capability that matters most and left no trace of it anywhere
+   in the evidence. A silent `return 0` erased both the note and the coverage row that
+   were purpose-built, in the section above, to make "asked and got nothing" visible.
+   **A bare `except: return <empty>` around an LLM call is a defect on sight**, and this
+   one should be treated as the general rule rather than the one instance.
+
+### B. NO SECOND PRINCIPAL ON AN SPA, SO THE AUTHORIZATION COMPARATOR IS UNCONSTRUCTIBLE
+
+Independent of A, pre-existing, and it would have blocked the same result on its own.
+
+`establish_second_identity()` (`assist.py:3484`) returns `""` on this target. It delegates
+to `_register_account()` (`assist.py:4234`), which needs an HTML `<form>` from
+`_signup_form()` (`assist.py:4171`) and returns `None` without one. **Juice Shop is an
+Angular SPA and serves no server-rendered signup form**, so there is no second session to
+hold.
+
+The consequence is not a degraded experiment, it is a silently different one.
+**`a_denied_b_allowed` — the comparator built for authorization, and the one every
+cross-account experiment in this engagement selected — is unconstructible without a second
+principal**, so each of them would have collapsed to *self vs anonymous* even had A never
+happened. Anonymous-is-denied and I-am-allowed is a true statement about almost every
+authenticated endpoint in existence, and it is not evidence of a flaw. **A comparator that
+answers a narrower question than its name claims is the same failure class as A**: a
+harness gap wearing a verdict.
+
+This bites the entire SPA class, which is most modern targets — the population where
+authorization bugs are both most common and most valuable.
+
+**Fix (not this session):** registration must not depend on a server-rendered form.
+Options, cheapest first: reuse the crawl's already-mined API route map to `POST` the
+documented signup endpoint directly; accept an operator-supplied second credential pair
+for engagements where self-registration is unavailable or forbidden; or drive the signup
+through the browser plane. Whichever is taken, the load-bearing property must be
+preserved and stated: `_register_account`'s docstring turns on the account being *whatever
+the application grants a stranger who signs up*, which is what makes a privilege claim
+sound. An operator-supplied account does not carry that guarantee and must be recorded
+as a weaker basis, not silently substituted for it.
+
+**And it must fail loudly.** The comparator should refuse to run — not quietly retarget —
+when the principal it names is unavailable, in the same shape as `UnresolvedReference`
+above: *the experiment did not run* is a result; *self vs anonymous* wearing
+`a_denied_b_allowed`'s name is not.
+
+### What these two leave for criterion #2
+
+**NOT MET, and no longer "just needs the run".** The acceptance case is met *as plumbing*
+and not *as a finding*: the loop reached `PUT /api/BasketItems/1`, and the record now
+carries the JSON body it answered with — but the model sent `quantity: 2`, not `-100`, so
+the negative-quantity flaw was never re-triggered, and none of the four findings are
+business-logic.
+
+**This is not the stop-and-write signal either.** That signal requires the model to have
+been asked and to have failed; here it was never asked. A re-run that does not first close
+both defects above will reproduce this exact null result, because A is deterministic on a
+rich surface and B is unconditional on an SPA.
+
+**One thing in the case study is NOT evidenced and must not be cited without a controlled
+re-test.** It reads three `PUT /api/BasketItems/1` → `200` as an unrecognised real
+cross-user write. The mechanism is plausible — object-level authorization missing on
+`BasketItems` — but the tenant mapping was seeded **externally** and appears nowhere in
+the artifacts, and `GET /rest/user/whoami` returned `{"user":{}}` on that path. The ledger
+alone cannot say whether that write was A-as-A or anonymous. Either reading is
+interesting; neither is evidence yet.
