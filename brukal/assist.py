@@ -69,6 +69,22 @@ _LIKELY_WEB_PORTS = frozenset({
 # Service labels that mean "nmap could not tell" — a guess ("ppp?"), an unknown, or a
 # firewalled banner. Never a reason to conclude the port is NOT web.
 _UNSURE_SVC_RE = re.compile(r"\?$|^unknown$|^tcpwrapped$|^ppp$", re.I)
+
+# Registration path SHAPES a JSON signup may be reached at, for a target that serves no
+# server-rendered <form> — an SPA, which is most modern applications and the population
+# where authorization bugs are both most common and most valuable.
+#
+# An ALLOWLIST, in the same spirit as `schema._NO_RESOLVE_FLAGS`: small, explicit and
+# reviewable, rather than a regex that grows by accident. Candidates are drawn from what
+# the CRAWL actually observed and then filtered through this — never assumed, and never
+# fired at every route the crawl mined, because a real surface has dozens of them and
+# some are destructive. A path not on this list is not tried, and adding one is a
+# deliberate act by a maintainer rather than something a target can talk us into.
+_JSON_SIGNUP_PATHS = (
+    "/api/users", "/api/user", "/users",
+    "/register", "/api/register", "/auth/register", "/api/auth/register",
+    "/rest/user/register", "/signup", "/api/signup", "/accounts",
+)
 # URLs that DESTROY the session: never fetch these during a crawl, or we log
 # ourselves out and the rest of an AUTHENTICATED crawl runs unauthenticated (a
 # classic authenticated-scanning trap — the scanner clicks its own "logout").
@@ -3558,18 +3574,40 @@ class AssistSession:
         if self.browser is None or not self.allow_intrusive:
             return ""
         with self._separate_identity():
-            made = self._register_account()
+            # The FORM first: an account created through the application's own signup
+            # form is self-evidently what it grants a stranger, which is what makes a
+            # privilege claim sound. JSON is the fallback for a target that serves no
+            # form at all — an SPA, where this whole class was previously unreachable.
+            made = self._register_account() or self._register_account_json()
             if not made:
                 return ""
             user, password = made
             if not (getattr(self.browser, "_cookies", {}) or {}):
                 login_url = self._login_endpoint()
-                if not login_url or not self.login(login_url, user, password):
+                if not login_url:
                     return ""
+                ok = self.login(login_url, user, password)
+                if not ok and "@" in user:
+                    # A JSON signup authenticates by EMAIL, and `login`'s default user
+                    # field is `username`. Confirmed live on 2026-08-22: registration
+                    # answered 201 and the login straight after it was refused 401 for
+                    # exactly this, which would have left a real account unusable and
+                    # looked identical to a target that refuses self-registration.
+                    ok = self.login(login_url, user, password,
+                                    user_field="email", login_type="json")
+                if not ok:
+                    return ""
+            cookies = dict(getattr(self.browser, "_cookies", {}) or {})
+            auth = getattr(self.browser, "auth_header", "")
+            # REGISTER THE MOMENT IT IS OBTAINED, exactly as `_session_auth_for` does for
+            # the first identity. This session is about to be stored and then replayed on
+            # every `as: second` request, so it reaches the same record surfaces the first
+            # one does — and until now it was never registered at all, on either path.
+            redact.register_auth_header(auth)
+            redact.register(*cookies.values())
             self._second_identity = {
                 "user": user, "password": password,
-                "cookies": dict(getattr(self.browser, "_cookies", {}) or {}),
-                "auth": getattr(self.browser, "auth_header", ""),
+                "cookies": cookies, "auth": auth,
             }
         self.note(f"[experiment] second principal available: {user}")
         return user
@@ -4378,6 +4416,89 @@ class AssistSession:
         if r.status == 200 and re.search(r"type=[\"']?password", (r.body or ""), re.I):
             return None
         return user, password
+
+    def _json_signup_candidates(self) -> list:
+        """Registration URLs worth trying, from the CRAWL, filtered by the allowlist.
+
+        Two halves, and both matter. The crawl half means we only ever post to something
+        the application itself advertised. The allowlist half means we do not post to
+        every route it advertised — a real surface mines dozens, and a speculative POST
+        at an arbitrary one is exactly the kind of unrequested state change this project
+        refuses to make."""
+        from urllib.parse import urljoin as _urljoin
+        surface = getattr(self, "surface", None)
+        if surface is None:
+            return []
+        base = getattr(surface, "seed", "") or f"http://{self.target}/"
+        seen, out = set(), []
+        for route in list(getattr(surface, "api_routes", []) or []) \
+                + [p for p in (getattr(surface, "pages", {}) or {})]:
+            if not route or "{" in route:
+                continue
+            path = route.split("?", 1)[0].rstrip("/").lower()
+            if not any(path.endswith(shape) for shape in _JSON_SIGNUP_PATHS):
+                continue
+            url = _urljoin(base, route)
+            if url not in seen:
+                seen.add(url)
+                out.append(url)
+        return out
+
+    def _register_account_json(self):
+        """Create a fresh account through a JSON registration endpoint, or None.
+
+        The form path is preferred and tried first: an account made through the app's own
+        `<form>` is self-evidently what a stranger gets. An SPA has no form to use, and
+        without this the entire cross-account class was unreachable there — the model
+        proposed the right experiments and none of them could be constructed.
+
+        Same soundness argument, same front door: this posts to an endpoint the
+        application advertised to an anonymous crawler, as an anonymous caller, and takes
+        whatever role it is given. Returns (identifier, password) — the identifier is the
+        EMAIL, because a JSON signup authenticates by email where a form usually does not.
+
+        Goes through `self.browser`, so it is gated by `check_web` and lands in the audit
+        like every other web action (invariant 4). Nothing here builds its own HTTP."""
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive:
+            return None
+        candidates = self._json_signup_candidates()
+        if not candidates:
+            return None
+        import uuid as _uuid
+        tag = _uuid.uuid4().hex[:10]
+        email, password = f"brk{tag}@brukal.test", "Brukal-Signup-1!"
+        # The minimum a JSON signup asks for, plus the confirmation field the common ones
+        # want. Confirmed live against Juice Shop v20.2.0 on 2026-08-22: {email, password}
+        # alone answers 201. Extra keys are ignored by every implementation seen so far,
+        # and a required field we do not send shows up as a 4xx, which is a clean refusal
+        # rather than a silent half-created account.
+        body = json.dumps({"email": email, "password": password,
+                           "passwordRepeat": password, "username": f"brk{tag}"})
+        for url in candidates:
+            try:
+                _d, r = self.browser.run(WebAction(
+                    "request", url=url, method="POST", body=body,
+                    headers={"Content-Type": "application/json"}))
+            except Exception:
+                continue
+            if r is None or (r.status or 0) >= 400 or (r.status or 0) < 200:
+                continue
+            # A 2xx that did not create anything is common on SPA catch-alls, which
+            # answer 200 with the index page for every unknown path. An account exists
+            # only if the answer is JSON that echoes what we asked for.
+            text = (r.body or "")
+            if "<html" in text[:200].lower():
+                continue
+            try:
+                got = json.loads(text)
+            except Exception:
+                continue
+            if email not in json.dumps(got):
+                continue
+            self.note(f"[experiment] second principal registered via JSON signup at {url}")
+            return email, password
+        return None
 
     def confirm_predictable_reset_token(self, reset_url: str, id_param: str,
                                         token_param: str, known_user: str) -> bool:
