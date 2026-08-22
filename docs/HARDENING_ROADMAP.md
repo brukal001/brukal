@@ -733,7 +733,7 @@ masscan is deliberately **not** in the allowlist: it takes addresses and does no
 resolve, and its failures in the same runs had a different cause. The allowlist stays
 small and explicit rather than becoming a "guess the flag" heuristic.
 
-> ### ⚠️ PARTIALLY REOPENED 2026-08-12 — there is a THIRD construction site
+> ### ~~⚠️ PARTIALLY REOPENED 2026-08-12 — there is a THIRD construction site~~ — **CLOSED 2026-08-17**
 >
 > The claim above — "it is applied at both places a command is constructed" — is wrong.
 > **`loop.py:408` builds the web-port sweep directly** and hands it to `session.run()`,
@@ -752,11 +752,44 @@ small and explicit rather than becoming a "guess the flag" heuristic.
 > So the defect still costs an entire recon step when it fires, and it fired on the very
 > first command of the engagement. The rule is right; its coverage is not.
 >
-> **Fix (not this session):** apply the normalisation where the command reaches the ONE
-> execution path (`session.run` / `Executor.run`) rather than at each construction site,
-> so a future built-in reflex cannot reintroduce this by being written somewhere new. A
-> test should assert that every nmap reaching the executor carries the flag, whatever
-> built it.
+> It fired a **third** time on the 2026-08-16 Juice Shop 2C run — `returncode 124`,
+> `Starting Nmap 7.99` and nothing else, 180 s of a 1096 s engagement, on the first
+> command again.
+>
+> **CLOSED 2026-08-17.** `loop.py:413` now wraps its sweep in `apply_no_resolve()` —
+> the same helper as the other two sites, reused rather than reinvented.
+>
+> **The executor-level fix proposed above was NOT taken, deliberately.** Normalising
+> inside `Executor.run` would put command rewriting on the execution path, and the gate
+> would then audit a different string from the one that ran — which is invariant 3
+> (*the gate re-reads the command itself*) traded away for tidiness. `apply_no_resolve`
+> is documented as shaping how a command is CONSTRUCTED, and it stays there.
+>
+> The coverage guarantee the proposal was reaching for is bought instead by a test at
+> the **dispatch point**, which is where a fourth site would show itself:
+> `test_recon_no_resolve.py::test_no_scan_the_loop_dispatches_is_left_able_to_resolve`
+> runs the real `GroundedLoop` and asserts that every `nmap` reaching the cage carries
+> the flag, whatever built it. Named sibling:
+> `::test_the_loops_own_proactive_port_sweep_carries_n`.
+>
+> **There is no fourth site.** Confirmed two ways on 2026-08-17: graphify
+> (`explain apply_no_resolve` → exactly three production callers — `parse_action_request`,
+> the strategist `RUN:` parse, and `loop.py:413`), and an AST sweep of every string
+> literal in `brukal/` whose first token is a `_NO_RESOLVE_FLAGS` tool. The sweep returns
+> 38 literals; all but `loop.py:413` are tool-name allowlists (`risk.py`, `cli.py`,
+> `adscan.py`, `assist.py`, `schema.py`), the planner's prose hint (`methodology.py:71`,
+> which reaches the cage only via the strategist parse, already normalised), or fixed
+> strings in the `eval.py` / `experiment.py` governance simulations — which must NOT be
+> rewritten, since their expected-behaviour regexes match on the literal command and
+> they never touch a real cage.
+>
+> Two pre-existing tests were **restated, not weakened**: `test_webmap.py::
+> test_loop_sweeps_for_the_web_surface_when_nothing_is_known` and `test_loop_e2e.py::
+> test_the_whole_reflex_chain_runs_without_crashing` matched the sweep with
+> `startswith("nmap -Pn")`, an incidental flag ORDER that `-n` insertion changes. They
+> now match the program and assert `-Pn` (and, in the webmap test, `-n`) explicitly —
+> the subject of both, *the proactive sweep ran exactly once with the right shape*, is
+> unchanged and now pinned more tightly than before.
 
 Tests: `tests/test_recon_no_resolve.py` — the rule, its idempotence, non-nmap commands
 left untouched, program-name-not-substring matching, the lock-off case, and both real
@@ -846,3 +879,140 @@ should be inert to the test suite.
 **Fix (not this session):** point the vault root at a `tmp_path` fixture for the whole
 suite (an autouse fixture or a `BRUKAL_VAULT` env override), and assert in CI that a
 test run leaves `runs/` byte-identical.
+
+---
+
+## P1 — the business-logic capability was blocked by plumbing, not by reasoning (2026-08-17, all CLOSED)
+
+Found by auditing the **Juice Shop 2C run of 2026-08-16** — the run that was supposed to
+satisfy paper criterion #2. It completed normally (`stop_reason: exhausted`, all 30 steps,
+$1.61, chain keyed and intact, containment clean: 208 requests to `172.20.0.3`, 11 denials
+to an off-scope host, zero packets to the same-bridge `172.20.0.2` control). It produced
+two generic findings and no business-logic result.
+
+**The model's reasoning was not the limitation.** It proposed exactly the right four
+experiments — basket IDOR, basket-item quantity IDOR, review IDOR, address IDOR — and it
+independently sent `PUT /api/BasketItems/1 {"quantity":-100}`, which the target answered
+`200`. That is a real flaw, correctly reached. Every one of those five results was then
+destroyed by deterministic harness code between the reasoning and the record. Three
+defects, and they stack: the planner never scheduled the phase, the experiment engine
+could not chain state once the model improvised its way there, and the one hit that
+landed anyway was written down as a status line.
+
+This is the same shape as the redaction/placeholder lesson: **each component was correct
+on the axis it was built for, and wrong about what the next component would do with its
+output.**
+
+### ~~A. `{{setup.*}}` REFERENCES DID NOT RESOLVE — A SUBSTITUTION GAP FILED AS A NEGATIVE~~ — **CLOSED**
+
+`hypothesis.PROMPT` tells the model that `setup` requests "reach an interesting state"
+and are "executed but never judged", and gives it **no way to refer to what they
+returned**. So the model invented one: `{{setup.0.BasketId}}`, `{{setup.0.id}}`. Nothing
+substituted it. All four IDOR experiments went out with the braces literal in the path,
+control and variant answered identically (`401`/`401`, `500`/`500`), and the comparator
+correctly ruled *not confirmed* on all four.
+
+That last part is the serious half. The comparator did its job; the record it produced —
+"not confirmed [a_denied_b_allowed]: Basket IDOR" — is **evidence about the application**,
+and it was actually evidence about a missing data-flow in Brukal. A harness gap wearing a
+comparator's verdict is the failure mode this project treats as its worst, and it is the
+same class as the pre-redaction false negative: indistinguishable in the log from a real
+result.
+
+**Fixed in two halves, both deterministic.**
+
+1. **The syntax is documented, not guessed.** `hypothesis.SETUP_REF_SYNTAX` is spliced
+   into both `PROMPT` and `REFINE_PROMPT`: `{{setup.<i>.<dotted.path>}}`, resolved out of
+   setup response `i`'s JSON body, walking objects and arrays
+   (`{{setup.0.data.items.0.id}}`). A contract the model has to invent is not a contract.
+2. **`hypothesis.resolve_setup_refs()` substitutes before dispatch** — url, body and
+   header values — against the responses `_run_one_round` now captures. Pure template
+   resolution over recorded JSON; no LLM, no `eval`, same discipline as the comparators.
+   Setup steps resolve against *earlier* setup steps too, so a create-then-use sequence
+   works and the identical silent failure cannot simply move one step upstream.
+
+**Fail SAFE is the load-bearing part.** An unsatisfiable reference raises
+`UnresolvedReference` — no setup response at that index, a body that is not JSON, a field
+that is absent, or a value that is an object rather than something inlinable. The runner
+catches it *before* the generic handler, notes `[experiment] UNRESOLVED REFERENCE, not
+run`, and feeds the next round `UNRESOLVED REFERENCE (experiment NOT run, this is not a
+result)`. **A substitution gap can no longer be recorded as a negative**, and the
+placeholder never reaches the target.
+
+Tests: `tests/test_experiment_setup_refs.py` — 13 tests, **all 13 verified red first**,
+11 for feature-missing and 2 (the end-to-end pair) for the exact live bug, failing on
+`a placeholder reached the target`. The named ones:
+`::test_a_control_referencing_a_setup_response_is_dispatched_with_the_real_value` and
+`::test_an_unresolvable_reference_errors_the_experiment_rather_than_being_judged`.
+
+### ~~B. A FINDING-WORTHY RESPONSE WAS RECORDED WITHOUT ITS BODY~~ — **CLOSED**
+
+`PUT /api/BasketItems/1 {"quantity":-100}` → `200`. The record kept
+`ALLOW:  status=200 (154B)`. The model had a status line and no content, could not
+escalate what it could not read, and three steps later the repeat-suppressor told it
+`do NOT run it again`. The hit was gone for the rest of the engagement.
+
+`_absorb_web` put `body[:600]` into `self.notes` but passed `_persist_finding` a summary
+that fell back to `{head} ({len(body)}B)` whenever no highlight pattern matched — and a
+body no fitted detector recognises is precisely the body worth keeping, because it is the
+case nobody wrote a detector for, which is the entire reason the model is in the loop.
+Notes are an in-memory rolling window; the finding record is what `_load_memory` reads
+back, what the per-agent transcript shows, and what survives a checkpoint.
+
+**Fixed:** the summary now carries a bounded body excerpt (`body[:800]`) behind the
+highlight lead. **Redaction was verified on the new surface rather than assumed** — the
+capture crosses a record boundary, so capturing more could have captured the credential.
+It does not: `blackboard.write_finding` redacts at the boundary via `redact.data`, which
+covers this text, and two tests prove it with a target that *echoes* the session token
+and cookie back in its response body.
+
+Tests: `tests/test_finding_body_capture.py` — 6 tests, **4 verified red first**
+(2 are guards that hold before and after). Acceptance case, named:
+`::test_the_negative_quantity_hit_is_recorded_with_the_body_it_answered_with` — the exact
+request the last run threw away now keeps `"quantity":-100` in the record. Redaction:
+`::test_a_session_token_reflected_in_the_captured_body_is_masked_in_the_record`.
+
+### ~~C. THE PLANNER SILENTLY DROPPED METHODOLOGY PHASES~~ — **CLOSED**
+
+`WEB_METHODOLOGY` has ten phases; business-logic is the ninth. `checklist_text()` hands
+them to the planner as text and the model writes its own plan. On 2026-08-16 it returned
+**seven steps with four phases absent** — configuration, cryptography, **business-logic**,
+client-side. The loop executed that plan to completion (`plan_cursor: 7`, every step
+`[x]`) and the engagement was filed as a business-logic measurement that never planned a
+business-logic step.
+
+The floor that should have caught this was `if len(new) < 2`. **It validates a proxy —
+the model said something — rather than the claim: the plan covers the methodology.** A
+seven-step plan missing the phase under measurement passes a length check comfortably.
+Note what this means for the run before it: the truncation fix (`be94446`) worked exactly
+as designed — the loop stopped quitting early and spent its whole budget — and the phase
+still was not reached, because nothing had ever put it in the plan. Fixing the reported
+symptom moved the ceiling somewhere else.
+
+**Fixed:** `Methodology.missing_phases(plan)` (deterministic set arithmetic, methodology
+order, no model in it) and `Methodology.plan_steps_for(phases)`. `make_plan` now
+**appends** what the model left out instead of replacing the plan — its own steps name
+this target's real endpoints, and enforcing coverage by discarding them would trade one
+blindness for another. **Coverage, not ordering:** the model keeps its sequence and its
+wording. A phase the methodology names more than once (box names `enumeration` three
+times) is covered by one plan step carrying it, so a good plan is never padded.
+
+Tests: `tests/test_plan_covers_methodology.py` — 9 tests, **5 verified red first**,
+driven by the seven-step plan the live run actually produced. Named:
+`::test_a_plan_that_omits_business_logic_gets_it_planned_anyway`.
+
+**One pre-existing test caught a regression mid-fix and was right to.**
+`test_methodology.py::test_thin_model_plan_falls_back_to_the_methodology_checklist`
+failed when `as_plan_steps()` was refactored through the new phase-deduplicating helper,
+which collapsed the box flow's three distinct `enumeration` steps (port sweep, per-service
+enum, the web methodology on any web service) into one. `as_plan_steps()` was restored to
+emit every step; only the *append* path deduplicates by phase. The test was not touched.
+
+### What this leaves for criterion #2
+
+Of the five conditions, four already held on the 2026-08-16 run: nothing leaked (zero JWT
+cleartext across audit, findings, report, SARIF, blackboard, checkpoint and all 64 agent
+notes), the chain verified intact under `BRUKAL_AUDIT_KEY`, containment was proven against
+a same-bridge off-scope control, and the result was publishable. Only *reaches business
+logic* failed, and all three reasons it failed are now closed. Suite: **965 passed, 1
+skipped** (was 935). The measurement is the next session's work; this one was the plumbing.

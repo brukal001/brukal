@@ -92,6 +92,14 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
 - **A control that transforms data must be tested on BOTH sides** — what it writes, and what happens when its
   output is read back. (Redaction was verified for leakage but not for consumption; a `[REDACTED]` placeholder
   was accepted as a real credential until fixed.)
+- **A fix for a silent failure must not be able to fail silently itself.** Four instances now, the sharpest
+  being `LLMClient.propose`'s thinking-retry: built so "the model had nothing to say" would stop being
+  indistinguishable from "it never got to say it", it escalates into an SDK `ValueError` that a bare
+  `except Exception: return 0` then erases. Every recovery path needs its own failure recorded on a surface,
+  and a bare `except: return <empty>` around an LLM call is a defect on sight.
+- **A capability that degrades on rich input is worse than one that never worked** — it passes every small
+  test and disappears on exactly the targets worth measuring. Prefer fixtures at production scale; a
+  three-route surface proves nothing about a forty-route one.
 
 ---
 
@@ -103,7 +111,10 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
   Web-plane capability enforcement (`required_capability_for_web`, applied last inside `check_web`).
 - **Phase 2 Part 2 (capability, live) — IN PROGRESS.** Cap (HTB) fully exercised; Juice Shop 2B run done.
   **Redaction boundary CLOSED (`66185da`)** — one redactor, eight write sites, per-surface tests green.
-  Business-logic capability NOT yet measured.
+  **Business-logic capability now PARTIALLY measured (2026-08-20/21, run 2C2):** the loop plans and works
+  the phase, and records the evidence — but the experiment engine that alone may confirm a finding never
+  ran, so the capability itself is still unmeasured. Governance measured clean for the second consecutive
+  run. See criterion #2 below.
 
 ## Deferred (documented, not abandoned — future phases, not paper blockers)
 Artifact analysis (pcap/binary fetch+parse — Cap's confirmed missing capability class); enterprise API /
@@ -113,12 +124,36 @@ limits in the paper, not fixed before writing.
 ---
 
 ## Live findings — see docs/HARDENING_ROADMAP.md for the authoritative list
-Open at last update: egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel
-traffic; dodged-by-construction on local single-host nets but unfixed for VPN); `-n` third construction
-site (`loop.py:408` bypasses both patched paths — reopened); P2s (report self-count vs audit ledger mismatch;
-pytest writes into live `runs/vault/`). Closed recently: egress P1 #1 (fail-open on ruleset-apply failure);
-loop-truncation P1 (a truncated reply no longer terminates the loop — keyed on `finish_reason`/stop reason at
-the backend layer so it holds across providers); redaction P1 (`66185da`).
+**Open at last update (2026-08-21):**
+- **P1 — the experiment engine cannot ask on a rich surface (NEW, found in run 2C2; not yet in the roadmap,
+  written up only in `docs/CASE_STUDY_JUICESHOP_2C.md`).** `run_hypotheses` calls `propose(max_tokens=8000)`;
+  on a rich surface the model spends the whole allowance thinking and returns `""` with
+  `stop_reason=max_tokens`. `LLMClient.propose` (`brukal/llm.py:257`) correctly detects that and retries at
+  `bigger = min(8000×4, 32_000)` = 32,000 — still **non-streaming** (`_propose_once` → `messages.create`).
+  The Anthropic SDK refuses before sending: *"Streaming is required for operations that may take longer than
+  10 minutes."* Verified locally against `anthropic 0.116.0` with no API call — 8,000 and 16,000 pass, the
+  ceiling is **21,333**, 32,000 always raises (`claude-sonnet-5` is not in `MODEL_NONSTREAMING_TOKENS`, so
+  the generic 10-minute estimator applies). `assist.py:3608`'s `except Exception: return 0` then swallows it,
+  and REFLEX 0b is `_confirmed_done`-gated to fire once — so one erased error removes model-proposed
+  experiments from the **entire** engagement. **Deterministic and worst where it matters most:** it needs a
+  rich surface to trigger, so a 3-route fixture succeeds and the real 43-route crawl failed 3/3.
+  Fix: stream the retry or cap `bigger` below the ceiling, **and** make the swallow record what it caught.
+- **P1 — no second principal on an SPA (pre-existing, independent, newly visible).** `establish_second_identity()`
+  returns `""` on Juice Shop: it needs an HTML `<form>` via `_signup_form()`, and an Angular SPA has none, so
+  `_register_account()` returns `None`. Without a second principal the **`a_denied_b_allowed` comparator is
+  unconstructible**, and every cross-account experiment degrades to self-vs-anonymous. This bites the whole
+  SPA class. **Fixing the streaming P1 alone will NOT produce a cross-account result.**
+- egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
+  dodged-by-construction on local single-host nets but unfixed for VPN).
+- P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`.
+
+**Closed recently:** egress P1 #1 (fail-open on ruleset-apply failure); loop-truncation P1 (a truncated reply
+no longer terminates the loop — keyed on `finish_reason`/stop reason at the backend layer so it holds across
+providers); redaction P1 (`66185da`); `-n` third construction site (**CLOSED 2026-08-17** at `loop.py:413` via
+`apply_no_resolve()`, deliberately NOT at the executor — rewriting on the execution path would make the gate
+audit a different string from the one that runs, trading away invariant 3; coverage bought by a dispatch-point
+test instead, and confirmed there is no fourth site); the three 2026-08-16 business-logic plumbing defects
+(setup substitution, evidence body, planner coverage floor).
 
 **Truncation caveat for the paper:** runs recorded BEFORE the loop-truncation fix (commit that closed it) may
 be truncation-limited — a run that quit mid-reasoning looks identical in the ledger to a considered one. Any
@@ -134,10 +169,58 @@ Trigger the evaluation write-up when ALL three hold:
 2. ONE clean authenticated capability run where the loop REACHES business logic, nothing leaks, chain keyed
    + intact, containment proven — result publishable whether it finds flaws or not (an honest "governed
    autonomy vs ungoverned tools, trade-off measured" framing, NOT "we beat tool X").
-   **UNBLOCKED, NOT MET — met needs the run.** All three blockers are closed: truncation (`be94446`),
-   redaction (`66185da`), and the auth-path regression redaction itself introduced (`2f3cc51`). Verified
-   together: auth attaches for real on both planes, and the token stays redacted on every record surface.
-   The run is the next step.
+   **NOT MET — and it is no longer "just needs the run".** The three original blockers are long closed:
+   truncation (`be94446`), redaction (`66185da`), and the auth-path regression redaction itself introduced
+   (`2f3cc51`) — auth attaches for real on both planes and the token stays redacted on every record surface.
+   Two runs have since been made against that clean baseline; each one closed the blockers it found and
+   uncovered the next layer down. **Met now needs the two P1s above fixed first, then a run.**
+
+   **Two runs made. Neither met it. NOT MET as of 2026-08-21.**
+
+   *Run 2C (2026-08-16)* — four of five conditions held (no leak, chain keyed + intact, containment proven
+   against a same-bridge off-scope control, publishable), but it **never reached business logic**. Not a
+   reasoning failure: the model proposed the right four IDOR experiments and hit a real negative-quantity
+   flaw. Three deterministic harness defects between reasoning and record ate all five results, all closed
+   2026-08-17 — `{{setup.*}}` never resolved, a finding-worthy response recorded without its body, and the
+   planner silently dropping four methodology phases including business-logic. See
+   `docs/HARDENING_ROADMAP.md` → *"the business-logic capability was blocked by plumbing"*.
+
+   *Run 2C2 (2026-08-20/21, `runs/audit_juiceshop2c2.jsonl` + `runs/vault2c2/172.20.0.3/`)* — 50/70 steps,
+   `plan_cursor 12/12`, 73 calls, **$3.89**, `stop_reason: target-unhealthy`. Full analysis:
+   **`docs/CASE_STUDY_JUICESHOP_2C.md`**.
+
+   | Condition | 2C | 2C2 |
+   |---|---|---|
+   | Reaches business logic | ✗ never planned | **partial** — planned + worked, nothing confirmable |
+   | Nothing leaks | ✓ | ✓ **including the newly-captured bodies** |
+   | Chain keyed + intact | ✓ | ✓ |
+   | Containment proven | ✓ | ✓ |
+   | Publishable either way | ✓ | ✓ |
+
+   **Three of the four fixes are confirmed live in production:** the planner coverage floor (the model
+   dropped business-logic a *second* time on a fresh target; the floor appended it as phase 11 and the plan
+   was worked to completion), the evidence body (the `PUT /api/BasketItems/1` → 200 record now carries its
+   JSON body, on the exact endpoint it was built for), and the `-n` third site (the sweep completed instead
+   of dying at the 180 s cap). **The fourth — setup substitution — remains unexercised against a live
+   target:** zero experiments dispatched, so the zero literal `{{` and zero `UnresolvedReference` are
+   vacuous. Cause is the new P1 above, one layer below the fix.
+
+   **Why it is still NOT MET, precisely:** the acceptance case is met *as plumbing* and not *as a finding* —
+   the model sent `quantity: 2`, not `-100`, so the negative-quantity flaw was never re-triggered, and the
+   four findings (1 medium, 3 low) contain nothing business-logic. **This is NOT the stop-and-write signal.**
+   That signal requires the model to have been asked and to have failed; here it was never asked. A re-run
+   that does not first fix both P1s above will reproduce this exact null result, because the failure is
+   deterministic on a rich surface.
+
+   **Do not cite from 2C2 without a controlled re-test:** the case study reads three `PUT /api/BasketItems/1`
+   → 200 as an unrecognised real cross-user write. The mechanism is plausible (object-level authz missing on
+   `BasketItems`) but the tenant mapping was seeded **externally** and appears nowhere in the artifacts, and
+   `GET /rest/user/whoami` returned `{"user":{}}` on that path — so the ledger alone cannot say whether the
+   write was A-as-A or anonymous. Either reading is interesting; neither is evidenced.
+
+   **⚠ State caveat (2026-08-21):** all four fixes, their tests, and both doc updates are **UNCOMMITTED** in
+   the working tree. `965 passed, 1 skipped` (was 935) is a working-tree number, not a `git log` number —
+   HEAD is `ccd38fe`. Delete this caveat once they are committed.
 3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
@@ -149,6 +232,12 @@ Everything else on the roadmap is a cited limitation, not a prerequisite for wri
 - Cage: Docker, nftables egress lock built at startup from the mounted scope; recon nmap needs `-n` (the lock
   blocks resolvers → 180s timeouts that look like a dead host).
 - Local targets: run as a second container on the cage's docker network, scope to its container IP /32.
+- **Docker Desktop WSL integration turns itself OFF across restarts** — `docker` then reports *"could not be
+  found in this WSL 2 distro"* and there are no containers at all, not even Exited. Check before planning a
+  live run. A recreate also means the container IP may change: **re-read it, re-seed both tenants externally,
+  re-stamp the scope, and bring the cage up AFTER the scope is set** (the ruleset pins the IP at start).
+- Each run gets its own vault root (`runs/vault2c2/<ip>/`, not `runs/vault/`) — find a run's artifacts by
+  mtime under `runs/`, not by assuming the default path.
 - HTB VPN configs expire; prefer the TCP config on restricted networks (UDP 1337 gets filtered). The cage's
   `docker/vpn/config.ovpn` is renamed `.disabled-for-2b` during local runs — restore it for HTB.
 - Token/context economy: use graphify (`graphify extract . --code-only`, then `query`/`path`/`explain`) to
