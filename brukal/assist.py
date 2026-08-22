@@ -3604,7 +3604,18 @@ class AssistSession:
                                 f"Attack surface:\n{grounding}"
                                 f"{second_note}{source_note}",
                                 max_tokens=8000)
-        except Exception:
+        except Exception as exc:
+            # RECORD, do not widen. What is caught is unchanged — the engagement still
+            # continues past a failed proposal — but it may no longer vanish. A live run
+            # lost model-proposed experiments entirely to a `ValueError` raised inside
+            # the SDK here, and `return 0` erased it: no note, no coverage row, no trace
+            # on any surface. REFLEX 0b is gated to fire once, so that single silence
+            # cost the whole engagement its most valuable capability, and the report then
+            # said the class was never reached — which by the coverage table's own
+            # footnote means something different, and untrue.
+            _why = f"the proposal call FAILED ({type(exc).__name__}: {str(exc)[:160]})"
+            self.note(f"[experiment] {_why} — no experiments were proposed this run")
+            self._covered("Model-proposed experiments", probes=0, note=_why)
             return 0
 
         outcomes: list = []

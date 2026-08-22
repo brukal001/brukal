@@ -212,6 +212,20 @@ class GroundedLoop:
         self._confirmed_done = False          # active SQLi/XSS confirmation runs once
         self._domain_enum_queue = None        # proactive AD/cloud enumeration (drains once)
 
+    def _record_swallowed_experiment_error(self, exc: Exception) -> None:
+        """Say that the experiment reflex failed, and what failed it.
+
+        REFLEX 0b is `_confirmed_done`-gated to fire exactly once per engagement, so a
+        single silent exception here removes model-proposed experiments for the whole
+        run — which is what happened live, and left nothing on any surface to find it
+        by. The note costs one line and turns an invisible capability loss into a
+        recorded one; it deliberately does not change what is caught."""
+        note = getattr(getattr(self, "session", None), "note", None)
+        if note is None:
+            return
+        note(f"[experiment] the experiment reflex FAILED and was skipped "
+             f"({type(exc).__name__}: {str(exc)[:160]})")
+
     def _emit(self, kind: str, **payload) -> None:
         if self._observer is not None:
             try:
@@ -492,8 +506,15 @@ class GroundedLoop:
                 # sweep and should not compete with it.
                 try:
                     n += self.session.run_hypotheses()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # The SIBLING of `run_hypotheses`' own swallow, one layer out, on the
+                    # same call. That one now records what it caught; this one guards
+                    # everything raised OUTSIDE it — parsing the reply, writing the
+                    # coverage row, a round escaping its own handler. Left silent, the
+                    # capability could still disappear here without a trace, which is the
+                    # same blindness for a slightly different failure. Recorded, not
+                    # widened: the engagement continues exactly as before.
+                    self._record_swallowed_experiment_error(exc)
                 if n:
                     step = LoopStep(
                         index=len(self.steps) + 1, phase="exploitation",
