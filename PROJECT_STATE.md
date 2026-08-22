@@ -223,9 +223,15 @@ Trigger the evaluation write-up when ALL three hold:
    `GET /rest/user/whoami` returned `{"user":{}}` on that path — so the ledger alone cannot say whether the
    write was A-as-A or anonymous. Either reading is interesting; neither is evidenced.
 
-   **⚠ State caveat (2026-08-21):** all four fixes, their tests, and both doc updates are **UNCOMMITTED** in
-   the working tree. `965 passed, 1 skipped` (was 935) is a working-tree number, not a `git log` number —
-   HEAD is `ccd38fe`. Delete this caveat once they are committed.
+   **STOPPING RULE — written 2026-08-22, before the fix, so it cannot be renegotiated after the result.**
+   The next capability run is ONE run.
+   - Fails because of a NEW harness defect → **STOP and write.** The capability boundary is then measured
+     five layers deep and that is the paper.
+   - Fails because of the TARGET (no second principal on an SPA, no confirmable class, target unhealthy)
+     → that is a **RESULT, not a blocker.** Write it up as a measured limit. This outcome permits at most
+     ONE further fix-and-run cycle, not an open-ended series.
+   - Succeeds (loop reaches business logic, the experiment engine is actually **ASKED**, nothing leaks,
+     chain keyed + intact, containment proven) → **criterion #2 is MET.**
 3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
