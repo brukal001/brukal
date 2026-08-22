@@ -1368,3 +1368,101 @@ cross-user write. The mechanism is plausible — object-level authorization miss
 the artifacts, and `GET /rest/user/whoami` returned `{"user":{}}` on that path. The ledger
 alone cannot say whether that write was A-as-A or anonymous. Either reading is
 interesting; neither is evidence yet.
+
+---
+
+## AUDIT 2026-08-22 — did the manufactured-confirmation path ever fire? (NO, and one new P1)
+
+Prompted by the false-positive route found while closing P1 B: a control naming `as: second`
+on a target with no second account resolved silently to `anonymous`, which makes
+`a_denied_b_allowed` — *"the control was refused and the variant was accepted"* — hold for
+**every authenticated endpoint on the web**. That path was closed by `c829482` before any of
+this was known. The question this audit answers is whether it had already produced a finding
+that is now published somewhere.
+
+**It had not.** But establishing that turned out to be only half-possible from the ledger,
+and the half that is impossible is a P1 in its own right.
+
+### Method
+
+The mechanism has a hard lower date bound: `_as_identity` and the `second` principal arrived
+in `62e5e33` (2026-08-04) and the comparators in `8f354c4` (2026-08-03), so **no run before
+2026-08-04 could exhibit it** — there was no `as` field to name. Of roughly **87 vault roots**
+under `runs/`, **7 runs used the experiment path at all**. An exhaustive grep for the
+comparator's own meaning string — `the control was refused and the variant was accepted` —
+across every artifact in `runs/` returns **exactly one file**.
+
+### Result
+
+| Run | Date | Experiment verdicts | Second principal? | Verdict |
+|---|---|---|---|---|
+| `vault-dvna16/172.20.0.10` | 08-04 | none judged | **yes** (`brk3beee2bbb0`) | SOUND |
+| `vault-dvna18/172.20.0.10` | 08-06 | **1 CONFIRMED** `a_denied_b_allowed` | **yes** (`brk6ba71274c4`) | **SOUND** |
+| `vault-dvga3/172.20.0.5` | 08-07 | 4 not confirmed | no | **CANNOT TELL** |
+| `vault/10.129.100.21` | 08-09 | ~8 not confirmed | no | **CANNOT TELL** |
+| `vault/10.129.100.61` | 08-09 | 8 not confirmed | no | **CANNOT TELL** |
+| `_archived_dvga_…_pre-2b` (2B) | 08-12 | 6 not confirmed | no | **CANNOT TELL** |
+| `vault/172.20.0.3` (2C) | 08-16 | 4 not confirmed | no | **CANNOT TELL** |
+| `vault2c2/172.20.0.3` (2C2) | 08-21 | none — the engine was never asked | no | SOUND |
+
+**The single confirmed experiment finding in the project's entire history is sound**, on three
+independent grounds rather than one: a second principal **did** exist in that run; the
+finding's preserved hypothesis prose names the control as *"A stranger with no session"* —
+`anonymous` by intent, not the manufactured arrangement; and the same vertical privilege
+escalation is **independently corroborated by a separate CRITICAL finding** in the same run,
+reached by a different route (*register through the public signup form, authenticate, and
+`GET /app/admin` again* → `200`). DVNA genuinely has that bug.
+
+### The five CANNOT TELLs are not "probably fine"
+
+```
+$ grep -rl '"as"' runs/
+(no output)
+```
+
+**The proposal JSON is persisted nowhere.** Not in `findings.jsonl`, not in the audit log, not
+in the agent notes, not in the blackboard. The record keeps a title, a comparator and two
+URLs, and stops. So for those five runs it can be said with certainty that **no false positive
+was published** — no confirmation exists in any of them — while **whether `as: second` was
+named and silently degraded cannot be determined at all**. That is recorded as unresolved and
+is not being rounded toward the good case.
+
+One pair is suggestive and permanently unresolvable, from the 2B run: *IDOR on
+`/rest/basket/{id}` — control HTTP 200 (900B) vs variant HTTP 200 (1310B)*, filed NOT
+CONFIRMED. If that variant was `second`→anonymous, an anonymous reader took 1310 bytes of
+another user's basket and it was recorded as a clean negative. The 2B run is also entangled
+with the `{{setup.*}}` substitution defect, so the two causes cannot be separated after the
+fact. It is written down here because it will never be recoverable, not because it is
+actionable.
+
+### P1 — THE LEDGER DOES NOT RECORD WHICH PRINCIPAL AN EXPERIMENT USED
+
+**Severity: P1 (auditability — invariant 5, and the auditability win-axis directly). OPEN.**
+
+A cross-account finding's entire claim is *which principal saw what*. The ledger does not
+record it. `_as_identity` swaps the browser's cookies and auth header around a request and
+restores them afterwards, and **nothing writes down which of the three principals was in
+force** — not the audit entry, not the finding, not the note.
+
+The consequence is exactly the shape this project treats as its worst: **the artifacts of a
+sound finding and of a manufactured one are byte-identical.** The 2026-08-06 confirmation
+above is checkable only because the model happened to write its intent into the hypothesis
+prose. That is a narrative accident, not a governance property, and it is not repeatable.
+
+**`c829482` stops the degradation but does not close this.** An experiment naming an
+unavailable principal now errors instead of running — so no *future* finding can be
+manufactured this way — but a future cross-account finding that legitimately runs will be
+recorded with **exactly as little principal provenance as `vault-dvna18`'s**. The next
+capability run is intended to produce citable authorization evidence, and as things stand its
+ledger could not support the citation.
+
+It also undercuts the reproducibility axis: a reader replaying a run from the audit log cannot
+reconstruct which session issued which request, so the run is not replayable in the sense the
+paper claims.
+
+**Fix (not this session — next session, before the run):** record the resolved principal on
+every experiment request at the point `_as_identity` selects it — in the audit entry and on
+the finding — as an identifier, never as a credential (the principal's *name*, e.g.
+`self` / `second:brk6ba71274c4` / `anonymous`, never its cookies or auth header, which
+redaction exists to keep off exactly these surfaces). Then a comparator verdict carries its
+own provenance and this audit becomes a query rather than an archaeology exercise.

@@ -171,6 +171,16 @@ limits in the paper, not fixed before writing.
     cross-account experiments will be recorded as NOT RUN. That is an honest structural limit of the harness
     and must be cited as a scope limit — never reported as a negative result, and never counted as evidence
     that the target's authorization is sound.**
+- **P1 — the ledger does not record which principal an experiment used (NEW 2026-08-22, OPEN).** `_as_identity`
+  swaps the browser's session around a request and restores it; **nothing writes down which of `self` /
+  `second` / `anonymous` was in force** — not the audit entry, not the finding, not the note
+  (`grep -rl '"as"' runs/` returns zero files). A cross-account finding's whole claim is *which principal saw
+  what*, so **the artifacts of a sound finding and a manufactured one are byte-identical**; the one confirmed
+  experiment finding in the project's history (2026-08-06) is checkable only because the model happened to
+  write its intent into the hypothesis prose. Touches invariant 5 and the auditability/reproducibility
+  win-axis directly. **`c829482` stops the degradation but does NOT close this** — a future cross-account
+  finding would be as unauditable as that one. Fix next session, **before** the capability run, since that run
+  is meant to produce citable authorization evidence. Roadmap → *AUDIT 2026-08-22*.
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
 - P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite
@@ -260,7 +270,36 @@ Trigger the evaluation write-up when ALL three hold:
      ONE further fix-and-run cycle, not an open-ended series.
    - Succeeds (loop reaches business logic, the experiment engine is actually **ASKED**, nothing leaks,
      chain keyed + intact, containment proven) → **criterion #2 is MET.**
-3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
+3. ~~Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited).~~ — **MET 2026-08-22.
+   No re-run required.**
+
+   The truncation fix is **`37b3957`, 2026-08-12 23:38:30** (quoted as `be94446` before the history rewrite —
+   see the section below). Every run under `runs/` was classified against that timestamp and every
+   quantitative claim in `PROJECT_STATE.md`, `docs/HARDENING_ROADMAP.md` and
+   `docs/CASE_STUDY_JUICESHOP_2C.md` was traced to its source run.
+
+   **The finding: every capability number the paper would cite comes from 2C (2026-08-16) or 2C2
+   (2026-08-20/21), and both are POST-FIX.** Verified directly against the artifacts — 2C's 30 steps,
+   `stop_reason: exhausted`, $1.61, `plan_cursor: 7` and 64 agent notes; 2C2's 50/70 steps,
+   `plan_cursor 12/12`, 44 commands, 6 blocked, 73 calls, $3.89, 245 audit entries and 70 agent notes.
+
+   **The PRE-FIX numbers that remain in the docs are evidence OF defects, not claims about capability** —
+   "12 of 20 budgeted steps and $3.75 of a $4 cap went unused" is the truncation bug's own symptom, and
+   "25 steps spent, 21 commands known, 35 prior findings" is the recycled-IP P2's. Both are historical
+   records that would be falsified, not improved, by re-running them. The suite counts scattered through the
+   roadmap (899 → 993) are dated snapshots in a changelog and correct as history.
+
+   **Three arithmetic corrections were required and are part of this closure** — each an unlabelled count
+   rather than a truncation artefact: the case study's "238 requests" → **102 answered web requests**
+   (`web_result`; it contradicted the roadmap's 102 for the same run), the roadmap's 2C "208 requests" →
+   **206 web ledger entries** (109 `web_decision` + 97 `web_result`), and its "11 denials" → **10
+   `hard:web-scope`** (13 `DENY` total). Logged against the P2 for self-report-vs-ledger, which has now
+   recurred in prose written *about* the ledger rather than *by* it.
+
+   **Caveat that survives this closure, and it is not a truncation one:** experiment findings carry no record
+   of which principal issued each side (roadmap → *"the ledger does not record which principal an experiment
+   used"*, P1, open). Any cross-account result cited in the paper needs that fixed first, or it cannot be
+   backed by the ledger.
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
 
