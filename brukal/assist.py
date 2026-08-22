@@ -3456,14 +3456,79 @@ class AssistSession:
                 found.append(name)
         return found
 
+    def _session_handle(self, resolved: str) -> str:
+        """A stable, unrecoverable handle for the session a principal issues under.
+
+        `redact.placeholder_for`'s sha256[:8] — deliberately the SAME form redaction
+        emits everywhere else, so a handle here and a masked credential in some other
+        record read identically and an operator can correlate two records as the same
+        session without the value being recoverable from either. Identify, never
+        credential: this field exists on record surfaces that redaction is there to
+        police, so it must not become the hole in it.
+
+        A stranger has no session, and says so with an empty handle rather than by
+        omitting the field."""
+        if resolved == "anonymous":
+            return ""
+        if resolved == "second":
+            src = getattr(self, "_second_identity", None) or {}
+            material = src.get("auth") or json.dumps(src.get("cookies") or {},
+                                                     sort_keys=True)
+        else:
+            browser = self.browser
+            material = (getattr(browser, "auth_header", "") or "") or json.dumps(
+                getattr(browser, "_cookies", {}) or {}, sort_keys=True)
+        return redact.placeholder_for(material) if material else ""
+
+    def _record_principal(self, requested: str, resolved: str, role: str, url: str):
+        """WHO issued one experiment request, onto the ledger.
+
+        A cross-account finding's whole claim is which principal saw what, and until
+        2026-08-22 no artifact recorded it — so a sound finding and a manufactured one
+        were byte-identical, and the one confirmed experiment finding in the project's
+        history is checkable only because the model happened to describe its intent in
+        prose. An audit `kind` rather than a new writer, so it inherits `redact.data`
+        like every other record.
+
+        REQUESTED and RESOLVED are both kept although they are equal by construction
+        today. That is the point: the defect this closes was a silent substitution, and
+        a pair that can disagree makes the next one visible in the ledger instead of
+        inferable only from the code of the day."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        audit.append("experiment_principal", {
+            "role": role or "unknown", "requested": requested, "resolved": resolved,
+            "session": self._session_handle(resolved),
+            "url": url, "target": self.target,
+        })
+
     @contextmanager
-    def _as_identity(self, who: str):
+    def _as_identity(self, who: str, role: str = "", url: str = ""):
         """Issue requests as one of the three principals an experiment may name.
 
         The model chooses WHICH, from a closed set; this decides what each name means.
         Same split as the comparators, and for the same reason — a proposal must not be
-        able to describe a credential, only to select one that already exists."""
+        able to describe a credential, only to select one that already exists.
+
+        The provenance record is written HERE rather than at each call site, because
+        this is the one point every dispatch passes through: a fourth call site added
+        later inherits the record instead of silently going unattributed, which is the
+        failure mode that made five past runs permanently unresolvable."""
         browser = self.browser
+        # FAIL CLOSED, and before anything is recorded: an empty second identity used to
+        # fall through to empty cookies and an empty auth header, which is exactly the
+        # `anonymous` branch below — so `as: second` silently became `as: anonymous`,
+        # went out on the wire, and got judged. Raising before the browser is touched
+        # means the degraded request cannot exist, and nothing is attributed to a
+        # request that never happened.
+        second = getattr(self, "_second_identity", None) or {}
+        if who == "second" and not second:
+            from . import hypothesis as _h        # local, as elsewhere in this file
+            raise _h.SecondPrincipalUnavailable(
+                "no second principal was established on this target "
+                "(self-registration did not yield an account)")
+        self._record_principal(who, who, role, url)
         if who == "self" or browser is None:
             yield
             return
@@ -3473,18 +3538,6 @@ class AssistSession:
             if who == "anonymous":
                 browser._cookies, browser.auth_header = {}, ""
             elif who == "second":
-                second = getattr(self, "_second_identity", None) or {}
-                if not second:
-                    # FAIL CLOSED. An empty second identity used to fall through to
-                    # empty cookies and an empty auth header, which is exactly the
-                    # `anonymous` branch above — so `as: second` silently became
-                    # `as: anonymous`, went out on the wire, and got judged. Raising
-                    # here is before the browser is touched and before any request is
-                    # built, so the degraded request cannot exist.
-                    from . import hypothesis as _h    # local, as elsewhere in this file
-                    raise _h.SecondPrincipalUnavailable(
-                        "no second principal was established on this target "
-                        "(self-registration did not yield an account)")
                 browser._cookies = dict(second.get("cookies") or {})
                 browser.auth_header = second.get("auth", "")
             yield
@@ -3723,14 +3776,20 @@ class AssistSession:
                         raise ValueError("irreversible setup step")
                     if self._is_destructive_path(spec["url"]) and not self.allow_intrusive:
                         raise ValueError("state-changing setup needs --full-send")
-                    with self._as_identity(spec.pop("as", "self")):
+                    with self._as_identity(spec.pop("as", "self"), "setup",
+                                           spec.get("url", "")):
                         _ds, rs = self.browser.run(WebAction("request", **spec))
                     setup_results.append(rs)
                 cspec = _hyp.resolve_setup_refs(h.control, setup_results)
                 vspec = _hyp.resolve_setup_refs(h.variant, setup_results)
-                with self._as_identity(cspec.pop("as", "self")):
+                # Read before `as` is popped off the spec by the dispatch below.
+                _c_as = cspec.get("as", "self")
+                _v_as = vspec.get("as", "self")
+                with self._as_identity(cspec.pop("as", "self"), "control",
+                                       cspec.get("url", "")):
                     _d1, a = self.browser.run(WebAction("request", **cspec))
-                with self._as_identity(vspec.pop("as", "self")):
+                with self._as_identity(vspec.pop("as", "self"), "variant",
+                                       vspec.get("url", "")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
             except _hyp.SecondPrincipalUnavailable as exc:
                 # NOT a negative result, and caught ahead of the generic handler for the
@@ -3788,6 +3847,13 @@ class AssistSession:
                           f"{h.control['url']} -> HTTP {a.status} ({len(a.body or '')}B); "
                           f"variant {h.variant['method']} {h.variant['url']} -> HTTP "
                           f"{b.status} ({len(b.body or '')}B)"
+                          # WHO issued each side, on the finding itself. The audit answers
+                          # this for anyone holding the ledger; report.md, report.json
+                          # and the SARIF export are generated from HERE, and a reviewer
+                          # reading a cross-account claim should not have to correlate
+                          # an audit file to learn which principal saw what.
+                          + f". Principals: control issued as {_c_as}, "
+                            f"variant issued as {_v_as}"
                           + (f". Hypothesis: {h.rationale}" if h.rationale else "")),
                 source=(f"differential [{h.comparator}] between the control and variant "
                         f"requests above"
