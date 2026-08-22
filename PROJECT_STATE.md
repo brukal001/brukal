@@ -12,13 +12,21 @@ Brukal is a **governed execution platform for autonomous security testing**: LLM
 collaborate to find real vulnerabilities on real targets, while deterministic policy, capability isolation,
 sandboxing, evidence verification, and a tamper-evident audit trail constrain what they are actually allowed
 to do. Not "an LLM that runs pentest tools" — a system where autonomous agents can hunt, but cannot leave
-scope, cannot fake a finding, and cannot act without it being provable.
+scope, cannot act without it being provable, and cannot report a finding no evidence supports.
 
 ### We ARE trying to beat XBOW / PentestGPT — on the axes where a solo, governed project can win
 This is a real competitive goal, not a consolation lane. Brukal targets a decisive win on:
-- **Precision (false-positive rate).** Verified-findings discipline: Brukal structurally refuses unverified
-  findings; ungoverned tools hallucinate them. Target: measurably lower FP rate than PentestGPT on the same
-  targets. This is a capability metric and it is winnable TODAY.
+- **Precision (false-positive rate).** Verified-findings discipline: a finding must be derived from real
+  gate-executed output, and a fixed comparator — never the model — decides whether it holds; ungoverned tools
+  hallucinate findings. **This is a discipline that is enforced and audited, not a proof.** One class of
+  manufactured confirmation was open until 2026-08-22: a control naming a second principal that did not exist
+  resolved silently to `anonymous`, which makes "control refused, variant accepted" true of every
+  authenticated endpoint on the web. It was found by adversarial testing, not by any run, and an exhaustive
+  sweep of all ~87 run vaults shows **it never fired in a real engagement** (`c829482`; roadmap → *"the
+  ledger does not record which principal an experiment used"*). Claim what is demonstrable: every published
+  finding is evidence-backed, the one known fabrication path is closed, and the audit that found it is
+  itself published. Target: measurably lower FP rate than PentestGPT on the same targets — winnable TODAY,
+  and to be MEASURED, not asserted.
 - **Containment / safety.** Provably stays in scope on a shared network (off-scope host one IP away, dropped
   at the kernel). Neither competitor can be safely pointed at production. Brukal can prove it can.
 - **Auditability & reproducibility.** Keyed tamper-evident audit chain; every action provable; runs replayable.
@@ -29,8 +37,11 @@ This is a real competitive goal, not a consolation lane. Brukal targets a decisi
 
 ### The honest headline
 "Governed autonomy beats ungoverned tools on precision, containment, and auditability — at a measured cost in
-raw coverage." A paper that shows *fewer bugs, zero false positives, full audit trail, provably contained* is
-a STRONGER and more defensible result than a gamed aggregate win, and it quantifies a trade-off nobody else has.
+raw coverage." A paper that shows *fewer bugs, every finding evidence-backed, full audit trail, provably
+contained* is a STRONGER and more defensible result than a gamed aggregate win, and it quantifies a trade-off
+nobody else has. **Say "no false positive in N runs, here is the ledger", never "zero false positives" as a
+property** — the latter is a claim about all possible runs, it was briefly untrue (see the precision axis
+above), and the paper does not need it.
 
 ### The one axis we do NOT chase — and why (be explicit so the goal stays honest)
 **Aggregate raw bug-count across a broad benchmark.** This is dominated by the underlying model's capability
@@ -56,8 +67,11 @@ Repo: github.com/sanjaygaire/brukal.
 **The contribution is the governance model, not a capability benchmark.** Brukal's differentiator is
 *provably-governed, auditable, reproducible* autonomous testing — a lane funded tools (XBOW, PentestGPT,
 Strix, PentAGI) do not occupy. The goal is NOT to beat them on raw bug-count (not achievable solo, and not
-the point). It is: every finding is real (verified), every action is provable (keyed audit), the agent stays
-contained (deterministic scope). Capability results support the governance thesis; they are not the thesis.
+the point). It is: every published finding is evidence-backed and comparator-judged, every action is
+provable (keyed audit), the agent stays contained (deterministic scope). Capability results support the
+governance thesis; they are not the thesis. **The honest form of the precision claim is a process claim plus
+its audit trail — including the fabrication path found and closed on 2026-08-22 — not a proof of zero false
+positives.**
 
 ---
 
@@ -117,7 +131,7 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
   capability from the emitted command's own bytes — no finding-class label; structurally pinned by test).
   Web-plane capability enforcement (`required_capability_for_web`, applied last inside `check_web`).
 - **Phase 2 Part 2 (capability, live) — IN PROGRESS.** Cap (HTB) fully exercised; Juice Shop 2B run done.
-  **Redaction boundary CLOSED (`66185da`)** — one redactor, eight write sites, per-surface tests green.
+  **Redaction boundary CLOSED (`60b47e6`)** — one redactor, eight write sites, per-surface tests green.
   **Business-logic capability now PARTIALLY measured (2026-08-20/21, run 2C2):** the loop plans and works
   the phase, and records the evidence — but the experiment engine that alone may confirm a finding never
   ran, so the capability itself is still unmeasured. Governance measured clean for the second consecutive
@@ -168,7 +182,7 @@ limits in the paper, not fixed before writing.
 
 **Closed recently:** egress P1 #1 (fail-open on ruleset-apply failure); loop-truncation P1 (a truncated reply
 no longer terminates the loop — keyed on `finish_reason`/stop reason at the backend layer so it holds across
-providers); redaction P1 (`66185da`); `-n` third construction site (**CLOSED 2026-08-17** at `loop.py:413` via
+providers); redaction P1 (`60b47e6`); `-n` third construction site (**CLOSED 2026-08-17** at `loop.py:413` via
 `apply_no_resolve()`, deliberately NOT at the executor — rewriting on the execution path would make the gate
 audit a different string from the one that runs, trading away invariant 3; coverage bought by a dispatch-point
 test instead, and confirmed there is no fourth site); the three 2026-08-16 business-logic plumbing defects
@@ -183,14 +197,14 @@ pre-fix step-counts / finding-counts cited in the paper must be re-run on the fi
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
 Start the paper skeleton NOW in parallel (architecture + threat-model sections are done and won't change).
 Trigger the evaluation write-up when ALL three hold:
-1. ~~Redaction boundary CLOSED~~ — **MET (`66185da`)**. No session material on any record surface; eight
+1. ~~Redaction boundary CLOSED~~ — **MET (`60b47e6`)**. No session material on any record surface; eight
    write sites, per-surface tests green, 11 of 16 verified red first.
 2. ONE clean authenticated capability run where the loop REACHES business logic, nothing leaks, chain keyed
    + intact, containment proven — result publishable whether it finds flaws or not (an honest "governed
    autonomy vs ungoverned tools, trade-off measured" framing, NOT "we beat tool X").
    **NOT MET — and it is no longer "just needs the run".** The three original blockers are long closed:
-   truncation (`be94446`), redaction (`66185da`), and the auth-path regression redaction itself introduced
-   (`2f3cc51`) — auth attaches for real on both planes and the token stays redacted on every record surface.
+   truncation (`37b3957`), redaction (`60b47e6`), and the auth-path regression redaction itself introduced
+   (`5922031`) — auth attaches for real on both planes and the token stays redacted on every record surface.
    Two runs have since been made against that clean baseline; each one closed the blockers it found and
    uncovered the next layer down. **Met now needs the two P1s above fixed first, then a run.**
 
@@ -249,6 +263,35 @@ Trigger the evaluation write-up when ALL three hold:
 3. Pre-fix numbers re-read for the truncation bug (re-run or caveat anything cited). **REMAINS.**
 
 Everything else on the roadmap is a cited limitation, not a prerequisite for writing.
+
+---
+
+## Commit references and the 2026-08-13 history rewrite
+`git-filter-repo` ran on **2026-08-13 23:19** and gave **new SHAs to 82 of the 229 commits** (0 commits were
+dropped; the content is intact and pushed). **Any SHA quoted in material written before that date does not
+resolve** — `git show` fails, and GitHub 404s. This bit three load-bearing citations in this file's own
+criteria list, unnoticed until an audit on 2026-08-22 tried to follow them.
+
+| Quoted in older material | Real SHA | What it is |
+|---|---|---|
+| `be94446` | **`37b3957`** (2026-08-12) | loop: a truncated model reply is not a decision to stop |
+| `66185da` | **`60b47e6`** (2026-08-13) | redact: session material never reaches a record |
+| `2f3cc51` | **`5922031`** (2026-08-13) | auth: a redaction placeholder is not a credential |
+
+All docs in this repo are corrected. **A `66185da` reference survives in
+`tests/test_auth_not_placeholder.py:4`** (a docstring) — left alone because that session was docs-only; fix it
+whenever that file is next open.
+
+**The map is recoverable, not guesswork:** `.git/filter-repo/commit-map` holds every old→new pair, and
+`.git/filter-repo/ref-map` records that the rewrite also rewrote `backup-pre-filter-1786627134` — so **that
+branch is not a pre-filter backup**; it is a plain ancestor of `main` and preserves nothing `main` lacks. The
+reflog was expired by the same run, so `origin/main` and `/tmp/brukal-snap/` are the recovery paths.
+
+**Not commit hashes, despite looking like them:** `1f3a9c02` and `ed82603d` are **redaction placeholder tags**
+(`[REDACTED:<8 hex>]`, derived from the masked value) appearing in examples in the roadmap, `redact.py`,
+`assist.py` and `test_auth_not_placeholder.py`. `filter-repo`'s `suboptimal-issues` listed them as commits
+"filtered out but still referenced" — its scan matches any hex substring in a commit message. Nothing is
+missing, and they must not be "corrected" to a SHA.
 
 ---
 

@@ -331,6 +331,11 @@ It masks the VALUE, never the structure. An audit line still reads
 nuclei -u http://172.20.0.3:3000/rest/products -H 'Authorization: Bearer [REDACTED:1f3a9c02]'
 ```
 
+(`1f3a9c02` here is the **redaction placeholder's** own 8-hex tag — `[REDACTED:<hash>]`,
+derived from the masked value — **not a commit reference**. Same for `ed82603d` below.
+`git-filter-repo`'s 2026-08-13 scan for commit hashes in messages flagged both as
+"filtered out but still referenced"; they were never commits, and nothing is missing.)
+
 so the record stays meaningful and the gate's decision stays auditable. The placeholder
 is `sha256(value)[:8]`, stable across every surface, so an operator can still correlate
 two records as the same session without the value being recoverable. **ASCII delimiters
@@ -414,7 +419,7 @@ already.
 
 ## P1 — A REDACTION PLACEHOLDER WAS ACCEPTED AS A CREDENTIAL — **CLOSED 2026-08-13**
 
-**Severity: P1. Introduced by the redaction fix above (`66185da`) and found while
+**Severity: P1. Introduced by the redaction fix above (`60b47e6`) and found while
 verifying it**, before any live run. It is the worst shape a defect can take in this
 project: it makes an authenticated run silently unauthenticated, and **the ledger cannot
 tell the difference.**
@@ -486,7 +491,8 @@ pinned end to end by
 `test_auth_not_placeholder.py::test_the_real_credential_reaches_the_network_through_the_governed_path`.
 
 **Redaction is untouched** — all 16 tests in `test_redaction.py` stay green. Verified
-together in one run: the model proposes `Bearer [REDACTED:ed82603d]`, the target receives
+together in one run: the model proposes `Bearer [REDACTED:ed82603d]` (again an illustrative
+redaction tag, not a commit), the target receives
 `Bearer eyJhbGciOiJIUzI1NiJ9...`, and the ledger for that same request contains no token.
 
 Suite: **936 tests** (935 passed, 1 skipped).
@@ -863,6 +869,24 @@ ledger and labelled as what it actually counts.
 **Fix (not this session):** compute every count in the report from the audit log, and
 separate "shell commands executed" from "governed web actions" as two labelled rows.
 
+**Update 2026-08-22 — the same defect has now been found in the DOCUMENTATION, three
+times.** An audit re-derived every run-level number in these files from the artifacts, and
+three did not reproduce — each for the identical root cause: **a count published without
+saying what it counts.**
+
+| Written | Where | Actual | What the number is |
+|---|---|---|---|
+| "238 requests" | case study §5 | **102** | answered web requests (`web_result`); 106 were decided, 208 ledger entries across both |
+| "208 requests" | roadmap, 2C | **206** | 109 `web_decision` + 97 `web_result` |
+| "11 denials" | roadmap, 2C | **10** | `hard:web-scope` denials; 13 `DENY` in total |
+
+The first is the worst of the three: **two documents gave different figures for the same
+run** (238 in the case study, 102 in the roadmap), and neither said which quantity it meant,
+so no reader could tell that they disagreed — or which to believe. All three are corrected
+and labelled. This is the report-layer defect above reappearing one layer out, in prose
+written *about* the ledger rather than *by* it, which is the harder place to catch it: a
+report can be regenerated from the audit log, a paragraph cannot.
+
 ### TESTS WRITE INTO THE LIVE `runs/vault/` (evidence isolation)
 
 **Severity: P2.** Running `python -m pytest` writes `report.md`, `report.json`,
@@ -918,8 +942,11 @@ whole thing in CI from a clean clone rather than from a developer's working tree
 
 Found by auditing the **Juice Shop 2C run of 2026-08-16** — the run that was supposed to
 satisfy paper criterion #2. It completed normally (`stop_reason: exhausted`, all 30 steps,
-$1.61, chain keyed and intact, containment clean: 208 requests to `172.20.0.3`, 11 denials
-to an off-scope host, zero packets to the same-bridge `172.20.0.2` control). It produced
+$1.61, chain keyed and intact, containment clean: **206 ledger entries for web traffic — 109
+gate decisions (`web_decision`) and 97 answers (`web_result`) — all to `172.20.0.3`**, **10
+`hard:web-scope` denials** of an off-scope host (13 `DENY` verdicts in total, the other three
+being `hard:capability`, `hard:injection` and `hard:web-rate`), zero packets to the
+same-bridge `172.20.0.2` control). It produced
 two generic findings and no business-logic result.
 
 **The model's reasoning was not the limitation.** It proposed exactly the right four
@@ -1016,7 +1043,7 @@ business-logic step.
 The floor that should have caught this was `if len(new) < 2`. **It validates a proxy —
 the model said something — rather than the claim: the plan covers the methodology.** A
 seven-step plan missing the phase under measurement passes a length check comfortably.
-Note what this means for the run before it: the truncation fix (`be94446`) worked exactly
+Note what this means for the run before it: the truncation fix (`37b3957`) worked exactly
 as designed — the loop stopped quitting early and spent its whole budget — and the phase
 still was not reached, because nothing had ever put it in the plan. Fixing the reported
 symptom moved the ceiling somewhere else.
@@ -1063,7 +1090,8 @@ against a live target**, because of the first defect below.
 
 The run is honest about its own limits: 50/70 steps, 44 commands, 6 blocked, 73 calls,
 $3.89, `stop_reason: target-unhealthy`, chain keyed and intact, containment clean (every
-one of 102 requests to `172.20.0.3`, zero to the same-bridge `172.20.0.2` control), zero
+one of **102 answered web requests** (`web_result`; 106 gate decisions) to `172.20.0.3`, zero
+to the same-bridge `172.20.0.2` control), zero
 JWT cleartext on any of eight surfaces **including the newly-captured bodies**. It
 produced four findings — one medium, three low — and **nothing business-logic**.
 

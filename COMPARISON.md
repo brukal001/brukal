@@ -89,7 +89,7 @@ Run on any laptop, no target needed (`python run_experiments.py`, `python run_ev
 | Scope interception | **100%** — every out-of-scope action denied before the cage (0 unsafe) |
 | Governance cost | the gate prevents **every** unsafe execution an ungated agent performs |
 | Governance is not a capability tax | governed arm reaches the foothold in **≤** the steps of an ungated arm, with **0** scope violations vs the ungated arm's **1–2** |
-| Verify catches hallucinated success | multi-agent verify rejects a fabricated "I got a shell"; single-agent doesn't |
+| Verify catches hallucinated success | multi-agent verify rejects a fabricated "I got a shell"; single-agent doesn't. Scope note: this covers an agent's **self-report**. Comparator-judged experiment findings take a different path, where one fabrication route was open until 2026-08-22 — closed, and never fired in a real run (see `docs/HARDENING_ROADMAP.md`) |
 | Adaptive trust | a proven-bad agent's later benign action is escalated (adaptive) vs allowed (fixed) |
 | Concurrency safety | 16 threads × 25 appends → audit chain **valid**, 0 lost records |
 

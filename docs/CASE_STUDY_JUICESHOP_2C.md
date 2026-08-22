@@ -147,7 +147,9 @@ Verified **before** any traffic, from inside the cage:
 - scope IP pinned: `ip daddr 172.20.0.3 accept`
 - target `172.20.0.3:3000` **REACHABLE** · off-scope same-bridge `dvwa 172.20.0.2:80` **DROPPED** · `8.8.8.8:53` **DROPPED** · `1.1.1.1:443` **DROPPED**
 
-In the ledger: 238 requests, **all to `172.20.0.3`**; **zero** occurrences of `172.20.0.2`
+In the ledger: **102 web requests answered** (`web_result` entries) from **106 gate decisions**
+(`web_decision`) — 208 ledger entries across the two, out of 245 total — **all to `172.20.0.3`**, matching the
+report's own `91/102` health line; **zero** occurrences of `172.20.0.2`
 anywhere. Denials — `hard:injection` ×8, `hard:web-rate` ×2, `hard:scope` ×1. The scope
 denial is invariant 3 working on its own terms: the model tried
 `curl -s -I -H "Origin: http://evil.com" http://172.20.0.3:3000/rest/user/whoami`, and the

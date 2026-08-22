@@ -576,8 +576,13 @@ past — vulnerability signals are captured as **structured, deduplicated findin
 (`findings.py`): title, severity, endpoint, parameter, the **real evidence line**, and
 the exact **reproducing command**. Findings are two-tier like lessons — an explicit
 signal (`sqlmap` *is vulnerable*, a Verifier-confirmed foothold/flag) is **confirmed**,
-a heuristic match is a **candidate** a human should verify — so a reviewer is never
-handed a false positive dressed as fact. They persist to an append-only `findings.jsonl`
+a heuristic match is a **candidate** a human should verify, so a reviewer is not handed a
+heuristic guess dressed as fact. That is a discipline about *how* a finding is graded, not a
+proof that no wrong finding can exist: one path that could mark a fabricated result
+**confirmed** — an experiment whose control named a second account that was never created,
+which silently became an anonymous request — was open until 2026-08-22, found by adversarial
+testing rather than by any run, and never produced a finding in a real engagement
+(`docs/HARDENING_ROADMAP.md`). They persist to an append-only `findings.jsonl`
 in the engagement vault. At the end of an `auto` run Brukal writes a **`report.md` +
 `report.json`** deliverable (severity-ranked findings with evidence, the attack-surface
 summary, engagement metadata, model spend, and audit-chain status), and
