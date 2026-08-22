@@ -125,6 +125,82 @@ def _denied(result, profile=None) -> bool:
     return False
 
 
+class UnresolvedReference(ValueError):
+    """A `{{setup.i.path}}` reference nothing in the setup responses can satisfy."""
+
+
+# The documented way to USE what setup created. `{{setup.<i>.<dotted.path>}}` reads field
+# `path` out of the JSON body of setup response `i` (0-based). The path may walk objects
+# and arrays: `{{setup.0.data.items.0.id}}`.
+_SETUP_REF_RE = re.compile(r"\{\{\s*setup\.(\d+)\.([A-Za-z0-9_][A-Za-z0-9_.\-]*)\s*\}\}")
+
+# Braces are DOUBLED because this is spliced into the two prompt templates below, which
+# are `.format()`-ed for the comparator list — so `{{{{` here is the `{{` the model sees.
+SETUP_REF_SYNTAX = (
+    "To USE something a setup response returned, write {{{{setup.<i>.<field>}}}} in a "
+    "later url, body, or header — `i` is the 0-based setup index and `<field>` a dotted "
+    "path into that response's JSON body, e.g. {{{{setup.0.BasketId}}}} or "
+    "{{{{setup.0.data.items.0.id}}}}. It is substituted by deterministic code before the "
+    "request is sent. Reference ONLY a field the response actually carries: an "
+    "unresolvable reference aborts the experiment rather than being sent as text.")
+
+
+def _lookup(body, path: str, ref: str):
+    """Walk a dotted path into a setup response body. Deterministic, no eval.
+
+    Refuses rather than guesses at every step: a body that is not JSON, a segment that
+    names nothing, and a value that is not inlinable are all UnresolvedReference. The
+    alternative — leaving the braces in the request — is the failure this exists to stop,
+    because it produces a request that runs, answers, and is judged as a negative."""
+    try:
+        cur = json.loads(body or "")
+    except ValueError:
+        raise UnresolvedReference(
+            f"{ref}: setup response body is not JSON") from None
+    for seg in path.split("."):
+        if isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
+            cur = cur[int(seg)]
+        else:
+            raise UnresolvedReference(f"{ref}: no field '{seg}' in the setup response")
+    if isinstance(cur, bool):
+        return "true" if cur else "false"
+    if isinstance(cur, (str, int, float)):
+        return str(cur)
+    # An object, an array, or null. Inlining one into a URL would produce a request the
+    # model did not describe, so it is refused like any other unsatisfiable reference.
+    raise UnresolvedReference(f"{ref}: resolves to {type(cur).__name__}, not a value")
+
+
+def _resolve_text(value: str, setup_results: list) -> str:
+    def sub(m):
+        idx, path = int(m.group(1)), m.group(2)
+        ref = m.group(0)
+        if idx >= len(setup_results) or setup_results[idx] is None:
+            raise UnresolvedReference(f"{ref}: no setup response at index {idx}")
+        return _lookup(getattr(setup_results[idx], "body", None), path, ref)
+    return _SETUP_REF_RE.sub(sub, value)
+
+
+def resolve_setup_refs(spec: dict, setup_results: list) -> dict:
+    """A request spec with its `{{setup.*}}` references replaced by observed values.
+
+    Deterministic template resolution over recorded setup responses — no model in the
+    path, exactly like the comparators. Raises UnresolvedReference if any reference
+    cannot be satisfied; the caller must abort the experiment, never dispatch the spec.
+    """
+    out = dict(spec)
+    for key in ("url", "body"):
+        if isinstance(out.get(key), str):
+            out[key] = _resolve_text(out[key], setup_results)
+    headers = out.get("headers")
+    if isinstance(headers, dict):
+        out["headers"] = {k: _resolve_text(v, setup_results) if isinstance(v, str) else v
+                          for k, v in headers.items()}
+    return out
+
+
 class Hypothesis:
     """One proposed experiment: optional setup, a control, a variant, and a comparator.
 
@@ -365,6 +441,8 @@ Reply with ONLY a JSON array, using EXACTLY these keys — the same ones as befo
   variant     same shape, one thing changed
   rationale   one sentence on what the difference would prove
 
+""" + SETUP_REF_SYNTAX + """
+
 Do NOT rename them. A refined round that answered with "name" and "type" instead of \
 "title" and "comparator" was discarded in full, so the second round contributed nothing \
 at all and the first round's results were wasted.
@@ -403,6 +481,8 @@ exists, "anonymous" is a stranger with no session. Authorization flaws are preci
 disagreement between these: an object one account may read and another may not, an \
 action a stranger should be refused. A control and a variant that differ ONLY in `as` \
 is the cleanest experiment you can propose.
+
+""" + SETUP_REF_SYNTAX + """
 
 Prefer experiments that need setup — a stateless endpoint has usually been checked \
 already by deterministic probes, whereas a rule that only exists partway through a \

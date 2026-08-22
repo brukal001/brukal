@@ -3676,6 +3676,12 @@ class AssistSession:
                 # Setup first: it establishes the state the experiment is about, and is
                 # never judged. A flaw that only exists partway through a workflow is
                 # unreachable without it.
+                # What each setup request ANSWERED, so a later request can use it. Setup
+                # reaches an interesting state; without its responses the experiment
+                # cannot name what was created, and the model reached for a syntax that
+                # did not exist — `{{setup.0.BasketId}}` went out with the braces intact
+                # and the resulting 401 was filed as a clean negative.
+                setup_results: list = []
                 for step in h.setup:
                     # Setup exists to CREATE state — adding to a cart, starting an
                     # order — so the ordinary state-changing guard would forbid exactly
@@ -3683,18 +3689,29 @@ class AssistSession:
                     # allowed, but only under the same authorisation that governs every
                     # other proof that writes; destruction stays refused regardless,
                     # since nothing here can undo it.
-                    if self._is_irreversible_path(step["url"]):
+                    spec = _hyp.resolve_setup_refs(step, setup_results)
+                    if self._is_irreversible_path(spec["url"]):
                         raise ValueError("irreversible setup step")
-                    if self._is_destructive_path(step["url"]) and not self.allow_intrusive:
+                    if self._is_destructive_path(spec["url"]) and not self.allow_intrusive:
                         raise ValueError("state-changing setup needs --full-send")
-                    spec = dict(step)
                     with self._as_identity(spec.pop("as", "self")):
-                        self.browser.run(WebAction("request", **spec))
-                cspec, vspec = dict(h.control), dict(h.variant)
+                        _ds, rs = self.browser.run(WebAction("request", **spec))
+                    setup_results.append(rs)
+                cspec = _hyp.resolve_setup_refs(h.control, setup_results)
+                vspec = _hyp.resolve_setup_refs(h.variant, setup_results)
                 with self._as_identity(cspec.pop("as", "self")):
                     _d1, a = self.browser.run(WebAction("request", **cspec))
                 with self._as_identity(vspec.pop("as", "self")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
+            except _hyp.UnresolvedReference as exc:
+                # NOT a negative result. The experiment never ran, and saying so keeps a
+                # missing data-flow visible instead of letting it wear a comparator's
+                # verdict. Fed back so the next round can reference a field that exists.
+                self.note(f"[experiment] UNRESOLVED REFERENCE, not run: {h.title} "
+                          f"({exc})")
+                outcomes.append(f"UNRESOLVED REFERENCE (experiment NOT run, this is not "
+                                f"a result) {h.title}: {exc}")
+                continue
             except Exception as exc:
                 self.note(f"[experiment] ERRORED before reaching the target: {h.title} "
                           f"({type(exc).__name__}: {str(exc)[:80]})")
