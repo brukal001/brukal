@@ -1051,7 +1051,7 @@ skipped** (was 935). The measurement is the next session's work; this one was th
 
 ---
 
-## P1 — the experiment engine never got to ask (2026-08-21, BOTH OPEN)
+## P1 — the experiment engine never got to ask (2026-08-21; A CLOSED 2026-08-22, B OPEN)
 
 Found by auditing the **Juice Shop 2C2 run of 2026-08-20/21** — the re-run built to
 satisfy paper criterion #2 on the loop the section above had just fixed. Three of those
@@ -1073,7 +1073,7 @@ consulted.** Zero `[experiment]` records exist anywhere — `findings.jsonl`,
 `Model-proposed experiments` row at all, which by that table's own footnote means the
 class "was not reached at all". Full narrative: `docs/CASE_STUDY_JUICESHOP_2C.md`.
 
-### A. THE THINKING-RETRY ESCALATES PAST THE SDK'S NON-STREAMING CEILING, AND THE ERROR IS ERASED
+### ~~A. THE THINKING-RETRY ESCALATES PAST THE SDK'S NON-STREAMING CEILING, AND THE ERROR IS ERASED~~ — **CLOSED 2026-08-22**
 
 `run_hypotheses` asks for experiments at `max_tokens=8000` (`assist.py:3606`). On a rich
 surface the model spends the entire allowance on thinking and returns `""` with
@@ -1133,19 +1133,75 @@ writes `{{setup.0.data.id}}` because that is the contract. But nothing dispatche
 are vacuous.** The substitution path shipped above has still never run against a live
 target.
 
-**Fix (not this session), two parts, and the second is the important one:**
+**Fixed in two halves. The retry is STREAMED, and the swallow now speaks.**
 
-1. `propose`'s retry must not escalate a non-streaming request past the SDK's limit —
-   either stream the retry, or cap `_THINKING_RETRY_CEILING` below the ceiling. Capping is
-   the smaller change; streaming is the one that survives the next model whose useful
-   answer is longer than 21,333 tokens. A cap that is a bare number will rot silently the
-   next time the SDK's estimator changes, so it must be derived or asserted, not guessed.
-2. **`run_hypotheses`' bare `except Exception: return 0` must record what it swallowed.**
-   This run had a P1 in the capability that matters most and left no trace of it anywhere
-   in the evidence. A silent `return 0` erased both the note and the coverage row that
-   were purpose-built, in the section above, to make "asked and got nothing" visible.
-   **A bare `except: return <empty>` around an LLM call is a defect on sight**, and this
-   one should be treated as the general rule rather than the one instance.
+1. **`_propose_once` grew a `stream` parameter, and the retry — only the retry — uses
+   it.** The request dict is built once and dispatched either way, so usage, stop reason,
+   block kinds and text are parsed by one code path and cannot drift between transports.
+
+   **Streamed, not capped, and the distinction is the whole lesson.** Capping
+   `_THINKING_RETRY_CEILING` under 21,333 would have been one character of work and would
+   have fixed the instance. That number is not ours: it is derived by the SDK from the
+   model and a ten-minute estimate, `claude-sonnet-5` is absent from
+   `MODEL_NONSTREAMING_TOKENS` so the generic estimator applies, and either half can move
+   in a patch release — at which point a cap chosen to dodge it fails silently again, in
+   the same place, for the same reason. The ceiling's comment now says it is a **cost**
+   bound, deliberately above the SDK limit, and must not be lowered to stay under it.
+
+   The blast radius is one call. The retry is the only request that can cross the limit,
+   so every ordinary call still goes out non-streaming and unchanged.
+
+2. **`run_hypotheses`' `except Exception: return 0` records what it caught** — a note
+   naming the exception type and message, and a coverage row with `probes=0`. What is
+   caught is **not** widened: it still returns 0 and the engagement still continues. The
+   change is only that the failure stops being invisible.
+
+   **The sweep found a sibling, and it is fixed in the same commit.** `loop.py` wrapped
+   the *same call* in `except Exception: pass`, guarding everything raised outside the
+   inner handler — parsing the reply, writing the coverage row, a round escaping its own
+   guard. Left alone it would have reproduced the identical blindness for a slightly
+   different failure, on a reflex that fires once. An AST sweep of the package for bare
+   `except`/`except Exception` handlers returning an empty or zero value found **111
+   such handlers, of which exactly 2 sit on an LLM call** — these two. The rest are
+   parse- and probe-level and out of scope here.
+
+**Both boundaries bought by earlier P1s were verified on the new path, not assumed.**
+The streamed reply still carries its stop reason and its usage to the client, so the
+truncation fix holds on the transport that did not exist when it was written. And the
+prompt is still redacted: `LLMClient.propose` redacts *before* the backend is handed
+anything and the retry re-uses that same text rather than rebuilding it, so redaction
+write site #3 covers the new path by construction. A test registers a session token,
+drives a real retry, and asserts the token is absent from — and its placeholder present
+in — what the streamed call receives. A retry that rebuilt its prompt would have posted
+the credential to a provider on the retry only, where nobody looks.
+
+Tests: `tests/test_streaming_retry.py` — 11 tests, **8 verified red first**: 6 failing
+with the real `ValueError: Streaming is required...` raised by a stub that refuses above
+the ceiling exactly as the SDK does, 1 on the redaction precondition (no streamed prompt
+was ever captured, because the retry never happened), and 1 because the raise escaped
+`propose` entirely. Named:
+`::test_a_retry_above_the_nonstreaming_ceiling_is_dispatched_rather_than_raising` and
+`::test_capping_below_the_ceiling_is_not_what_fixes_this`, which fails if a future change
+shrinks the retry under the limit instead of streaming past it.
+`tests/test_swallow_records.py` — 5 tests, **3 verified red first** (an empty note
+surface, an empty coverage dict, and the loop helper absent). Named:
+`::test_a_failed_proposal_call_reaches_a_surface_instead_of_returning_zero` and
+`::test_the_loops_outer_swallow_also_records_what_it_caught`.
+
+One pre-existing test was **restated and strengthened, not weakened**:
+`test_thinking_budget.py`'s `_Recorder` overrode `_propose_once` with the old three-
+argument signature and broke on the new keyword. It now records the transport per call,
+and `::test_a_reply_lost_to_thinking_is_retried_with_a_bigger_budget` additionally
+asserts `streamed == [False, True]` — the file's subject is unchanged and it now pins
+more than it did.
+
+Suite: **981 passed, 1 skipped** (was 965).
+
+**What this does NOT close.** The substitution path from the section above is still
+unexercised against a live target — this fix makes the model reachable again, it does not
+prove what the model then does. And **B below is untouched**, so the comparator that every
+cross-account experiment selects remains unconstructible on an SPA. Criterion #2 needs
+both.
 
 ### B. NO SECOND PRINCIPAL ON AN SPA, SO THE AUTHORIZATION COMPARATOR IS UNCONSTRUCTIBLE
 
@@ -1196,6 +1252,17 @@ business-logic.
 been asked and to have failed; here it was never asked. A re-run that does not first close
 both defects above will reproduce this exact null result, because A is deterministic on a
 rich surface and B is unconditional on an SPA.
+
+**Updated 2026-08-22 — A is closed, B is not, and B alone still decides the outcome.**
+With A fixed the model is reachable again: the retry streams, and a call that fails now
+says so on the note surface and in the coverage table instead of vanishing. That restores
+the *question*. It does not supply the *second principal* B needs, so
+`a_denied_b_allowed` — the comparator every cross-account experiment in the 2C2 run
+selected — is still unconstructible against an Angular SPA, and each of those experiments
+would still collapse to self-vs-anonymous. **A run made now would ask the model and then
+mis-answer it**, which is the harder failure to see in a ledger. B is the next session's
+work, and the stopping rule for the run after it is pre-committed in `PROJECT_STATE.md`
+under criterion #2 so the bar cannot move once the result is known.
 
 **One thing in the case study is NOT evidenced and must not be cited without a controlled
 re-test.** It reads three `PUT /api/BasketItems/1` → `200` as an unrecognised real
