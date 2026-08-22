@@ -1231,7 +1231,7 @@ prove what the model then does. And **B below is untouched**, so the comparator 
 cross-account experiment selects remains unconstructible on an SPA. Criterion #2 needs
 both.
 
-### B. NO SECOND PRINCIPAL ON AN SPA, SO THE AUTHORIZATION COMPARATOR IS UNCONSTRUCTIBLE
+### ~~B. NO SECOND PRINCIPAL ON AN SPA, SO THE AUTHORIZATION COMPARATOR IS UNCONSTRUCTIBLE~~ — **CLOSED for JSON-signup targets 2026-08-22 (`8c4f941`); still open where neither door exists**
 
 Independent of A, pre-existing, and it would have blocked the same result on its own.
 
@@ -1324,6 +1324,63 @@ sound. The reader must be able to tell "we asked and the application held" from 
 not ask". Before this change the artifact could not express the difference; now it can,
 and the write-up has to use it.
 
+
+#### Update 2026-08-22 — the capability gap is closed for SPAs that expose a JSON signup
+
+**Juice Shop is one of those, so the cross-account class is now reachable on the target
+criterion #2 is measured against.**
+
+Premise checked live before a line was written, which is what made it worth attempting:
+`/`, `/register` and `/rest/user/register` serve **zero `<form>` tags**, while
+`POST /api/Users {"email","password"}` answers **201** with `role: customer` and that
+account then logs in for a token. The form path was not failing on a technicality — the
+door it looks for does not exist on this shape of application.
+
+`_register_account_json` is the fallback, tried only after the form path declines. Same
+soundness argument, same front door: it posts to an endpoint the application advertised to
+an anonymous crawler, as an anonymous caller, and takes whatever role it is given — so the
+account is still, by construction, what a stranger gets. Candidates come from **what the
+crawl observed**, filtered through `_JSON_SIGNUP_PATHS`, an explicit documented allowlist
+in the spirit of `schema._NO_RESOLVE_FLAGS`. Without that filter a speculative signup would
+be fired at every route the crawl mined — dozens on a real surface, some destructive — and
+a test pins that unrelated routes are never posted to. It runs through the governed browser,
+so it is gated by `check_web` and audited like any other web action.
+
+**Two defects the live run caught that the fixtures alone would not have.** Both are the
+reason this was worth doing against a real target rather than a model of one:
+
+1. **The second principal's credential was never registered with `redact` — on EITHER
+   path.** `_session_auth_for` registers the first identity's the moment it reads it off
+   the browser; the second identity's session was stored and replayed on every `as: second`
+   request without ever being registered, so it could have reached a record surface
+   unmasked. Pre-existing, and it would have shipped with the form path forever.
+2. **A JSON signup authenticates by EMAIL, and `login`'s default user field is
+   `username`.** Registration answered `201` and the login immediately after was refused
+   `401` — which would have left a real, created account unusable, and in the ledger would
+   have been **indistinguishable from a target that refuses self-registration**. Exactly
+   the class of silent mis-attribution this section exists to eliminate.
+
+**Proven end to end on the live target**, second principal
+`brk53d8b8cb25@brukal.test`, with the provenance work of `1f531af` making it checkable —
+two experiment sides, two distinct handles in the ledger:
+
+```
+control  requested=second  resolved=second  handle=[REDACTED:cd432603]
+variant  requested=self    resolved=self    handle=[REDACTED:fc477483]
+```
+
+Neither principal's token appears in cleartext on any artifact of that run — audit,
+`findings.jsonl`, `engagement.md`, all six agent notes, the scope mirror: `eyJ` count zero
+on every one.
+
+**STILL OPEN: a target with neither a server-rendered form nor a JSON signup endpoint.**
+There is no third door, and the fail-safe is deliberately untouched — such a target still
+raises `SecondPrincipalUnavailable`, and its cross-account experiments are recorded
+**NOT RUN**, which remains an honest structural limit to be cited as a scope limit rather
+than reported as a negative result.
+
+Tests: `tests/test_second_identity_json_signup.py` — 10 tests, **9 verified red first**.
+Suite: **1012 passed, 1 skipped** (was 1002).
 
 ### What these two leave for criterion #2
 

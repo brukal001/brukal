@@ -154,34 +154,26 @@ limits in the paper, not fixed before writing.
   estimate and a number chosen to dodge it rots when either moves — and both swallows on that call path
   (`run_hypotheses` and its sibling in `loop.py`) now record what they caught. Roadmap → *"the experiment
   engine never got to ask"* §A.
-- **P1 — no second principal on an SPA — FALSE-NEGATIVE PATH CLOSED 2026-08-22 (`c829482`), CAPABILITY GAP
-  STILL OPEN.** Two halves; only one moved.
-  - **Closed:** `_as_identity` resolved a missing second identity to empty cookies and an empty auth header
-    — *byte-identical to the `anonymous` branch* — so `as: second` was **dispatched and judged** as a
-    stranger. Both directions were wrong, and the trace found one the case study had missed: control
-    `second`→anon vs variant `self` under `a_denied_b_allowed` **HOLDS and files a CONFIRMED high** meaning
-    only "an authenticated request succeeds where an anonymous one does not" — a **false positive**, in the
-    project whose headline claim is that it structurally cannot produce them (the test for it was red with
-    `assert 1 == 0`). `hypothesis.SecondPrincipalUnavailable` now mirrors `UnresolvedReference`: raised
-    before the browser is touched, caught ahead of the generic handler, **not dispatched, not judged**, fed
-    back as *"experiment NOT run, this is not a result"*. No fallback to `self` anywhere.
-  - **Open:** `establish_second_identity()` still returns `""` on an Angular SPA (`_signup_form()` needs a
-    server-rendered `<form>`). **The cross-account class cannot be tested on such targets at all** — most
-    modern ones, and where authz bugs are most valuable. **Consequence for the next run, and for the paper:
-    cross-account experiments will be recorded as NOT RUN. That is an honest structural limit of the harness
-    and must be cited as a scope limit — never reported as a negative result, and never counted as evidence
-    that the target's authorization is sound.**
-- ~~**P1 — the ledger does not record which principal an experiment used**~~ — **CLOSED 2026-08-22
-  (`2fdbc7f`).** `grep -rl '"as"' runs/` returned zero files across ~87 vault roots, so a sound finding and a
-  manufactured one were byte-identical. Every experiment request now emits an `experiment_principal` audit
-  record (`role`, `requested`, `resolved`, session handle, url) and the confirmed finding repeats the pair in
-  its own evidence, so `report.md`/SARIF carry it too. **Recorded inside `_as_identity`, not at the three call
-  sites** — the one point every dispatch passes through, pinned by a dispatch-point guard so a fourth site
-  cannot go unattributed. Handle is `redact.placeholder_for`'s sha256[:8]: correlatable, unrecoverable, and
-  redacted by the same `redact.data` funnel as every other record. `anonymous` is explicit, never absent.
-  **⚠ NOT retroactive — the five CANNOT-TELL runs (2026-08-07 → 2026-08-16) stay permanently unresolvable**;
-  no false positive was published in any of them, and whether `as: second` silently degraded can never be
-  determined. Cite that as a gap in the evidence, not a resolved question.
+- **P1 — no second principal on an SPA — FALSE-NEGATIVE PATH CLOSED 2026-08-22 (`c829482`); CAPABILITY GAP
+  CLOSED for JSON-signup targets 2026-08-22 (`8c4f941`), STILL OPEN where neither door exists.**
+  - **Fail-safe (closed):** `_as_identity` resolved a missing second identity to empty cookies and an empty
+    auth header — *byte-identical to the `anonymous` branch* — so `as: second` was dispatched and judged as a
+    stranger. Both directions were wrong; the inverted one **manufactured a CONFIRMED high** (test was red
+    with `assert 1 == 0`). Now raises `SecondPrincipalUnavailable`: not dispatched, not judged.
+  - **Capability (closed for this shape):** an SPA serves no `<form>`, so the form path could never work
+    there. `_register_account_json` posts a JSON signup endpoint **drawn from the crawl and filtered by the
+    `_JSON_SIGNUP_PATHS` allowlist**, through the governed browser, gated and audited. Confirmed live on
+    Juice Shop: 0 `<form>` tags anywhere, `POST /api/Users {"email","password"}` → 201, second principal
+    `brk53d8b8cb25@brukal.test` established, two distinct handles in the ledger
+    (`[REDACTED:cd432603]` vs `[REDACTED:fc477483]`), zero cleartext tokens on any artifact.
+    **The cross-account class is now reachable on the criterion-#2 target.**
+  - **Two defects only the live run exposed:** the second principal's credential was **never registered with
+    `redact` on either path** (pre-existing; would have shipped with the form path forever), and a JSON signup
+    authenticates by **email** while `login`'s default field is `username` — registration returned 201 and the
+    login after it 401'd, which in the ledger is indistinguishable from a target that refuses registration.
+  - **Still open:** a target with **neither** a server-rendered form nor a JSON signup endpoint. No third
+    door; the fail-safe stands and cross-account is recorded **NOT RUN** — cite as a scope limit, never as a
+    negative result.
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
 - P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite
