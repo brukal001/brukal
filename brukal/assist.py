@@ -512,8 +512,15 @@ class AssistSession:
         # Fall back to the methodology checklist when the model gives a thin/empty plan,
         # so even a weak brain follows the full OWASP-WSTG / box flow rather than a
         # one-line plan.
-        if len(new) < 2 and self.methodology is not None:
-            new = self.methodology.as_plan_steps()
+        if self.methodology is not None:
+            if len(new) < 2:
+                new = self.methodology.as_plan_steps()
+            else:
+                # A plan long enough to pass the length check can still be missing the
+                # phase the engagement is FOR. The methodology is the floor: a phase the
+                # model left out is appended, keeping its own steps and their order.
+                new = new + self.methodology.plan_steps_for(
+                    self.methodology.missing_phases(new))
         done = self.plan_cursor                    # preserve progress across a re-plan
         self.plan = new
         self.plan_cursor = min(done, len(self.plan))

@@ -135,7 +135,47 @@ class Methodology:
 
     def as_plan_steps(self):
         """The methodology as PlanStep objects, to seed the plan when the model's own
-        plan is empty (so a weak model still follows the full checklist)."""
+        plan is empty (so a weak model still follows the full checklist).
+
+        EVERY step, not one per phase — the box flow names `enumeration` three times for
+        three distinct pieces of work (port sweep, per-service enum, the web methodology
+        on any web service), and collapsing them would drop two of them."""
         from .agents.strategist import PlanStep
         return [PlanStep(text=f"{s.title}" + (f" [{s.ref}]" if s.ref else ""),
                          phase=s.phase) for s in self.steps]
+
+    def missing_phases(self, plan) -> list[str]:
+        """Which methodology phases a plan does not cover, in methodology order.
+
+        The floor a plan is held to. Checking that the model returned SOME steps
+        validates a proxy; this validates the claim. A live web run planned seven steps
+        and left out configuration, cryptography, business-logic and client-side, then
+        executed that plan to completion — and the engagement was recorded as a
+        business-logic measurement that never planned a business-logic step.
+
+        Deterministic set arithmetic over the methodology, with no model in it. A phase
+        the methodology names more than once (box names `enumeration` three times) is
+        covered by one plan step carrying it: the question is whether the phase is
+        planned at all, not how many times."""
+        covered = {(getattr(s, "phase", "") or "").strip().lower() for s in plan}
+        out: list[str] = []
+        for s in self.steps:
+            if s.phase.lower() not in covered and s.phase not in out:
+                out.append(s.phase)
+        return out
+
+    def plan_steps_for(self, phases) -> list:
+        """PlanSteps for the named phases — one per phase, in methodology order.
+
+        Used to APPEND what a plan left out rather than replace the plan: the model's
+        own steps name this target's real endpoints, and throwing them away to enforce
+        coverage would trade one kind of blindness for another."""
+        from .agents.strategist import PlanStep
+        want = {p for p in phases}
+        out, seen = [], set()
+        for s in self.steps:
+            if s.phase in want and s.phase not in seen:
+                seen.add(s.phase)
+                out.append(PlanStep(text=f"{s.title}" + (f" [{s.ref}]" if s.ref else ""),
+                                    phase=s.phase))
+        return out
