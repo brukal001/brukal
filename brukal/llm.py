@@ -233,6 +233,12 @@ class _AnthropicBackend:
     # How much bigger a second attempt gets when the first spent its whole allowance on
     # thinking, and the ceiling it may not pass. One retry, because a model that thinks
     # past twice the budget is not going to answer on a third try either.
+    #
+    # This ceiling is a COST bound and nothing else. It is deliberately ABOVE the SDK's
+    # non-streaming limit (~21,333 for a model absent from `MODEL_NONSTREAMING_TOKENS`),
+    # because the retry streams — see `propose`. Do not lower it to stay under that
+    # limit: the limit is model- and estimator-dependent, so a number chosen to dodge it
+    # fixes today's instance and silently rots when either moves.
     _THINKING_RETRY_FACTOR = 4
     _THINKING_RETRY_CEILING = 32_000
 
@@ -258,9 +264,17 @@ class _AnthropicBackend:
                      self._THINKING_RETRY_CEILING)
         if bigger <= max_tokens:
             return text
-        return self._propose_once(system, user, bigger)
+        # STREAMED, and that is load-bearing. The SDK refuses a non-streaming request
+        # whose max_tokens implies it could run past ten minutes — `ValueError: Streaming
+        # is required...`, raised before anything is sent. `run_hypotheses` asks at 8,000,
+        # so this retry is always 32,000, so on that path the retry could never succeed:
+        # a live engagement lost model-proposed experiments entirely to it. The retry is
+        # also the ONLY call that can cross the limit, so streaming it leaves every
+        # ordinary call untouched.
+        return self._propose_once(system, user, bigger, stream=True)
 
-    def _propose_once(self, system: str, user: str, max_tokens: int) -> str:
+    def _propose_once(self, system: str, user: str, max_tokens: int,
+                      stream: bool = False) -> str:
         # The system prompt is the stable prefix of every turn in an engagement — the
         # methodology, the schema, the rules — while only the user turn changes. Marking
         # it cacheable bills it at ~0.1x on every call after the first, which on a long
@@ -268,10 +282,17 @@ class _AnthropicBackend:
         # sound because the system prompt is frozen for the engagement's lifetime.
         system_blocks = [{"type": "text", "text": system,
                           "cache_control": {"type": "ephemeral"}}] if system else []
-        msg = self._client.messages.create(
-            model=self.model, max_tokens=max_tokens,
-            system=system_blocks or system,
-            messages=[{"role": "user", "content": user}])
+        request = dict(model=self.model, max_tokens=max_tokens,
+                       system=system_blocks or system,
+                       messages=[{"role": "user", "content": user}])
+        # Same request either way — only the transport differs, so everything below
+        # (usage, stop reason, block kinds, text) reads one shape and cannot drift
+        # between the two paths.
+        if stream:
+            with self._client.messages.stream(**request) as streamed:
+                msg = streamed.get_final_message()
+        else:
+            msg = self._client.messages.create(**request)
         u = getattr(msg, "usage", None)
         # Anthropic's `input_tokens` is the UNCACHED remainder — cache reads and writes
         # are reported separately and are NOT included in it. So it maps straight onto

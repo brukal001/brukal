@@ -23,11 +23,13 @@ class _Recorder(_AnthropicBackend):
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
+        self.streamed = []          # transport per call; the retry must be streamed
         self.last_stop_reason = ""
         self.last_block_kinds = []
 
-    def _propose_once(self, system, user, max_tokens):
+    def _propose_once(self, system, user, max_tokens, stream=False):
         self.calls.append(max_tokens)
+        self.streamed.append(stream)
         stop, kinds, text = self.script.pop(0)
         self.last_stop_reason, self.last_block_kinds = stop, list(kinds)
         return text
@@ -38,6 +40,9 @@ def test_a_reply_lost_to_thinking_is_retried_with_a_bigger_budget():
                    ("end_turn", ["thinking", "text"], "ok")])
     assert b.propose("s", "u", 64) == "ok"
     assert b.calls == [64, 256], "the retry must ask for materially more room"
+    # The bigger allowance is only reachable over a stream: above ~21,333 the SDK
+    # refuses a non-streaming request outright. See test_streaming_retry.py.
+    assert b.streamed == [False, True], "the retry must be streamed"
 
 
 def test_a_genuine_truncation_is_not_retried():
