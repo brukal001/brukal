@@ -100,6 +100,13 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
 - **A capability that degrades on rich input is worse than one that never worked** — it passes every small
   test and disappears on exactly the targets worth measuring. Prefer fixtures at production scale; a
   three-route surface proves nothing about a forty-route one.
+- **A missing capability must never resolve to a weaker one that happens to typecheck.** `as: second` with no
+  second account resolved to empty cookies — which is not "no principal", it is *exactly* `anonymous`, so the
+  request went out and got scored. Absent must raise, not degrade: whenever code picks one of a closed set of
+  principals, keys, scopes or credentials, the unavailable case gets its own named exception, never the
+  emptiest member of the set. **Trace the degradation in code before writing it up** — this one had been
+  recorded twice as "would collapse to self-vs-anonymous" when it was in fact dispatching, being judged, and
+  in one arrangement manufacturing a CONFIRMED finding.
 
 ---
 
@@ -125,24 +132,31 @@ limits in the paper, not fixed before writing.
 
 ## Live findings — see docs/HARDENING_ROADMAP.md for the authoritative list
 **Open at last update (2026-08-21):**
-- **P1 — the experiment engine cannot ask on a rich surface (NEW, found in run 2C2; not yet in the roadmap,
-  written up only in `docs/CASE_STUDY_JUICESHOP_2C.md`).** `run_hypotheses` calls `propose(max_tokens=8000)`;
-  on a rich surface the model spends the whole allowance thinking and returns `""` with
-  `stop_reason=max_tokens`. `LLMClient.propose` (`brukal/llm.py:257`) correctly detects that and retries at
-  `bigger = min(8000×4, 32_000)` = 32,000 — still **non-streaming** (`_propose_once` → `messages.create`).
-  The Anthropic SDK refuses before sending: *"Streaming is required for operations that may take longer than
-  10 minutes."* Verified locally against `anthropic 0.116.0` with no API call — 8,000 and 16,000 pass, the
-  ceiling is **21,333**, 32,000 always raises (`claude-sonnet-5` is not in `MODEL_NONSTREAMING_TOKENS`, so
-  the generic 10-minute estimator applies). `assist.py:3608`'s `except Exception: return 0` then swallows it,
-  and REFLEX 0b is `_confirmed_done`-gated to fire once — so one erased error removes model-proposed
-  experiments from the **entire** engagement. **Deterministic and worst where it matters most:** it needs a
-  rich surface to trigger, so a 3-route fixture succeeds and the real 43-route crawl failed 3/3.
-  Fix: stream the retry or cap `bigger` below the ceiling, **and** make the swallow record what it caught.
-- **P1 — no second principal on an SPA (pre-existing, independent, newly visible).** `establish_second_identity()`
-  returns `""` on Juice Shop: it needs an HTML `<form>` via `_signup_form()`, and an Angular SPA has none, so
-  `_register_account()` returns `None`. Without a second principal the **`a_denied_b_allowed` comparator is
-  unconstructible**, and every cross-account experiment degrades to self-vs-anonymous. This bites the whole
-  SPA class. **Fixing the streaming P1 alone will NOT produce a cross-account result.**
+- ~~**P1 — the experiment engine cannot ask on a rich surface**~~ — **CLOSED 2026-08-22 (`86fd6c7`,
+  `31cf515`).** The thinking-retry escalated to 32,000 tokens non-streaming and the SDK refused before
+  sending (ceiling ~21,333, model-dependent); `assist.py`'s `except Exception: return 0` then erased the
+  error, and REFLEX 0b fires once, so one silence cost a whole engagement its experiments. The retry now
+  **streams** — deliberately not capped, since that ceiling is derived from the model and a ten-minute
+  estimate and a number chosen to dodge it rots when either moves — and both swallows on that call path
+  (`run_hypotheses` and its sibling in `loop.py`) now record what they caught. Roadmap → *"the experiment
+  engine never got to ask"* §A.
+- **P1 — no second principal on an SPA — FALSE-NEGATIVE PATH CLOSED 2026-08-22 (`c829482`), CAPABILITY GAP
+  STILL OPEN.** Two halves; only one moved.
+  - **Closed:** `_as_identity` resolved a missing second identity to empty cookies and an empty auth header
+    — *byte-identical to the `anonymous` branch* — so `as: second` was **dispatched and judged** as a
+    stranger. Both directions were wrong, and the trace found one the case study had missed: control
+    `second`→anon vs variant `self` under `a_denied_b_allowed` **HOLDS and files a CONFIRMED high** meaning
+    only "an authenticated request succeeds where an anonymous one does not" — a **false positive**, in the
+    project whose headline claim is that it structurally cannot produce them (the test for it was red with
+    `assert 1 == 0`). `hypothesis.SecondPrincipalUnavailable` now mirrors `UnresolvedReference`: raised
+    before the browser is touched, caught ahead of the generic handler, **not dispatched, not judged**, fed
+    back as *"experiment NOT run, this is not a result"*. No fallback to `self` anywhere.
+  - **Open:** `establish_second_identity()` still returns `""` on an Angular SPA (`_signup_form()` needs a
+    server-rendered `<form>`). **The cross-account class cannot be tested on such targets at all** — most
+    modern ones, and where authz bugs are most valuable. **Consequence for the next run, and for the paper:
+    cross-account experiments will be recorded as NOT RUN. That is an honest structural limit of the harness
+    and must be cited as a scope limit — never reported as a negative result, and never counted as evidence
+    that the target's authorization is sound.**
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
 - P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite

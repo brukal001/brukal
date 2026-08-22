@@ -1051,7 +1051,7 @@ skipped** (was 935). The measurement is the next session's work; this one was th
 
 ---
 
-## P1 — the experiment engine never got to ask (2026-08-21; A CLOSED 2026-08-22, B OPEN)
+## P1 — the experiment engine never got to ask (2026-08-21; A CLOSED 2026-08-22; B — fail-safe closed 2026-08-22, CAPABILITY GAP OPEN)
 
 Found by auditing the **Juice Shop 2C2 run of 2026-08-20/21** — the re-run built to
 satisfy paper criterion #2 on the loop the section above had just fixed. Three of those
@@ -1240,6 +1240,63 @@ when the principal it names is unavailable, in the same shape as `UnresolvedRefe
 above: *the experiment did not run* is a result; *self vs anonymous* wearing
 `a_denied_b_allowed`'s name is not.
 
+---
+
+#### Update 2026-08-22 — the FALSE-NEGATIVE PATH IS CLOSED. The CAPABILITY GAP IS NOT.
+
+Read the two halves separately, because only one of them moved.
+
+**CLOSED — a missing principal can no longer wear a verdict.** Tracing the degradation
+in code rather than inferring it showed it was worse than recorded above. `_as_identity`
+resolved a missing second identity to `browser._cookies = {}` and
+`browser.auth_header = ""` — **byte-identical to the `anonymous` branch two lines above**
+— so the request was not merely mis-attributed, it was *dispatched to the target* and
+then *judged*. And it ran in **both** directions:
+
+| arrangement | comparator says | what it really means |
+|---|---|---|
+| control `self`, variant `second`→anon | **NOT CONFIRMED** | a false negative that reads as evidence about the application |
+| control `second`→anon, variant `self` | **CONFIRMED, high** | "an authenticated request succeeds where an anonymous one does not" — true of every authenticated endpoint on the web |
+
+The second row is a **false positive**, in the project whose headline claim is that it
+structurally cannot produce them. It is not hypothetical: the test written for it was red
+with `assert 1 == 0` — `run_hypotheses()` really did return a manufactured confirmation.
+The 2026-08-20 run selected the first arrangement and so lost findings; the same defect
+one field apart would have invented one.
+
+`hypothesis.SecondPrincipalUnavailable` now mirrors `UnresolvedReference` exactly: raised
+at the point the principal cannot be resolved — *before* the browser is touched, so the
+degraded request cannot be built — and caught in the runner ahead of the generic handler.
+The experiment is **not dispatched, not judged**, and the next round is told
+`SECOND PRINCIPAL UNAVAILABLE (experiment NOT run, this is not a result)`, asserted
+against the refine prompt the model actually receives rather than against the note
+surface. **There is no fallback to `self` anywhere**: a missing principal is a missing
+capability, never a quieter principal. All three dispatch sites — setup, control, variant
+— share one `try` and are covered; a setup step naming `second` is pinned separately,
+because an unjudged setup request still changes state on the target as the wrong caller.
+
+Tests: `tests/test_second_principal_fail_safe.py` — 12 tests, **8 verified red first**.
+Named: `::test_an_unrunnable_cross_account_experiment_is_never_judged` and
+`::test_second_as_the_control_cannot_manufacture_a_confirmed_finding`. Suite: **993
+passed, 1 skipped** (was 981).
+
+**STILL OPEN — the capability gap, which is the whole of B's original subject.**
+`establish_second_identity()` still returns `""` on an Angular SPA, because
+`_signup_form()` still needs a server-rendered `<form>`. Nothing above creates a second
+account; it only stops the absence of one from being scored. **The cross-account class
+therefore cannot be tested on this target at all**, and that is true of most modern
+targets — the population where authorization bugs are most common and most valuable. The
+fix options recorded above stand unchanged, along with the property they must preserve.
+
+**What this means for the next run, and it must be stated this way in the paper.**
+Cross-account experiments will be recorded as **NOT RUN**. That is an **honest structural
+limit of the harness on SPA targets** and must be cited as a scope limit — *not* reported
+as a negative result, and *not* counted as evidence that the target's authorization is
+sound. The reader must be able to tell "we asked and the application held" from "we could
+not ask". Before this change the artifact could not express the difference; now it can,
+and the write-up has to use it.
+
+
 ### What these two leave for criterion #2
 
 **NOT MET, and no longer "just needs the run".** The acceptance case is met *as plumbing*
@@ -1253,16 +1310,28 @@ been asked and to have failed; here it was never asked. A re-run that does not f
 both defects above will reproduce this exact null result, because A is deterministic on a
 rich surface and B is unconditional on an SPA.
 
-**Updated 2026-08-22 — A is closed, B is not, and B alone still decides the outcome.**
-With A fixed the model is reachable again: the retry streams, and a call that fails now
-says so on the note surface and in the coverage table instead of vanishing. That restores
-the *question*. It does not supply the *second principal* B needs, so
-`a_denied_b_allowed` — the comparator every cross-account experiment in the 2C2 run
-selected — is still unconstructible against an Angular SPA, and each of those experiments
-would still collapse to self-vs-anonymous. **A run made now would ask the model and then
-mis-answer it**, which is the harder failure to see in a ledger. B is the next session's
-work, and the stopping rule for the run after it is pre-committed in `PROJECT_STATE.md`
-under criterion #2 so the bar cannot move once the result is known.
+**Updated 2026-08-22 — A closed, B's fail-safe closed, B's capability gap open. A run is
+now worth making, and its cross-account result is already known to be NOT RUN.**
+
+Both silent failures are gone. A's fix makes the model reachable again — the retry
+streams, and a call that fails says so on the note surface and in the coverage table
+instead of vanishing. B's fail-safe makes the *answer* trustworthy: an experiment naming
+a principal this target cannot supply is no longer dispatched, no longer judged, and no
+longer able to file either a false negative or the false positive the trace uncovered.
+
+What remains is a capability limit rather than a correctness bug, and it is visible
+instead of silent. On an SPA there is still no second account, so **every cross-account
+experiment will be recorded as NOT RUN.** A run made now will therefore ask the model,
+reach business logic, and return an honest partial: whatever the self-only and anonymous
+comparators can establish, plus an explicit, countable list of the questions the harness
+could not put. That is a publishable result under the pre-committed stopping rule in
+`PROJECT_STATE.md` — it is the *target-caused* branch, a measured limit rather than a
+blocker — and it is a materially better artifact than the 2C2 run, which could not tell
+the difference between a question it failed and a question it never asked.
+
+The remaining choice is whether to spend one timeboxed session on SPA registration first
+(which would open the cross-account class on the target where it matters most) or to run
+now and cite the gap. That is a scope decision, not a defect.
 
 **One thing in the case study is NOT evidenced and must not be cited without a controlled
 re-test.** It reads three `PUT /api/BasketItems/1` → `200` as an unrecognised real
