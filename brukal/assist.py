@@ -3474,6 +3474,17 @@ class AssistSession:
                 browser._cookies, browser.auth_header = {}, ""
             elif who == "second":
                 second = getattr(self, "_second_identity", None) or {}
+                if not second:
+                    # FAIL CLOSED. An empty second identity used to fall through to
+                    # empty cookies and an empty auth header, which is exactly the
+                    # `anonymous` branch above — so `as: second` silently became
+                    # `as: anonymous`, went out on the wire, and got judged. Raising
+                    # here is before the browser is touched and before any request is
+                    # built, so the degraded request cannot exist.
+                    from . import hypothesis as _h    # local, as elsewhere in this file
+                    raise _h.SecondPrincipalUnavailable(
+                        "no second principal was established on this target "
+                        "(self-registration did not yield an account)")
                 browser._cookies = dict(second.get("cookies") or {})
                 browser.auth_header = second.get("auth", "")
             yield
@@ -3721,6 +3732,17 @@ class AssistSession:
                     _d1, a = self.browser.run(WebAction("request", **cspec))
                 with self._as_identity(vspec.pop("as", "self")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
+            except _hyp.SecondPrincipalUnavailable as exc:
+                # NOT a negative result, and caught ahead of the generic handler for the
+                # same reason UnresolvedReference is: the comparator this experiment
+                # selected was unconstructible, so any verdict it reached would be a
+                # claim about Brukal dressed as a claim about the application. Fed back
+                # so the next round proposes something this target can actually answer.
+                self.note(f"[experiment] SECOND PRINCIPAL UNAVAILABLE, not run: "
+                          f"{h.title} ({exc})")
+                outcomes.append(f"SECOND PRINCIPAL UNAVAILABLE (experiment NOT run, "
+                                f"this is not a result) {h.title}: {exc}")
+                continue
             except _hyp.UnresolvedReference as exc:
                 # NOT a negative result. The experiment never ran, and saying so keeps a
                 # missing data-flow visible instead of letting it wear a comparator's

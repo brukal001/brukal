@@ -129,6 +129,21 @@ class UnresolvedReference(ValueError):
     """A `{{setup.i.path}}` reference nothing in the setup responses can satisfy."""
 
 
+class SecondPrincipalUnavailable(ValueError):
+    """An experiment named `as: second` on a target where no second account exists.
+
+    Sibling of `UnresolvedReference`, for the same reason and with the same contract:
+    the experiment is NOT run and NOT judged. `_as_identity` used to resolve a missing
+    second principal to empty cookies and an empty auth header — byte-identical to
+    `anonymous` — so the request went out as a stranger and the comparator scored it.
+    Both directions were wrong: `self` vs `second→anonymous` under `a_denied_b_allowed`
+    filed a clean-looking NOT CONFIRMED, and `second→anonymous` vs `self` HELD and filed
+    a CONFIRMED finding meaning only that an authenticated request succeeds where an
+    anonymous one does not.
+
+    A missing principal is a missing capability, never a quieter principal."""
+
+
 # The documented way to USE what setup created. `{{setup.<i>.<dotted.path>}}` reads field
 # `path` out of the JSON body of setup response `i` (0-based). The path may walk objects
 # and arrays: `{{setup.0.data.items.0.id}}`.
