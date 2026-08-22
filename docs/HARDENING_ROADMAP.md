@@ -880,6 +880,38 @@ should be inert to the test suite.
 suite (an autouse fixture or a `BRUKAL_VAULT` env override), and assert in CI that a
 test run leaves `runs/` byte-identical.
 
+### THE SUITE READS A LIVE ENGAGEMENT ARTIFACT, SO IT DOES NOT PASS ON A FRESH CLONE
+
+**Severity: P2.** The same root cause as the entry above, in the opposite direction:
+that one *writes* into engagement evidence, this one *reads* from it.
+
+`tests/test_coverage.py:78` —
+`::test_every_class_that_produced_a_finding_appears_in_the_table` — opens
+`runs/vault-wb/172.20.0.5/findings.json` with a bare relative `Path(...)`. That file is
+real engagement output from 2026-08-03, and `.gitignore:63` excludes `runs/`, so **it is
+in no clone of this repository**. The test passes here only because that August output
+still happens to be sitting in the working tree.
+
+Found 2026-08-22 while verifying a six-commit split in a scratch clone. It failed at all
+six commits **including the untouched baseline `ccd38fe`**, which is precisely what
+identified it as environmental rather than a bad split — a defect introduced by the split
+would not have been red before the split. In a clone the suite is **964 passed, 1 failed**
+with `FileNotFoundError`, at every commit.
+
+**Why this one is worse than it looks.** The project claims **reproducibility** as one of
+its four win-axes, and the docs-truth tests pin an exact suite count as a published fact.
+That count is currently reproducible on exactly one machine. **A reviewer who clones the
+repository to check the paper's claims gets a red suite on the first command they run**,
+and it fails identically in CI — so the axis the paper argues on is the axis the suite
+itself does not satisfy. It also silently weakens the test: on any machine where the
+artifact is missing the coverage promise it exists to enforce is not being checked at all.
+
+**Fix (not this session):** either commit a small fixture for this case, or skip the test
+when the artifact is absent — **a skip is honest; a pass that depends on one machine's
+untracked files is not.** Do it together with the sibling P2's `tmp_path`/`BRUKAL_VAULT`
+fix, so `runs/` becomes inert to the suite in both directions at once, and assert the
+whole thing in CI from a clean clone rather than from a developer's working tree.
+
 ---
 
 ## P1 — the business-logic capability was blocked by plumbing, not by reasoning (2026-08-17, all CLOSED)

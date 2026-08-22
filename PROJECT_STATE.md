@@ -145,7 +145,12 @@ limits in the paper, not fixed before writing.
   SPA class. **Fixing the streaming P1 alone will NOT produce a cross-account result.**
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
-- P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`.
+- P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite
+  READS a live engagement artifact, so it does not pass on a fresh clone** (`tests/test_coverage.py:78`
+  opens `runs/vault-wb/172.20.0.5/findings.json`, which `.gitignore:63` excludes — 964 passed / 1 failed
+  in any clone and in CI, at every commit including the pre-existing baseline). The last two are one root
+  cause in opposite directions and should be fixed together. **Until then the published suite count is
+  reproducible on one machine only, which the reproducibility win-axis does not survive.**
 
 **Closed recently:** egress P1 #1 (fail-open on ruleset-apply failure); loop-truncation P1 (a truncated reply
 no longer terminates the loop — keyed on `finish_reason`/stop reason at the backend layer so it holds across
