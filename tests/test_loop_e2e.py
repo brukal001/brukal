@@ -176,7 +176,9 @@ def test_the_whole_reflex_chain_runs_without_crashing():
     sess, result, kali, site, audit, tmp = _run_loop()
     try:
         # 1. the port sweep ran, deterministically, without the model asking
-        assert any(c.startswith("nmap -Pn") for c in kali.executed), kali.executed
+        # Program, not flag order — the sweep is normalised (`-n` precedes `-Pn`).
+        assert any(c.startswith("nmap") and " -Pn " in f" {c} "
+                   for c in kali.executed), kali.executed
         # 2. the sweep's output became a real web seed on the right PORT
         assert any(":5000" in u for u in site.seen), site.seen
         # 3. the crawl mapped the site

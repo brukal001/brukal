@@ -341,9 +341,13 @@ def test_loop_sweeps_for_the_web_surface_when_nothing_is_known():
         ]))
         loop = GroundedLoop(sess, max_steps=4)
         result = loop.run()
-        sweeps = [s for s in result.steps if (s.command or "").startswith("nmap -Pn")]
+        # Matched on the program, not on a flag ORDER: the sweep is normalised by
+        # apply_no_resolve like every other scan, so `-n` now precedes `-Pn`.
+        sweeps = [s for s in result.steps if (s.command or "").startswith("nmap")]
         assert len(sweeps) == 1                         # exactly once, not every turn
         cmd = sweeps[0].command
+        assert " -Pn " in f" {cmd} "                    # targets drop ping
+        assert " -n " in f" {cmd} "                     # and cannot resolve under lock
         assert cmd.endswith(TARGET)                     # a bare host, never a URL
         assert ",3000," in cmd and ",8080," in cmd      # the common app ports
     finally:

@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .schema import apply_no_resolve
+
 
 # The ports worth one proactive sweep: the standard pair plus the app-server ports a
 # modern stack actually listens on. Deliberately a short list — this is a targeted
@@ -405,8 +407,11 @@ class GroundedLoop:
                     and getattr(self.session, "browser", None) is not None
                     and not self.session.web_urls_from_findings()):
                 self._port_scanned = True
-                cmd = (f"nmap -Pn -sV --open -p {_WEB_PORT_SWEEP} "
-                       f"{_bare_host(self.session.target)}")
+                # Normalised like every other scan: this one is built HERE, with no
+                # model in it, so neither the parse_action_request nor the strategist
+                # patch ever saw it — and it burned 180s to `exit 124` on a live run.
+                cmd = apply_no_resolve(f"nmap -Pn -sV --open -p {_WEB_PORT_SWEEP} "
+                                       f"{_bare_host(self.session.target)}")
                 self._emit("running", action=cmd, web=False, agent="recon",
                            phase="reconnaissance", goal="find the web surface")
                 decision, result, highlights = self.session.run(cmd, agent="recon")

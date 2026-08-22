@@ -98,3 +98,77 @@ def test_a_strategist_suggestion_carries_the_normalised_command():
     assert opts and opts[0].command
     assert " -n " in f" {opts[0].command} ", \
         f"the auto-loop path still proposes a resolving nmap: {opts[0].command!r}"
+
+
+# --------------------------------------------------------------------------- #
+# The THIRD construction site — a command the loop builds itself
+#
+# The two paths above both start from model text. The loop also builds one scan with no
+# model in it at all: the proactive web-port sweep that exists precisely because the
+# model kept handing nmap a URL. It bypassed both patches above and timed out at 180s on
+# the 2026-08-16 Juice Shop run (`returncode 124`, "Starting Nmap" and nothing else) —
+# the third engagement lost to this, and the first one lost to Brukal's own command.
+#
+# So the property is not "the proposal paths normalise". It is: whatever builds a scan,
+# under the lock it carries `-n`. The second test below asserts that over everything the
+# loop actually dispatches, so a fourth site cannot hide the way this one did.
+# --------------------------------------------------------------------------- #
+
+def _loop_commands(monkeypatch, max_steps: int = 2) -> list[str]:
+    """Run the real GroundedLoop against an inert cage and return what it executed."""
+    import tempfile
+    from pathlib import Path
+
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents.strategist import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+    from brukal.loop import GroundedLoop
+    from brukal.web import GovernedBrowser, WebResult
+
+    monkeypatch.delenv("BRUKAL_EGRESS_LOCK", raising=False)      # locked by default
+
+    class _Kali:
+        def __init__(self):
+            self.executed: list[str] = []
+
+        def run(self, command: str) -> ExecResult:
+            self.executed.append(command)
+            return ExecResult(command, 0, "", "")
+
+    class _Site:
+        def run(self, action):
+            return WebResult(status=200, url=action.url, body="<html></html>")
+
+    class _Quiet:
+        def propose(self, system, user, max_tokens=1024):
+            return ""
+
+    scope = load_scope("tests/fixtures/scope_fast.json")
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    kali = _Kali()
+    sess = AssistSession("127.0.0.1", Executor(Gate(scope), kali, audit,
+                                               approver=lambda d: True),
+                         StrategistAgent(_Quiet()),
+                         browser=GovernedBrowser(scope, _Site(), audit))
+    GroundedLoop(sess, max_steps=max_steps).run()
+    return kali.executed
+
+
+def test_the_loops_own_proactive_port_sweep_carries_n(monkeypatch):
+    """THE THIRD SITE. Built by the loop, not proposed by the model, so neither
+    normalisation above ever saw it."""
+    sweeps = [c for c in _loop_commands(monkeypatch) if c.startswith("nmap")]
+    assert sweeps, "the proactive port sweep did not run — fixture no longer exercises it"
+    for cmd in sweeps:
+        assert " -n " in f" {cmd} ", \
+            f"the loop's own sweep still resolves names: {cmd!r}"
+
+
+def test_no_scan_the_loop_dispatches_is_left_able_to_resolve(monkeypatch):
+    """The property, asserted over the dispatch point rather than a known list of
+    construction sites — this is what a FOURTH site would fail."""
+    for cmd in _loop_commands(monkeypatch):
+        prog = cmd.split()[0] if cmd.split() else ""
+        if prog == "nmap":
+            assert " -n " in f" {cmd} ", f"unnormalised scan dispatched: {cmd!r}"
