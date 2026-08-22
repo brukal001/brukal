@@ -5827,8 +5827,18 @@ class AssistSession:
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
             head = f"{decision.verdict}: {result.note or ''} status={result.status}".strip()
             self.notes.append(f"[web] {action.describe()}\n{head}\n{body[:600]}")
-            summary = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
-                       or f"{head} ({len(body)}B)")
+            # The body goes on the RECORD too, not only into the rolling note window.
+            # `PUT /api/BasketItems/1 {"quantity":-100}` answered 200 on a live run and
+            # the record kept `status=200 (154B)` — a business-logic hit reduced to a
+            # status line, unreadable, un-escalatable, and locked out by the repeat
+            # coach three steps later. Notes are in-memory and roll off; this record is
+            # what _load_memory reads back and what survives a checkpoint. Bounded,
+            # because a digest is not a dump; redaction is applied at the blackboard
+            # boundary (write_finding -> redact.data), which covers target-echoed
+            # credentials in this text.
+            lead = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
+                    or f"{head} ({len(body)}B)")
+            summary = f"{lead}\n{body[:800]}" if body else lead
             self._persist_finding("web", action.describe(), decision.verdict, summary, new_hl)
             self._advance_plan()
         else:
