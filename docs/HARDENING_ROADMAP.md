@@ -1435,9 +1435,9 @@ with the `{{setup.*}}` substitution defect, so the two causes cannot be separate
 fact. It is written down here because it will never be recoverable, not because it is
 actionable.
 
-### P1 — THE LEDGER DOES NOT RECORD WHICH PRINCIPAL AN EXPERIMENT USED
+### ~~P1 — THE LEDGER DOES NOT RECORD WHICH PRINCIPAL AN EXPERIMENT USED~~ — **CLOSED 2026-08-22 (`2fdbc7f`)**
 
-**Severity: P1 (auditability — invariant 5, and the auditability win-axis directly). OPEN.**
+**Severity: P1 (auditability — invariant 5, and the auditability win-axis directly). CLOSED 2026-08-22.**
 
 A cross-account finding's entire claim is *which principal saw what*. The ledger does not
 record it. `_as_identity` swaps the browser's cookies and auth header around a request and
@@ -1460,9 +1460,52 @@ It also undercuts the reproducibility axis: a reader replaying a run from the au
 reconstruct which session issued which request, so the run is not replayable in the sense the
 paper claims.
 
-**Fix (not this session — next session, before the run):** record the resolved principal on
-every experiment request at the point `_as_identity` selects it — in the audit entry and on
-the finding — as an identifier, never as a credential (the principal's *name*, e.g.
-`self` / `second:brk6ba71274c4` / `anonymous`, never its cookies or auth header, which
-redaction exists to keep off exactly these surfaces). Then a comparator verdict carries its
-own provenance and this audit becomes a query rather than an archaeology exercise.
+**Fixed 2026-08-22 (`2fdbc7f`), as proposed and in one place.**
+
+Every experiment request now emits an `experiment_principal` audit record carrying
+`role` (setup / control / variant), `requested`, `resolved`, a session `handle`, the url
+and the target. The confirmed finding repeats the pair in its own `evidence`, because
+`report.md`, `report.json` and the SARIF export are generated from the finding and a
+reviewer reading a cross-account claim should not have to correlate an audit file to learn
+who issued which side.
+
+**Recorded inside `_as_identity`, not at the three call sites.** That is the one point
+every dispatch passes through, so a fourth site added later inherits the record rather than
+going silently unattributed — which is exactly how this defect stayed invisible. The
+guarantee is bought by a **dispatch-point guard** in the style of
+`test_recon_no_resolve.py`'s: `::test_every_experiment_request_dispatched_carries_a_principal_record`
+asserts that the count of requests reaching the cage equals the count of principal records,
+whatever built them.
+
+**Identify, never credential.** The handle is `redact.placeholder_for`'s sha256[:8] —
+deliberately the *same* form redaction already emits, so a handle here and a masked
+credential elsewhere read identically and an operator can correlate two records as the same
+session while the value stays unrecoverable. It rides an audit `kind` rather than a new
+writer, so it inherits `redact.data` like every other record; verified against a target that
+echoes the session token and cookie straight back, per surface — audit, `findings.jsonl`,
+report, SARIF, blackboard.
+
+**`requested` and `resolved` are both kept although they are equal by construction today.**
+That is the point: the defect this closes was a silent substitution, and a pair that *can*
+disagree makes the next one visible in the ledger instead of inferable only from the code of
+the day. `anonymous` is recorded explicitly with an empty handle and never as an absent
+field — **absence is precisely what made the past runs unresolvable.**
+
+Tests: `tests/test_experiment_principal_recorded.py` — 9 tests, **6 verified red first**
+(no such record existed, so the five structural ones failed on an empty ledger and the
+finding-surface one on evidence with no `issued as` clause). The 16 `test_redaction.py` and
+9 `test_auth_not_placeholder.py` tests that guard these same surfaces are unchanged and
+green. Suite: **1002 passed, 1 skipped** (was 993).
+
+> ### This does NOT make the past auditable
+>
+> **The five CANNOT-TELL runs of 2026-08-07 → 2026-08-16 remain permanently unresolvable.**
+> Their artifacts were written before any principal was recorded, and nothing in this change
+> is retroactive — there is no field to backfill from, because the information was never
+> captured anywhere. `vault-dvga3`, `vault/10.129.100.21`, `vault/10.129.100.61`, the
+> archived 2B run and 2C stay exactly as the audit found them: **no false positive was
+> published in any of them, and whether `as: second` silently degraded cannot be determined.**
+> That distinction must survive into the paper intact. What closed here is the guarantee for
+> **runs from 2026-08-22 onward**; the earlier ones are a cited gap in the evidence, not a
+> resolved question, and the suggestive 2B pair (`control 200 (900B)` vs `variant 200
+> (1310B)`) will never be settled.

@@ -171,16 +171,17 @@ limits in the paper, not fixed before writing.
     cross-account experiments will be recorded as NOT RUN. That is an honest structural limit of the harness
     and must be cited as a scope limit — never reported as a negative result, and never counted as evidence
     that the target's authorization is sound.**
-- **P1 — the ledger does not record which principal an experiment used (NEW 2026-08-22, OPEN).** `_as_identity`
-  swaps the browser's session around a request and restores it; **nothing writes down which of `self` /
-  `second` / `anonymous` was in force** — not the audit entry, not the finding, not the note
-  (`grep -rl '"as"' runs/` returns zero files). A cross-account finding's whole claim is *which principal saw
-  what*, so **the artifacts of a sound finding and a manufactured one are byte-identical**; the one confirmed
-  experiment finding in the project's history (2026-08-06) is checkable only because the model happened to
-  write its intent into the hypothesis prose. Touches invariant 5 and the auditability/reproducibility
-  win-axis directly. **`c829482` stops the degradation but does NOT close this** — a future cross-account
-  finding would be as unauditable as that one. Fix next session, **before** the capability run, since that run
-  is meant to produce citable authorization evidence. Roadmap → *AUDIT 2026-08-22*.
+- ~~**P1 — the ledger does not record which principal an experiment used**~~ — **CLOSED 2026-08-22
+  (`2fdbc7f`).** `grep -rl '"as"' runs/` returned zero files across ~87 vault roots, so a sound finding and a
+  manufactured one were byte-identical. Every experiment request now emits an `experiment_principal` audit
+  record (`role`, `requested`, `resolved`, session handle, url) and the confirmed finding repeats the pair in
+  its own evidence, so `report.md`/SARIF carry it too. **Recorded inside `_as_identity`, not at the three call
+  sites** — the one point every dispatch passes through, pinned by a dispatch-point guard so a fourth site
+  cannot go unattributed. Handle is `redact.placeholder_for`'s sha256[:8]: correlatable, unrecoverable, and
+  redacted by the same `redact.data` funnel as every other record. `anonymous` is explicit, never absent.
+  **⚠ NOT retroactive — the five CANNOT-TELL runs (2026-08-07 → 2026-08-16) stay permanently unresolvable**;
+  no false positive was published in any of them, and whether `as: second` silently degraded can never be
+  determined. Cite that as a gap in the evidence, not a resolved question.
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
 - P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite
