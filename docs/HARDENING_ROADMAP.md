@@ -1950,3 +1950,58 @@ around it now works: the phase is planned and reached, the engine is asked, two 
 principals exist, provenance is recorded, claims are bounded, and results that cannot be
 judged are refused rather than invented. The one remaining gap between that and a confirmed
 business-logic finding is that the model is asked to name a field it was never told about.
+
+---
+
+## P1 — EVERY HEADLINE EVALUATION NUMBER IS UNVERIFIABLE BY A READER (2026-08-24, OPEN)
+
+**Severity: P1 (it contradicts the axis the paper leads on). RECORDED, NOT FIXED.**
+
+The evidence ledger of 2026-08-24 sorted every number this project would cite into two
+piles, and the split is the finding.
+
+**Verifiable from the repository alone:** the suite (1052 passed, 1 skipped), the
+comparator count (5), the single `cap_severity` call site, the SDK non-streaming ceiling
+(21,333, recomputable from `anthropic` 0.116.0), and every line of fix and test in git.
+
+**Verifiable only from artifacts a reader does not have:** *every headline evaluation
+number.* Chain intact at 649 entries; 307 requests with zero off-scope; 9 experiments and
+12 dispatches across two principal handles; the 0-of-96 leak counts; overclaim 2 of 3; the
+six all-time confirmations drawn from ~87 vault roots. All of it lives under `runs/`, which
+is **gitignored**, so none of it ships with the repository.
+
+**Worse, two of those numbers are not reproducible even by us.** The 0/96 leak counts were
+computed against the two principals' *live* tokens; the Juice Shop container has since been
+recreated, and those sessions no longer exist. The measurement was real and it can never be
+re-derived — only re-run, which produces different tokens and a different run.
+
+**This directly contradicts the win-axis the paper leads on.** "Auditability &
+reproducibility — keyed tamper-evident audit chain; every action provable; runs replayable"
+is uncontested against the competitors precisely because they offer nothing like it. A
+reviewer cannot currently check a single one of those claims. The chain is verifiable **in
+principle** and unavailable **in practice**, and a guarantee nobody can exercise is a claim,
+not a property.
+
+**Intended resolution, in order.**
+
+1. **Close the discovered-credential P1 first** (*"the redaction contract is asymmetric"*).
+   Run 2C4's bundle currently carries a live admin JWT for the target in cleartext across
+   eleven surfaces, so it cannot be published as it stands.
+2. **Then produce ONE clean run whose complete artifact bundle can be published** — audit
+   log, vault, findings, report, SARIF, and the scope exactly as stamped — **together with
+   its `BRUKAL_AUDIT_KEY`**, so a reader can run `brukal verify` themselves and get
+   `chain intact: True` from their own machine rather than from our transcript. Publishing
+   the key is the point: the chain proves the ledger was not edited after the fact, and it
+   proves nothing to anyone who cannot check it.
+
+**Post-hoc redaction is NOT an option, and this is the trap to state explicitly.** The
+artifacts are hash-chained. Editing any record to mask a credential changes its bytes,
+breaks the chain from that entry onward, and destroys the tamper-evidence that is the whole
+reason to publish the bundle — you would be sanitising the evidence you are citing, and the
+verification you invited the reader to perform would then fail. **The redaction must happen
+at write time, on the run that is going to be published.** That is why step 1 strictly
+precedes step 2, and why the fix cannot be applied to any run already made.
+
+**Until this is closed, every evaluation number in the paper is "trust our transcript".**
+That is a materially weaker claim than the one the governance thesis rests on, and it should
+be stated as a limitation if the paper is written before the publishable run exists.
