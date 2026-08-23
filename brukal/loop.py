@@ -212,6 +212,42 @@ class GroundedLoop:
         self._confirmed_done = False          # active SQLi/XSS confirmation runs once
         self._domain_enum_queue = None        # proactive AD/cloud enumeration (drains once)
 
+    def _establish_principals(self) -> None:
+        """Acquire the principals the engagement depends on, BEFORE spending on probes.
+
+        Ordering, not budget. Both 2C3 pre-flights failed their second-principal gate
+        because this ran last: the deterministic sweep — `confirm_missing_rate_limit`
+        alone sends 8 rapid failed logins by design — spent the web-rate allowance, and
+        the signup POST that followed was denied `hard:web-rate`. Every cross-account
+        experiment in the run was then recorded NOT RUN. Halving the login cost halved
+        the denials and still did not clear it, because the total was never the problem:
+        the cheapest and most load-bearing acquisition in the engagement was queued
+        behind the most expensive sweep.
+
+        It cannot run before the crawl — candidate signup endpoints come from what the
+        crawl observed — so immediately after it and before the detectors is the only
+        place it can go. `establish_second_identity` is idempotent, so the later call
+        inside `run_hypotheses` is a cache hit and nothing is acquired twice."""
+        est = getattr(getattr(self, "session", None), "establish_second_identity", None)
+        if est is None:
+            return
+        try:
+            who = est()
+        except Exception as exc:
+            # Recorded, never silent, and never fatal: a target with no signup door is a
+            # normal outcome, and the comparator will say NOT RUN for the experiments
+            # that needed one.
+            note = getattr(self.session, "note", None)
+            if note:
+                note(f"[experiment] second principal NOT established "
+                     f"({type(exc).__name__}: {str(exc)[:120]})")
+            return
+        if not who:
+            note = getattr(self.session, "note", None)
+            if note:
+                note("[experiment] second principal NOT established — no signup door on "
+                     "this target; cross-account experiments will be recorded NOT RUN")
+
     def _record_swallowed_experiment_error(self, exc: Exception) -> None:
         """Say that the experiment reflex failed, and what failed it.
 
@@ -493,6 +529,9 @@ class GroundedLoop:
             surface = self.session.surface
             if self.session.probeable_surface() and not self._confirmed_done:
                 self._confirmed_done = True
+                # FIRST, before anything competes for the same budget. See
+                # _establish_principals: this is an ordering fix, not a budget one.
+                self._establish_principals()
                 n = 0
                 try:
                     n = self.session.confirm_surface()
