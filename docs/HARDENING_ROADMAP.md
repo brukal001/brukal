@@ -1797,3 +1797,116 @@ evidence about the target** — see *"our own rate limiter contaminates the dete
 measures the target's"* above. That was already true at 30/min; it is simply now explicit.
 A run intended to measure the target's throttling must set this back to a defensible value
 and count its own denials.
+
+---
+
+## P1 — THE REDACTION CONTRACT IS ASYMMETRIC: IT PROTECTS CREDENTIALS WE INJECT, NOT CREDENTIALS WE DISCOVER (2026-08-23, OPEN)
+
+**Severity: P1 (a live credential in shareable artifacts). RECORDED, NOT FIXED.**
+
+Run 2C4's leak check was clean on exactly the axis every previous run measured: **tenant
+A's token 0, the second principal's token 0, across all 96 surfaces.** Both are credentials
+Brukal *injects*, and `_session_auth_for` registers them the moment it reads them off the
+browser.
+
+The same check found **an admin JWT for `admin@juice-sh.op` carrying `"role":"admin"`, in
+cleartext**, on:
+
+`runs/audit_juiceshop2c4.jsonl` (5) · `findings.jsonl` (4) · `checkpoint.json` (2) ·
+`engagement.md` (2) · `findings.json` · `report.json` · `report.md` · `brukal.sarif` ·
+`agents/strategist/00037.md`, `00038.md`, `00046.md`
+
+It is a credential Brukal **discovered on the target**, and `redact.register` was never
+called on it. The contract has only ever covered one direction.
+
+**The tension, stated honestly rather than resolved by assertion.** That token is not
+incidental — it *is* the evidence for the finding "JWT exposed in response". Blanket
+redaction would destroy the proof, and a finding whose evidence has been erased is worth
+nothing. So "just redact everything JWT-shaped" is the wrong fix and would quietly gut a
+whole detector class.
+
+**The resolution is the one the injected-secret redactor already implements: mask the
+VALUE, keep the STRUCTURE.** `placeholder_for` emits a stable `[REDACTED:<8 hex>]` derived
+from the value, so two records can be correlated as the same credential while the value
+stays unrecoverable — and a decoded JWT's *header and claims* (`alg`, `role: admin`, no
+`exp`) are the evidence, not the signature. A finding can say "an RS256 token for
+`admin@juice-sh.op` with `role=admin` and no `exp`, `[REDACTED:ab12cd34]`" and lose
+nothing a reviewer needs.
+
+**Consequence, and it binds now: no artifact from run 2C4 may be shared or published until
+this is closed.** That includes the report, the SARIF export and the audit log — i.e.
+every file the paper would want to cite. The measurement stands; its artifacts are not yet
+distributable.
+
+**Fix (not this session):** register discovered credentials at the point they are
+recognised (the JWT/token detectors already parse them), and give the finding a structural
+rendering — claims and header, value masked — so the evidence survives redaction.
+
+---
+
+## P2 — A DELETED AUDIT LOG SILENTLY RESTARTS THE CHAIN (2026-08-23, OPEN)
+
+**Severity: P2 (invariant 5 claims tamper-evidence this does not provide). RECORDED, NOT FIXED.**
+
+Found by hand, and by accident: during run 2C4's aborted first attempt the maintainer
+deleted the audit log while the engagement was still writing to it. `AuditLog.append`
+**reopens the file by path on every append**, so the next record recreated the file and
+began a fresh chain whose first entry's `prev_hash` referenced an entry that no longer
+existed anywhere.
+
+Nothing detected this. `brukal verify` on the resulting file verifies the *surviving*
+chain and reports intact, because every link it can see is consistent — the missing prefix
+leaves no trace.
+
+**Invariant 5 says "append-only tamper-evident audit".** Truncation and in-place edits are
+caught by the hash chain. **Wholesale replacement of the backing file is not**, and that is
+the cheapest possible attack on the ledger: delete it, let the process recreate it, and the
+run's early history is gone with a chain that still verifies.
+
+The abort was a maintainer error rather than an attack, and the compromised run was
+discarded — but the finding is about the property, not the incident.
+
+**Fix (not this session):** bind the open chain to the file it started on — stat the inode
+and length before each append and refuse (fail-closed) if either moved, or hold the
+descriptor open for the engagement's lifetime and write through it. Then teach `verify` to
+say "this chain does not start at a genesis record" rather than "intact".
+
+---
+
+## P2 — THE SETUP-REFERENCE CONTRACT DOCUMENTS SYNTAX BUT NOT SCHEMA (2026-08-23, OPEN)
+
+**Severity: P2 by blast radius, and the HIGHEST-VALUE REMAINING CAPABILITY ITEM.
+RECORDED, NOT FIXED.**
+
+**9 of 9** model-proposed experiments in run 2C4 died at:
+
+```
+UNRESOLVED REFERENCE, not run: … ({{setup.0.id}}: no field 'id' in the setup response)
+```
+
+The setup was well chosen — `GET /rest/user/whoami` issued as *both* principals, which is
+exactly how you identify two accounts before comparing them. Juice Shop answers
+`{"user":{"id":25,…}}`, so the path is `user.id`. The model wrote `id`.
+
+Defect A (`{{setup.*}} references did not resolve`) closed the **syntax** half: the model
+is now told the reference grammar and writes it correctly. This is the **schema** half, and
+it is not a model failure in any useful sense — **the model cannot reference a field it has
+never been shown.** It is guessing at the shape of a response it never sees, and the
+harness holds that response.
+
+The fail-safe worked perfectly and that is the point: nothing was dispatched with a literal
+placeholder, nothing was judged, nothing was filed as a clean negative. The capability was
+blocked *safely* rather than silently — which is the correct failure and still a total
+failure of the capability.
+
+**Fix (not this session):** after the setup requests run, feed the next round the setup
+responses' actual structure — the resolved key paths, or a depth-bounded key skeleton, not
+the values (which may carry target data and must go through redaction). One round of
+"here is what your setup returned: `user.id`, `user.email`, `bid`" turns nine unresolved
+references into nine dispatched experiments.
+
+**This is the single highest-value item left for criterion-#2 capability.** Everything
+around it now works: the phase is planned and reached, the engine is asked, two real
+principals exist, provenance is recorded, claims are bounded, and results that cannot be
+judged are refused rather than invented. The one remaining gap between that and a confirmed
+business-logic finding is that the model is asked to name a field it was never told about.
