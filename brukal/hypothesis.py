@@ -102,39 +102,61 @@ _EVIDENCE_CLASS = {
 _SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
-def derive_claim(comparator: str, control_as: str, variant_as: str, url: str = "") -> dict:
+# The readable half of a derived title, per evidence class. Assembled from LEDGER FACTS
+# only — endpoints, statuses, body sizes, principals — never from model prose. A generic
+# label was the first cut and it was honest but unreadable: every `bodies_differ` finding
+# rendered identically, which is its own reporting failure, because a reader cannot triage
+# a list of identical rows.
+_HEADLINE = {
+    "status_differs":      "Different status codes for {c} vs {v}",
+    "bodies_differ":       "Different response bodies for {c} vs {v}",
+    "b_reveals_more":      "Larger response from {v} than {c}",
+    "b_errors_a_does_not": "Server error from {v}, not from {c}",
+}
+
+
+def _path_of(url: str) -> str:
+    from urllib.parse import urlsplit
+    return (urlsplit(url or "").path or "/") if url else "?"
+
+
+def derive_claim(comparator: str, control_as: str, variant_as: str,
+                 control: dict | None = None, variant: dict | None = None) -> dict:
     """The strongest claim an evidence class supports, derived — never model text.
 
-    Returns `title`, `claim`, `severity_cap`, `evidence_class` and `authz`. Pure
-    function of the comparator and the two RESOLVED principals: no model output reaches
-    it, which is invariant 1 applied to the record rather than to the gate. The model
-    still proposes the experiment and still explains its reasoning; it no longer gets to
-    author the sentence a reader will treat as proven.
+    `control`/`variant` are plain fact dicts: `{"url":…, "status":…, "size":…}`, all of
+    which the ledger already holds. Pure function: same facts in, same sentence out, no
+    session, no I/O and no model output anywhere in it — invariant 1 applied to the
+    record rather than to the gate, which is the right framing, because this control
+    exists precisely because a model authored a claim it had not earned.
 
     The bound is deliberately not a filter. `a_denied_b_allowed` between two genuinely
-    distinct principals keeps the full authorization claim at its full severity — that
-    is the finding the whole second-principal effort exists to produce, and flattening
-    it would trade one blindness for another."""
+    distinct principals keeps the full authorization claim at full severity — that is the
+    finding the whole second-principal effort exists to produce, and flattening it would
+    trade one blindness for another."""
+    control, variant = control or {}, variant or {}
     claim, cap, authz = _EVIDENCE_CLASS.get(
         comparator, ("an experiment comparator reported a difference", "low", False))
     distinct = bool(control_as and variant_as and control_as != variant_as)
     if authz and not distinct:
-        # The authorization comparator fired, but both sides were the same session, so
-        # it cannot be about who may reach what. Say what it does show, and drop the cap.
-        claim = ("the same principal was refused for one request and accepted for "
-                 "another")
+        # The authorization comparator fired, but both sides were the same session, so it
+        # cannot be about who may reach what. Say what it does show, and drop the cap.
+        claim = "the same principal was refused for one request and accepted for another"
         cap, authz = "medium", False
     who = (f"{control_as} vs {variant_as}" if distinct
-           else f"the same principal ({control_as or 'self'}) on both sides")
+           else f"same principal ({control_as or 'self'})")
+    cp, vp = _path_of(control.get("url")), _path_of(variant.get("url"))
     if authz:
-        title = f"Authorization: {control_as} refused where {variant_as} was accepted"
+        head = f"{control_as} refused, {variant_as} accepted at {vp}"
+    elif comparator == "a_denied_b_allowed":
+        head = f"One request refused, another accepted for {cp} vs {vp}"
     else:
-        title = f"Observed difference [{comparator}] — {who}"
-    if url:
-        from urllib.parse import urlsplit
-        path = urlsplit(url).path or "/"
-        title = f"{title} at {path}"
-    return {"title": title, "claim": claim, "severity_cap": cap,
+        head = _HEADLINE.get(comparator,
+                             "Observed difference [{k}] for {{c}} vs {{v}}".format(
+                                 k=comparator)).format(c=cp, v=vp)
+    obs = (f"{control.get('status')}/{control.get('size')}B vs "
+           f"{variant.get('status')}/{variant.get('size')}B")
+    return {"title": f"{head} — {who}, {obs}", "claim": claim, "severity_cap": cap,
             "evidence_class": comparator, "authz": authz, "principals": who}
 
 

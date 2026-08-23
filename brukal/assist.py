@@ -3884,10 +3884,21 @@ class AssistSession:
             # comparator and the two RESOLVED principals decide what may be asserted and
             # how loudly; the model's own words are kept below, marked UNVERIFIED, because
             # they are the most useful sentence in the record and the least trustworthy.
-            _cl = _hyp.derive_claim(h.comparator, _c_as, _v_as, h.variant["url"])
+            _cl = _hyp.derive_claim(
+                h.comparator, _c_as, _v_as,
+                control={"url": h.control["url"], "status": a.status,
+                         "size": len(a.body or "")},
+                variant={"url": h.variant["url"], "status": b.status,
+                         "size": len(b.body or "")})
             self.findings.add(Finding(
                 title=_cl["title"], severity=_hyp.cap_severity(h.severity, _cl["severity_cap"]),
                 category="logic",
+                # The model's assertion, kept as DATA beside the derived claim and never
+                # rendered as the finding. It is here so the gap between what the model
+                # claimed and what the evidence supported is countable rather than
+                # anecdotal — an overclaim rate is a result worth publishing.
+                evidence_class=_cl["evidence_class"],
+                agent_claim=h.title, agent_severity=(h.severity or ""),
                 target=h.variant["url"], param="", confirmed=True,
                 evidence=(f"{meaning}: control {h.control['method']} "
                           f"{h.control['url']} -> HTTP {a.status} ({len(a.body or '')}B); "

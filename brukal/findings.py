@@ -52,6 +52,17 @@ class Finding:
     param: str = ""                         # the parameter / field under test, if any
     category: str = "web"
     confirmed: bool = False                 # explicit signal / Verifier-backed vs heuristic
+    # Experiment-path provenance. Empty on every other kind of finding, which is the
+    # signal that this one was NOT proved by a two-request comparator.
+    #
+    # `agent_claim` / `agent_severity` are what the MODEL asserted, kept beside the
+    # derived claim and never rendered as the finding. They are here so the gap between
+    # assertion and evidence is countable: "the model claimed cross-account impact on N
+    # findings; the evidence supported difference-only on M" is a measurement this
+    # project should publish, and it cannot be recovered from prose after the fact.
+    evidence_class: str = ""                # the comparator the claim rests on
+    agent_claim: str = ""                   # the model's title — UNVERIFIED, never the claim
+    agent_severity: str = ""                # the model's severity — UNVERIFIED, never used
     ts: float = field(default_factory=time.time)
 
     def __post_init__(self):
@@ -68,6 +79,9 @@ class Finding:
         self.evidence = redact.text(self.evidence)
         self.source = redact.text(self.source)
         self.param = redact.text(self.param)
+        # The model authored this text and can put anything in it, including something
+        # it read off the target. Same boundary as every other field on the record.
+        self.agent_claim = redact.text(self.agent_claim)
 
     @property
     def signature(self) -> tuple:
