@@ -1566,3 +1566,130 @@ green. Suite: **1002 passed, 1 skipped** (was 993).
 > **runs from 2026-08-22 onward**; the earlier ones are a cited gap in the evidence, not a
 > resolved question, and the suggestive 2B pair (`control 200 (900B)` vs `variant 200
 > (1310B)`) will never be settled.
+
+---
+
+## P1 — A CONFIRMED FINDING CARRIED A CLAIM ITS COMPARATOR DID NOT EARN (2026-08-22, CLOSED 2026-08-23)
+
+Found by auditing the 2C3 pre-flight — a 3-step, $0.17 throwaway run whose purpose was
+to check plumbing before the measurement. It did that, and then produced the most
+important finding of the week about the harness itself.
+
+**Severity: P1 (precision — the headline win-axis). CLOSED `1940f09`.**
+
+The pre-flight published two HIGH findings, verbatim:
+
+> **Basket IDOR - any authenticated user can read another user's basket by ID**
+> `identical requests but for one changed value produced different bodies: control GET
+> http://172.20.0.3:3000/rest/basket/1 -> HTTP 200 (1310B); variant GET
+> http://172.20.0.3:3000/rest/basket/2 -> HTTP 200 (557B). Principals: control issued as
+> self, variant issued as self.`
+
+> **User PII IDOR - any authenticated user can read another user's profile via /api/Users/{id}**
+> `... control GET .../api/Users/1 -> HTTP 200 (301B); variant GET .../api/Users/2 ->
+> HTTP 200 (297B). Principals: control issued as self, variant issued as self.`
+
+**Both verdicts were sound. Both titles were not.** The comparator was `bodies_differ`,
+whose entire assertion is *"identical requests but for one changed value produced
+different bodies"*. Every request on both sides was issued by ONE principal — six
+`experiment_principal` records, all `self`, one handle `[REDACTED:5759af35]` — so what
+was actually established is that two ids return two different bodies. Nothing in the
+record ties either object to an owner: `grep -rl 'brukal.a@juice.test'` over the whole
+pre-flight vault returns nothing, and no `UserId`/`BasketId` ownership mapping appears
+anywhere. **That mapping existed only in the operator's head.**
+
+`a_denied_b_allowed`, the comparator built for authorization, was never used — it was
+unconstructible, because the second principal failed to establish (rate-limit denial).
+So the model correctly chose the only comparator available to it, and then wrote the
+claim it wanted anyway. `title` and `severity` were passed to `Finding(...)` **verbatim
+off the model's proposal**, with nothing in between.
+
+The findings are probably TRUE of Juice Shop, which is exactly what makes this dangerous:
+a reader holding the artifacts cannot distinguish them from an application that
+legitimately returns different content for different ids.
+
+**Fixed.** `hypothesis._EVIDENCE_CLASS` sits beside `_COMPARATORS` — one table, so a
+comparator that gains a meaning gains a bound in the same edit — and `derive_claim()` is
+a pure function of the comparator plus the two RESOLVED principals. No model text reaches
+it: **invariant 1 applied to the record rather than to the gate**, which is the right
+framing, because this control exists precisely because a model authored a claim it had
+not earned. Severity is capped by evidence class; the model may ask for less, never more.
+
+**A bound, not a filter.** `a_denied_b_allowed` between two genuinely distinct recorded
+principals keeps the full authorization claim at full severity — that is the finding the
+entire second-principal effort exists to produce, and flattening it would trade one
+blindness for another. The same comparator between one principal is capped and loses the
+authz reading, because a refusal and an acceptance from the same session says nothing
+about who may reach what.
+
+The model's REASONING survives, labelled `UNVERIFIED agent interpretation (NOT part of
+this finding's claim)`. Its TITLE does not — that flat assertion is the artefact that went
+out unearned, and it remains in the note stream where it reads as agent chatter.
+
+Tests: `tests/test_claim_bounded_by_comparator.py` — 8 tests, **5 verified red first**,
+driven by both live cases verbatim. Three pre-existing tests restated, not weakened.
+Suite: **1020 passed, 1 skipped** (was 1012).
+
+### ⚠ THE TWO PRE-FLIGHT FINDINGS MUST NOT BE CITED IN THEIR CURRENT WORDING
+
+They are recorded in `runs/vault-preflight/` under titles this fix would no longer allow.
+Under the derived contract they publish as **LOW**, *"Observed difference [bodies_differ]
+— the same principal (self) on both sides at /rest/basket/2"*. If the underlying IDOR is
+real — it very likely is — it must be **re-proved with two distinct principals** and
+cited from that run, never from these artifacts.
+
+### The pattern: three false-result classes in one week, all found by audit
+
+| Closed | Class | How it would have read |
+|---|---|---|
+| `c829482` | A missing principal silently became `anonymous` | a fabricated CONFIRMED, or a false negative |
+| `2fdbc7f` | The ledger did not record which principal was used | sound and manufactured findings byte-identical |
+| `1940f09` | A sound verdict published under an unearned claim | a true measurement under a sentence nobody verified |
+
+**None of the three was found by a run.** Every one surfaced from auditing artifacts
+after the fact, and each was invisible to the run that produced it. That is worth saying
+plainly in the paper: the governance model's value here was not that it prevented these,
+but that the ledger was complete enough to find them afterwards — and twice it was not
+quite complete enough, which is why `2fdbc7f` had to exist at all.
+
+---
+
+## P3 — THE LOGIN PATH COSTS A THIRD TO A HALF OF THE WEB BUDGET (2026-08-22, RECORDED NOT FIXED)
+
+**Severity: P3 (efficiency; becomes P2 whenever a run is dense).** Recorded during the
+2C3 pre-flight audit. **Not fixed here** — this session was scoped to claim derivation,
+and the login path was explicitly out of bounds.
+
+`JsonAuth.authenticate` (`auth.py:244`) issues a **seeding GET on the login URL before
+every POST**, deliberately and with a comment explaining why: some APIs hand back an
+anti-CSRF or session cookie there, and dropping it would silently change the cookie jar
+and the rate accounting. On Juice Shop the login route is **POST-only and answers 500 to
+the GET**, so half of every login attempt is a wrong-method request that returns nothing
+and still costs a rate slot.
+
+Nothing retries — the cost is that **many detectors each call `login()`**, and each call
+is two requests: *Default credentials*, *Function-level authz (BFLA)*, *Session
+management*, *Password policy*, and `establish_second_identity`.
+
+| Run | Duration | Web decisions | Login decisions | `hard:web-rate` | Login rate-denied | Density |
+|---|---|---|---|---|---|---|
+| 2C (08-16) | 18.3 min | 109 | 34 (31%) | 1 | 0 | 6.0/min |
+| 2C2 (08-21) | 49.8 min | 106 | 32 (30%) | 2 | 0 | 2.1/min |
+| **2C3 pre-flight** | **2.3 min** | 88 | **51 (58%)** | **26** | **22 (85%)** | **37.5/min** |
+
+**It is a density effect, not a volume effect.** The limit is
+`Scope.rate_limit_per_min` (default **30**, `scope.py:181`), enforced in
+`GovernedBrowser._rate_ok` (`web.py:497`) as a **sliding 60-second window per browser** —
+so per-engagement, not per-host. The long runs drained the window between requests and
+never noticed; the 3-step pre-flight ran everything at 37.5/min and hit the ceiling.
+
+**Consequence, and why it is recorded rather than shrugged at:** the denied requests
+included `POST /api/Users` and `POST /register` — **the second principal's registration**.
+That is what failed pre-flight condition B3, which in turn is why the two findings above
+had only one principal to work with. A P3 efficiency issue directly caused a P1 evidence
+problem, purely by exhausting a budget at the wrong moment.
+
+**Fix (not this session):** skip the seeding GET when a previous attempt on the same URL
+answered 4xx/5xx to it, or make it conditional on the strategy actually needing a
+pre-flight cookie. Either way, measure the login cost per run and keep it visible, because
+this was invisible for two full engagements.

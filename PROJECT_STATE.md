@@ -174,6 +174,26 @@ limits in the paper, not fixed before writing.
   - **Still open:** a target with **neither** a server-rendered form nor a JSON signup endpoint. No third
     door; the fail-safe stands and cross-account is recorded **NOT RUN** — cite as a scope limit, never as a
     negative result.
+- ~~**P1 — a confirmed finding carried a claim its comparator did not earn**~~ — **CLOSED 2026-08-23
+  (`1940f09`).** The 2C3 pre-flight published two HIGH cross-account IDORs from `bodies_differ` with **one
+  principal on both sides** (six `experiment_principal` records, all `self`). **The verdicts were sound; the
+  titles were not** — `title` and `severity` were passed to `Finding(...)` verbatim off the model's proposal.
+  `hypothesis._EVIDENCE_CLASS` now bounds each comparator's strongest claim and caps severity;
+  `derive_claim()` is a pure function of the comparator and the two resolved principals — **invariant 1
+  applied to the record, not the gate.** A bound, not a filter: `a_denied_b_allowed` with two distinct
+  principals keeps the full authorization claim. The model's reasoning survives labelled UNVERIFIED; its
+  title does not. **⚠ The two pre-flight findings must NOT be cited in their current wording** — under the
+  derived contract they publish as LOW "observed difference, same principal"; if the IDOR is real it must be
+  re-proved with two principals.
+- **Third false-result class closed this week, none found by a run:** `c829482` (missing principal became
+  anonymous), `2fdbc7f` (ledger did not record which principal), `1940f09` (unearned claim). All three
+  surfaced from auditing artifacts afterwards. Worth stating in the paper as-is.
+- **P3 — the login path costs 30–58% of the web budget** (recorded 2026-08-22, NOT fixed). `JsonAuth`
+  issues a seeding GET before every login POST; Juice Shop's login is POST-only and 500s the GET, so half of
+  every attempt is wasted, and ~5 detectors each call `login()`. Invisible at 2–6 req/min (2C, 2C2), fatal at
+  37.5 req/min (pre-flight): 26 rate denials, **including the second principal's registration POST** — a P3
+  efficiency issue directly caused the P1 evidence problem above. Limit is `rate_limit_per_min` (default 30),
+  a sliding 60s window per browser.
 - egress P1 #2 (lock blanket-allows the tunnel interface → doesn't constrain in-tunnel traffic;
   dodged-by-construction on local single-host nets but unfixed for VPN).
 - P2s: report self-count vs audit ledger mismatch; pytest writes into live `runs/vault/`; **the suite
