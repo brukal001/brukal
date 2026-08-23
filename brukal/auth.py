@@ -246,12 +246,49 @@ class JsonAuth:
 
         from .web import WebAction
 
-        # The seeding GET is NOT optional. The old login() issued it for every
-        # non-basic type before posting credentials, and some APIs hand back an
-        # anti-CSRF or session cookie there. Dropping it would change the request
-        # count, the cookie jar, and the rate-limit accounting — a behaviour change
-        # disguised as a tidy-up.
-        browser.run(WebAction("request", url=url, method="GET"))
+        # The seeding GET is not optional IN GENERAL — some APIs hand back an anti-CSRF
+        # or session cookie there, and dropping it unconditionally would change the
+        # cookie jar and break those targets silently. So it is dropped on EVIDENCE
+        # instead, per endpoint, and only once that endpoint has shown the GET yields
+        # nothing: a 5xx, or a 2xx that seeds no cookie.
+        #
+        # Measured cost of not doing this: Juice Shop answers 500 to
+        # `GET /rest/user/login`, roughly five detectors each call login(), and each call
+        # was two requests. Login was 30-58% of the entire web budget across three runs.
+        # It stayed invisible at 2-6 requests/min and became decisive at 37.5, where the
+        # rate limiter denied 26 requests INCLUDING the second principal's registration
+        # POST — a P3 efficiency issue causing a P1 evidence problem by exhausting a
+        # budget at the wrong moment.
+        _seed_memo = getattr(browser, "_seed_get_useless", None)
+        if _seed_memo is None:
+            _seed_memo = browser._seed_get_useless = set()
+        if url in _seed_memo:
+            # RECORDED, never silent: a request that used to be issued and no longer is
+            # must be explainable from the ledger alone, or a saving is indistinguishable
+            # from a bug.
+            _aud = getattr(browser, "_audit", None)
+            if _aud is not None:
+                _aud.append("login_seed_skipped", {
+                    "url": url,
+                    "reason": "a previous seeding GET here returned 5xx or set no cookie",
+                })
+        else:
+            _before_seed = set(_jar(browser).items())
+            _sd, _sres = browser.run(WebAction("request", url=url, method="GET"))
+            if _sres is not None:
+                # A DENIED request is not evidence about the endpoint — it says the gate
+                # or the rate limiter intervened, so nothing is learned and nothing is
+                # memoised.
+                _st = getattr(_sres, "status", None)
+                # "Did it yield anything" is judged on the RESPONSE, not only on a jar
+                # delta: by the second login the cookie it seeds is already in the jar,
+                # so a delta alone would read a working seeding GET as useless and
+                # memoise exactly the endpoint the comment is right to defend.
+                _hdrs = getattr(_sres, "headers", None) or {}
+                _sent_cookie = any(str(k).lower() == "set-cookie" for k in _hdrs)
+                _seeded = bool(set(_jar(browser).items()) - _before_seed) or _sent_cookie
+                if (_st is not None and _st >= 500) or not _seeded:
+                    _seed_memo.add(url)
 
         body = _json.dumps({creds.user_field: creds.username,
                             creds.pass_field: creds.password,
