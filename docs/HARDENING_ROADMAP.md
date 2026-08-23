@@ -1762,3 +1762,38 @@ reached/denied split on the finding so a reader can see the sample it rests on. 
 the same remedy as the rest of this week's work — make the instrument's own effect
 visible on the record rather than assume it away — and it is deliberately not being done
 mid-engagement.
+
+---
+
+## DISCLOSED ENGAGEMENT PARAMETER — `rate_limit_per_min` raised to 120 for run 2C4 (2026-08-23)
+
+**This is a condition of the measurement and must be stated wherever run 2C4 is cited.**
+
+`Scope.rate_limit_per_min` defaults to **30**, enforced by `GovernedBrowser._rate_ok` as a
+sliding 60-second window per browser. For run 2C4 it is set explicitly to **120** (2 req/s)
+in `scope.juiceshop.json`.
+
+**Why.** The default is tuned for a shared or production target. On three consecutive
+pre-flights against a maintainer-owned lab container on an isolated bridge it denied
+requests *the engagement itself depended on*:
+
+| pre-flight | web decisions | login decisions | `hard:web-rate` | signup denied | density |
+|---|---|---|---|---|---|
+| 2C3 baseline | 88 | 51 | 26 | **2** | 37.5/min |
+| 2C3b after the login-cost fix | 67 | 25 | 13 | **2** | 20.4/min |
+| 2C4 after the ordering fix | 65 | 32 | 15 | **0** | 24.4/min |
+
+Two real defects were found and fixed on the way here rather than papered over with this
+parameter — the login seeding GET (`13bc501`, halving login cost) and the phase ordering
+that queued principal acquisition behind the detector sweep (`670a88e`, which took signup
+denials to zero). The parameter is raised on top of those, not instead of them.
+
+**What it is not.** Scope, the gate, capability enforcement, the escalation path and the
+keyed audit chain are untouched; `full_send` appears nowhere in `gate.py` or `scope.py`,
+and the limiter still enforces 120/min. Nothing about containment or provability changes.
+
+**What it costs the result.** Any rate-limiting verdict from run 2C4 is **unusable as
+evidence about the target** — see *"our own rate limiter contaminates the detector that
+measures the target's"* above. That was already true at 30/min; it is simply now explicit.
+A run intended to measure the target's throttling must set this back to a defensible value
+and count its own denials.
