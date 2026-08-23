@@ -66,6 +66,88 @@ _COMPARATORS = {
 # to model-proposed experiments and reachable only by hand-written detectors.
 _IDENTITIES = ("self", "second", "anonymous")
 
+
+# What each comparator can establish ON ITS OWN, and the severity ceiling that follows.
+# A closed table beside the comparators themselves, because the two must never drift: a
+# comparator that gains a meaning has to gain a bound in the same edit.
+#
+# WHY THIS EXISTS. On 2026-08-22 `bodies_differ` confirmed twice and both findings were
+# published as HIGH cross-account reads — from a single principal, against object ids
+# nothing in the record tied to any owner. The verdicts were sound; the titles were not.
+# `title` and `severity` came straight off the model's proposal and reached the record
+# unexamined, so a true measurement went out under a sentence nobody verified.
+#
+# `authz` marks the ONE class that can speak about authorization, and even then only
+# when two DIFFERENT principals were actually recorded — a refusal and an acceptance
+# from the same session says nothing about who may reach what.
+_EVIDENCE_CLASS = {
+    "status_differs": (
+        "two requests differing in one value were answered with different status codes",
+        "low", False),
+    "bodies_differ": (
+        "two requests differing in one value returned different response bodies",
+        "low", False),
+    "b_reveals_more": (
+        "one request returned substantially more data than its near-identical control",
+        "medium", False),
+    "b_errors_a_does_not": (
+        "one request drove the application into a server error its control did not",
+        "medium", False),
+    "a_denied_b_allowed": (
+        "one principal was refused and a different principal was accepted for the same "
+        "request",
+        "high", True),
+}
+
+_SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def derive_claim(comparator: str, control_as: str, variant_as: str, url: str = "") -> dict:
+    """The strongest claim an evidence class supports, derived — never model text.
+
+    Returns `title`, `claim`, `severity_cap`, `evidence_class` and `authz`. Pure
+    function of the comparator and the two RESOLVED principals: no model output reaches
+    it, which is invariant 1 applied to the record rather than to the gate. The model
+    still proposes the experiment and still explains its reasoning; it no longer gets to
+    author the sentence a reader will treat as proven.
+
+    The bound is deliberately not a filter. `a_denied_b_allowed` between two genuinely
+    distinct principals keeps the full authorization claim at its full severity — that
+    is the finding the whole second-principal effort exists to produce, and flattening
+    it would trade one blindness for another."""
+    claim, cap, authz = _EVIDENCE_CLASS.get(
+        comparator, ("an experiment comparator reported a difference", "low", False))
+    distinct = bool(control_as and variant_as and control_as != variant_as)
+    if authz and not distinct:
+        # The authorization comparator fired, but both sides were the same session, so
+        # it cannot be about who may reach what. Say what it does show, and drop the cap.
+        claim = ("the same principal was refused for one request and accepted for "
+                 "another")
+        cap, authz = "medium", False
+    who = (f"{control_as} vs {variant_as}" if distinct
+           else f"the same principal ({control_as or 'self'}) on both sides")
+    if authz:
+        title = f"Authorization: {control_as} refused where {variant_as} was accepted"
+    else:
+        title = f"Observed difference [{comparator}] — {who}"
+    if url:
+        from urllib.parse import urlsplit
+        path = urlsplit(url).path or "/"
+        title = f"{title} at {path}"
+    return {"title": title, "claim": claim, "severity_cap": cap,
+            "evidence_class": comparator, "authz": authz, "principals": who}
+
+
+def cap_severity(model_severity: str, cap: str) -> str:
+    """The model's severity, never above what the evidence class allows.
+
+    It may ask for LESS — a model that judges its own finding minor is not overreaching
+    and there is no reason to inflate it."""
+    ms = (model_severity or "medium").lower()
+    if ms not in _SEV_RANK:
+        ms = "medium"
+    return ms if _SEV_RANK[ms] <= _SEV_RANK.get(cap, 1) else cap
+
 def _substantive(result, profile=None) -> bool:
     """Whether a response carries real content, as THIS application measures it.
 

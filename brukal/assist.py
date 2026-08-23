@@ -3878,8 +3878,16 @@ class AssistSession:
                 continue
             confirmed += 1
             self.note(f"[experiment] CONFIRMED [{h.comparator}]: {h.title}")
+            # The CLAIM is derived, not quoted. `title` and `severity` used to come
+            # straight off the model's proposal: on 2026-08-22 that published two HIGH
+            # cross-account reads from a single principal, on sound verdicts. The
+            # comparator and the two RESOLVED principals decide what may be asserted and
+            # how loudly; the model's own words are kept below, marked UNVERIFIED, because
+            # they are the most useful sentence in the record and the least trustworthy.
+            _cl = _hyp.derive_claim(h.comparator, _c_as, _v_as, h.variant["url"])
             self.findings.add(Finding(
-                title=h.title, severity=h.severity, category="logic",
+                title=_cl["title"], severity=_hyp.cap_severity(h.severity, _cl["severity_cap"]),
+                category="logic",
                 target=h.variant["url"], param="", confirmed=True,
                 evidence=(f"{meaning}: control {h.control['method']} "
                           f"{h.control['url']} -> HTTP {a.status} ({len(a.body or '')}B); "
@@ -3891,8 +3899,17 @@ class AssistSession:
                           # reading a cross-account claim should not have to correlate
                           # an audit file to learn which principal saw what.
                           + f". Principals: control issued as {_c_as}, "
-                            f"variant issued as {_v_as}"
-                          + (f". Hypothesis: {h.rationale}" if h.rationale else "")),
+                            f"variant issued as {_v_as} ({_cl['principals']})"
+                          + f". [evidence: {_cl['evidence_class']}] this establishes "
+                            f"{_cl['claim']}, and no more"
+                          # The model's REASONING is kept and labelled; its TITLE is
+                          # not. The rationale is conditional and explains what the agent
+                          # was testing, which is the most useful sentence in the record.
+                          # The title is a flat assertion — the exact artefact that went
+                          # out unearned — and it stays in the note stream, where it reads
+                          # as agent chatter rather than as the finding's claim.
+                          + (f". UNVERIFIED agent interpretation (NOT part of this "
+                             f"finding's claim): {h.rationale}" if h.rationale else "")),
                 source=(f"differential [{h.comparator}] between the control and variant "
                         f"requests above"
                         + (f", after {len(h.setup)} setup request(s)" if h.setup else ""))))

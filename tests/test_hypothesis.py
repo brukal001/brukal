@@ -195,8 +195,16 @@ def test_a_supported_hypothesis_becomes_a_confirmed_finding():
                            "http://127.0.0.1:5000/order?qty=-1": (200, "ok")}))
     assert sess.run_hypotheses() == 1
     f = sess.findings.all()[0]
-    assert f.confirmed and f.severity == "high" and f.category == "logic"
+    # Severity is CAPPED, not quoted: `a_denied_b_allowed` fired here between the SAME
+    # principal on two different urls, which shows an input was refused and another
+    # accepted — real, but not an authorization result, so the model's "high" is held to
+    # the evidence class's ceiling. See hypothesis._EVIDENCE_CLASS.
+    assert f.confirmed and f.severity == "medium" and f.category == "logic"
     assert "control" in f.evidence and "variant" in f.evidence
+    assert "[evidence: a_denied_b_allowed]" in f.evidence
+    assert "a negative quantity should be rejected" in f.evidence, (
+        "the model's reasoning must survive, labelled")
+    assert "UNVERIFIED" in f.evidence
 
 
 def test_an_unsupported_hypothesis_is_discarded_not_recorded_as_a_lead():
@@ -455,7 +463,13 @@ def test_a_failed_round_feeds_its_observations_into_a_second_attempt():
     sess.strategist = type("S", (), {"_llm": _TwoShot()})()
     assert sess.run_hypotheses() == 1
     assert "NOT CONFIRMED" in _TwoShot.last_user      # the refinement saw the failure
-    assert sess.findings.all()[0].title == "B refined"
+    # The published finding is the SECOND round's, pinned by the url it actually hit
+    # rather than by the model's title — titles are now derived from the evidence class,
+    # so a model-authored string is no longer the thing to assert on. Same subject,
+    # tighter: /d could only have been reached by the refined proposal.
+    published = sess.findings.all()[0]
+    assert published.target.endswith("/d")
+    assert "[evidence: status_differs]" in published.evidence
 
 
 def test_refinement_is_skipped_when_nothing_was_observed():

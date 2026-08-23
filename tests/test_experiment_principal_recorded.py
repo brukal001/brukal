@@ -299,7 +299,9 @@ def test_the_confirmed_finding_carries_the_principals_in_its_own_evidence():
     cage = _EchoCage({_A: (401, ""), _B: (200, "another user's record, substantial")})
     sess = _with_second(_session(cage))
     assert sess.run_hypotheses() == 1
-    f = next(f for f in sess.findings.all() if "Cross-account" in f.title)
+    # Selected by evidence class, not by the model's title: titles are derived from the
+    # comparator now, so a model-authored string is no longer a stable selector.
+    f = next(f for f in sess.findings.all() if f.confirmed and f.category == "logic")
     assert "issued as" in f.evidence, (
         f"the finding does not say who issued each side: {f.evidence!r}")
     assert "control issued as self" in f.evidence
