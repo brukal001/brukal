@@ -1654,7 +1654,7 @@ quite complete enough, which is why `2fdbc7f` had to exist at all.
 
 ---
 
-## P3 — THE LOGIN PATH COSTS A THIRD TO A HALF OF THE WEB BUDGET (2026-08-22, RECORDED NOT FIXED)
+## ~~P3 — THE LOGIN PATH COSTS A THIRD TO A HALF OF THE WEB BUDGET~~ — **CLOSED 2026-08-23 (`13bc501`)** (2026-08-22)
 
 **Severity: P3 (efficiency; becomes P2 whenever a run is dense).** Recorded during the
 2C3 pre-flight audit. **Not fixed here** — this session was scoped to claim derivation,
@@ -1689,7 +1689,33 @@ That is what failed pre-flight condition B3, which in turn is why the two findin
 had only one principal to work with. A P3 efficiency issue directly caused a P1 evidence
 problem, purely by exhausting a budget at the wrong moment.
 
-**Fix (not this session):** skip the seeding GET when a previous attempt on the same URL
-answered 4xx/5xx to it, or make it conditional on the strategy actually needing a
-pre-flight cookie. Either way, measure the login cost per run and keep it visible, because
-this was invisible for two full engagements.
+**Fixed 2026-08-23 (`13bc501`) — dropped on evidence, not on principle.** The GET is
+still issued the first time at any login endpoint. Once it has answered 5xx there, or
+answered 2xx and seeded nothing, it is not issued at that URL again for the rest of the
+engagement. Five logins on this shape of target now cost **6 requests instead of 10**.
+
+**The skip is recorded** as a `login_seed_skipped` audit entry. A request that used to be
+issued and no longer is must be explainable from the ledger alone, or a saving is
+indistinguishable from a bug.
+
+Two constraints the tests forced, both worth keeping in mind for the next optimisation of
+this kind:
+
+- **A DENIED seeding GET teaches nothing and is not memoised.** That is the gate or the
+  rate limiter intervening, not the endpoint speaking — memoising it would let a transient
+  rate denial permanently disable a control on a target that needs it.
+- **"Did it yield anything" is judged on the response carrying `Set-Cookie`, not on a
+  cookie-jar delta.** By the second login the cookie is already in the jar, so a delta
+  alone reads a *working* seeding GET as useless and memoises exactly the endpoint the
+  original comment is right to defend. The boundary test caught this on the first
+  implementation.
+
+`FormAuth`'s GET is untouched: it reads the form's hidden and CSRF fields, so it is not
+waste. Tests: `tests/test_login_seed_get_cost.py` — 8 tests, **5 verified red first**.
+Suite: **1038 passed, 1 skipped**.
+
+**The lesson worth carrying:** this was a P3 by severity and a P1 by consequence. It sat
+invisible through two complete engagements because neither was dense enough to hit the
+ceiling, and it only surfaced when a 3-step pre-flight compressed the same work into 2.3
+minutes. **A cost that scales with density is not visible in a slow run**, and the runs
+this project makes are usually slow.
