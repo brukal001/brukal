@@ -3853,6 +3853,24 @@ class AssistSession:
                 self.note(f"[experiment] ERRORED before reaching the target: {h.title} "
                           f"({type(exc).__name__}: {str(exc)[:80]})")
                 continue
+            # THE FLOOR, and it is principled rather than numeric: when BOTH sides are
+            # 5xx the application did not behave, it broke, and no comparator can read
+            # behaviour out of a crash. The 2C3b pre-flight confirmed `bodies_differ` on
+            # two 500s of identical length whose bodies differed only in an echoed id —
+            # that is the error handler's output, not the application's. Recorded as
+            # not-a-result in the same shape as UNRESOLVED REFERENCE, because "we could
+            # not ask" and "we asked and it held" must never look alike.
+            # getattr, not attribute access: either side is None when the gate or the
+            # rate limiter refused that request, and a blocked pair is handled below.
+            _as, _bs = getattr(a, "status", None), getattr(b, "status", None)
+            if (_as or 0) >= 500 and (_bs or 0) >= 500:
+                self.note(f"[experiment] BOTH SIDES FAILED ({_as}/{_bs}), not "
+                          f"judged: {h.title} — a difference between two server errors "
+                          f"is not evidence about the application")
+                outcomes.append(f"BOTH SIDES FAILED (experiment NOT judged, this is not "
+                                f"a result) {h.title}: control HTTP {_as}, variant "
+                                f"HTTP {_bs}")
+                continue
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None))
             if not holds:
                 # Keep what happened — a round that confirms nothing is still the only
