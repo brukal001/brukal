@@ -156,6 +156,18 @@ def to_json(findings, meta: dict | None = None) -> dict:
             "impact": kb["impact"],
             "remediation": kb["remediation"],
             "references": kb["refs"],
+            # Experiment-path provenance. Empty on every other kind of finding, and
+            # ALWAYS present so the schema is stable for a consumer.
+            #
+            # This dict is enumerated field by field, so anything added to Finding is
+            # dropped here unless it is added here too — which is exactly what happened:
+            # findings.jsonl carried the overclaim pair and the published findings.json
+            # silently did not. The overclaim rate ("the model claimed high on N, the
+            # evidence supported low on M") is a headline measurement for this project
+            # and has to be computable from the PUBLISHED artifact, not only the ledger.
+            "evidence_class": getattr(f, "evidence_class", "") or "",
+            "agent_claim": getattr(f, "agent_claim", "") or "",
+            "agent_severity": getattr(f, "agent_severity", "") or "",
             "observed_at": getattr(f, "ts", None),
         })
     confirmed = [i for i in items if i["confirmed"]]
