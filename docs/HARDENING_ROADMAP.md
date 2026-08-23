@@ -1286,9 +1286,18 @@ then *judged*. And it ran in **both** directions:
 | control `self`, variant `second`→anon | **NOT CONFIRMED** | a false negative that reads as evidence about the application |
 | control `second`→anon, variant `self` | **CONFIRMED, high** | "an authenticated request succeeds where an anonymous one does not" — true of every authenticated endpoint on the web |
 
-The second row is a **false positive**, in the project whose headline claim is that it
-structurally cannot produce them. It is not hypothetical: the test written for it was red
-with `assert 1 == 0` — `run_hypotheses()` really did return a manufactured confirmation.
+The second row is a **false positive**, and it is not hypothetical: the test written for it
+was red with `assert 1 == 0` — `run_hypotheses()` really did return a manufactured
+confirmation.
+
+**On the phrase "structurally cannot produce false positives": this defect is the standing
+counter-example, and the phrase must not be quoted on its own.** Before `c829482` the harness
+*could* manufacture a confirmation, and it took adversarial testing rather than any run to
+find that out. What is defensible after the fix is narrower and must be written out in full
+wherever it appears: *a finding is derived from real gate-executed output, a fixed comparator
+— never the model — decides whether it holds, the claim is bounded by what that comparator
+can establish, and one known fabrication path is closed.* That is a statement about
+mechanism, not a guarantee about all possible runs.
 The 2026-08-20 run selected the first arrangement and so lost findings; the same defect
 one field apart would have invented one.
 
@@ -1479,10 +1488,15 @@ $ grep -rl '"as"' runs/
 
 **The proposal JSON is persisted nowhere.** Not in `findings.jsonl`, not in the audit log, not
 in the agent notes, not in the blackboard. The record keeps a title, a comparator and two
-URLs, and stops. So for those five runs it can be said with certainty that **no false positive
-was published** — no confirmation exists in any of them — while **whether `as: second` was
-named and silently degraded cannot be determined at all**. That is recorded as unresolved and
-is not being rounded toward the good case.
+URLs, and stops. So for those five runs it can be said with certainty that **no CONFIRMED
+experiment finding exists in any of them** — the manufactured-confirmation path provably did
+not fire there — while **whether `as: second` was named and silently degraded cannot be
+determined at all**. That is recorded as unresolved and is not being rounded toward the good
+case.
+
+**Do not restate this as "no false positive was published".** That is a broader claim than
+the evidence carries, and the evidence ledger of 2026-08-24 does not support it — see
+*"'no false positive' is not assertable today"* below.
 
 One pair is suggestive and permanently unresolvable, from the 2B run: *IDOR on
 `/rest/basket/{id}` — control HTTP 200 (900B) vs variant HTTP 200 (1310B)*, filed NOT
@@ -1560,8 +1574,9 @@ green. Suite: **1002 passed, 1 skipped** (was 993).
 > Their artifacts were written before any principal was recorded, and nothing in this change
 > is retroactive — there is no field to backfill from, because the information was never
 > captured anywhere. `vault-dvga3`, `vault/10.129.100.21`, `vault/10.129.100.61`, the
-> archived 2B run and 2C stay exactly as the audit found them: **no false positive was
-> published in any of them, and whether `as: second` silently degraded cannot be determined.**
+> archived 2B run and 2C stay exactly as the audit found them: **no CONFIRMED experiment
+> finding exists in any of them, and whether `as: second` silently degraded cannot be
+> determined.** (Phrased as confirmations, not as false positives — see the ledger note below.)
 > That distinction must survive into the paper intact. What closed here is the guarantee for
 > **runs from 2026-08-22 onward**; the earlier ones are a cited gap in the evidence, not a
 > resolved question, and the suggestive 2B pair (`control 200 (900B)` vs `variant 200
@@ -1638,19 +1653,44 @@ Under the derived contract they publish as **LOW**, *"Observed difference [bodie
 real — it very likely is — it must be **re-proved with two distinct principals** and
 cited from that run, never from these artifacts.
 
-### The pattern: three false-result classes in one week, all found by audit
+### The pattern: FOUR false-result classes in one week, all found by audit
 
 | Closed | Class | How it would have read |
 |---|---|---|
 | `c829482` | A missing principal silently became `anonymous` | a fabricated CONFIRMED, or a false negative |
 | `2fdbc7f` | The ledger did not record which principal was used | sound and manufactured findings byte-identical |
 | `1940f09` | A sound verdict published under an unearned claim | a true measurement under a sentence nobody verified |
+| `a8410a5` (OPEN) | Our own rate limiter contaminates the detector measuring the target's | a verdict about Brukal's governor read as a verdict about the target |
 
-**None of the three was found by a run.** Every one surfaced from auditing artifacts
+**None of the four was found by a run.** Every one surfaced from auditing artifacts
 after the fact, and each was invisible to the run that produced it. That is worth saying
 plainly in the paper: the governance model's value here was not that it prevented these,
 but that the ledger was complete enough to find them afterwards — and twice it was not
 quite complete enough, which is why `2fdbc7f` had to exist at all.
+
+---
+
+## "NO FALSE POSITIVE" IS NOT ASSERTABLE TODAY (evidence ledger, 2026-08-24)
+
+Three facts, and the claim needs all three stated together or it overreaches.
+
+1. **The manufactured-confirmation path provably never fired.** An exhaustive sweep of
+   ~87 vault roots for the comparator's own meaning string returns **six** CONFIRMED
+   experiment findings all-time. The one produced by `a_denied_b_allowed` (`vault-dvna18`,
+   2026-08-06) is sound on three independent grounds — a second principal existed, the
+   hypothesis prose names the control as anonymous, and a separate CRITICAL corroborates it
+   by a different route.
+2. **Five `bodies_differ` findings were published with cross-account titles their comparator
+   did not earn.** Two in the 2C3 pre-flight, three in 2C3b, every side issued by a single
+   principal. `1940f09` closed the mechanism; the artifacts still carry the old wording.
+3. **Whether those five underlying claims are TRUE was never independently verified.** They
+   are probably real Juice Shop IDORs. "Probably real" is not a measurement, and re-proving
+   them with two distinct principals has not been done.
+
+**So the assertable claim is "the manufactured-confirmation path never fired, and here is
+the sweep", not "no false positive was ever published".** The second is a claim about every
+finding this project has ever emitted; the evidence supports a claim about one path. A
+reviewer who reads (2) will not accept (1) as covering it, and they would be right.
 
 ---
 
