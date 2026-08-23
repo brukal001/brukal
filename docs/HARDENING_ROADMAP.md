@@ -1719,3 +1719,46 @@ invisible through two complete engagements because neither was dense enough to h
 ceiling, and it only surfaced when a 3-step pre-flight compressed the same work into 2.3
 minutes. **A cost that scales with density is not visible in a slow run**, and the runs
 this project makes are usually slow.
+
+---
+
+## P2 — OUR OWN RATE LIMITER CONTAMINATES THE DETECTOR THAT MEASURES THE TARGET'S (2026-08-23, OPEN)
+
+**Severity: P2 (a detector whose verdict is unaudited). RECORDED, NOT FIXED.**
+
+`confirm_missing_rate_limit` (`assist.py:5154`) sends **8 rapid failed logins** to decide
+whether the TARGET throttles credential brute force. Its proof is explicitly that *"every
+attempt was answered normally — no 429, no lockout message, no widening delay"*.
+
+In run **2C3b**, **9 of the 13 `hard:web-rate` denials were that detector's own probes**,
+refused by **Brukal's** governor before they ever reached the target. The detector
+therefore counted answers to requests that were never sent.
+
+**Its verdict cannot distinguish "the target did not rate-limit me" from "my own governor
+did."** Those are opposite findings — one is a real API4 weakness in the target, the other
+is Brukal working correctly — and the detector reports them identically. It reads
+`r is None` as *"a blocked request is not evidence"* and returns `False`, so a
+rate-limited run yields **no finding either way**, which is the safe direction; but the
+absence is then indistinguishable from a target that throttles properly, and a *partially*
+denied sweep still reaches `len(set(statuses)) != 1` or an all-same verdict built from a
+truncated sample.
+
+**This is the same class as the week's other three findings**, arriving from a fourth
+direction: `c829482` (a missing principal wearing a comparator's verdict), `2fdbc7f` (a
+verdict with no provenance), `1940f09` (a sound verdict under an unearned claim), and now
+**a detector whose measurement is contaminated by the instrument**. Every one is the same
+shape — *the artifact reads as a statement about the target when it is partly a statement
+about Brukal* — and every one was found by auditing artifacts, never by a run.
+
+**Any past run's rate-limiting verdict is suspect.** "No rate limiting on authentication"
+appears as a confirmed MEDIUM in earlier engagements (`vault-dvna18`, 2026-08-06, among
+others). Those were recorded before this interaction was understood, and none of them
+records how many of its 8 probes actually reached the target. **They should not be cited
+without re-deriving the denial count for that run from its audit log.**
+
+**Fix (not this session).** The detector must know what the gate did to its own requests:
+count denied probes, refuse to conclude unless all 8 reached the target, and record the
+reached/denied split on the finding so a reader can see the sample it rests on. That is
+the same remedy as the rest of this week's work — make the instrument's own effect
+visible on the record rather than assume it away — and it is deliberately not being done
+mid-engagement.
