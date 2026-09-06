@@ -229,6 +229,42 @@ pre-fix step-counts / finding-counts cited in the paper must be re-run on the fi
 
 ---
 
+## THE CAPABILITY MILESTONE — the definition of "done" for the CURRENT phase (2026-09-06)
+
+**The paper is DEFERRED by decision. This is what the current phase is for, and it is the
+only thing that counts as finishing it.**
+
+> **ONE confirmed business-logic finding, on a real target, where the LEDGER ALONE supports
+> the claim: two distinct principals recorded, the comparator earning the title, and no
+> external seeding needed to interpret the result.**
+>
+> **Nothing short of that counts. Nothing beyond it is required.**
+
+Each clause is there because something specific went wrong without it, and none of them is
+decoration:
+
+| Clause | The failure it forecloses |
+|---|---|
+| **confirmed** | not proposed, not plausible — a fixed comparator held on gate-executed output |
+| **business-logic** | 2C4's three findings were real and none were this class; the frontier is the reasoning-heavy lane, not the detector lane |
+| **on a real target** | a fixture proves the plumbing, never the capability |
+| **the LEDGER ALONE supports the claim** | 2C2's `PUT /api/BasketItems/1` → 200 is *still* uncitable: the tenant mapping was seeded externally and appears in no artifact, so the record cannot say whether the write was A-as-A or anonymous |
+| **two distinct principals recorded** | `c829482` (a missing principal resolving to `anonymous`) and `2fdbc7f` (no provenance on either side) |
+| **the comparator earning the title** | `1940f09` — two HIGH cross-account IDORs published off `bodies_differ` with one principal on both sides. The verdicts were sound; the titles were not |
+| **no external seeding** | the same 2C2 defect stated as a rule: if a reader needs something we know and the bundle does not carry, the bundle does not support the claim |
+
+**What is already in place**, so the milestone is a measurement and not a build: the phase
+is planned and reached, the experiment engine is asked, two real principals are established
+in-harness and recorded per side, claims are bounded by what the comparator can establish,
+results that cannot be judged are refused rather than invented, and — as of `1e25473` — the
+model is shown the key paths of its own setup responses instead of being asked to guess
+them.
+
+**Not part of this milestone:** paper work, the publishable-bundle P1, the asymmetric-signing
+P1. They are real and they are recorded; they are not what this phase is measuring.
+
+---
+
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
 Start the paper skeleton NOW in parallel (architecture + threat-model sections are done and won't change).
 Trigger the evaluation write-up when ALL three hold:
@@ -298,8 +334,12 @@ Trigger the evaluation write-up when ALL three hold:
    That is the citable limit, and it must be stated in exactly these terms: the loop reached the frontier,
    asked the model, built two real principals, dispatched their requests, and then **declined to invent a
    result there**. What remains unmeasured is whether the comparators can confirm a business-logic flaw —
-   not whether the harness will fake one. The highest-value remaining capability item is the setup-reference
-   schema gap below.
+   not whether the harness will fake one. The highest-value remaining capability item was the setup-reference
+   schema gap below, **CLOSED 2026-09-06 (`1e25473`)**: the refine round is now shown the resolved key paths
+   of its own setup responses — structure only, never values, bounded and announcing its bounds — so the
+   model is no longer asked to name a field it has never seen. **That closes the CONTRACT, not the
+   measurement.** Whether the comparators can confirm a business-logic flaw on a live target is still
+   unmeasured, and this fix must never be cited as if it were that result.
 
    **Two runs made. Neither met it. NOT MET as of 2026-08-21.**
 

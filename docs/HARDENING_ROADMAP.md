@@ -1913,10 +1913,9 @@ say "this chain does not start at a genesis record" rather than "intact".
 
 ---
 
-## P2 — THE SETUP-REFERENCE CONTRACT DOCUMENTS SYNTAX BUT NOT SCHEMA (2026-08-23, OPEN)
+## ~~P2 — THE SETUP-REFERENCE CONTRACT DOCUMENTS SYNTAX BUT NOT SCHEMA~~ — **CLOSED 2026-09-06 (`1e25473`)** (2026-08-23)
 
-**Severity: P2 by blast radius, and the HIGHEST-VALUE REMAINING CAPABILITY ITEM.
-RECORDED, NOT FIXED.**
+**Severity: P2 by blast radius, and it was the HIGHEST-VALUE REMAINING CAPABILITY ITEM.**
 
 **9 of 9** model-proposed experiments in run 2C4 died at:
 
@@ -1950,6 +1949,60 @@ around it now works: the phase is planned and reached, the engine is asked, two 
 principals exist, provenance is recorded, claims are bounded, and results that cannot be
 judged are refused rather than invented. The one remaining gap between that and a confirmed
 business-logic finding is that the model is asked to name a field it was never told about.
+
+### CLOSED 2026-09-06 (`1e25473`) — the next round is shown the key paths
+
+`hypothesis.key_paths()` extracts the dotted paths of a setup response body and
+`describe_setup_shape()` renders one line per response; `_run_one_round` accumulates them
+where the response is captured, and `run_hypotheses` shows them to the refine round above
+the results that depend on them. The 2C4 prompt would now have read:
+
+```
+What your setup requests actually RETURNED. These are FIELD PATHS ONLY — no values are
+shown — and they are exactly the paths a {{setup.<i>.<path>}} reference may name. ...
+  - setup.0 GET http://…/rest/user/whoami -> HTTP 200; field paths: user.id, user.email, …
+
+Results of your last round:
+  - UNRESOLVED REFERENCE (experiment NOT run, this is not a result) …: {{setup.0.id}}: no field 'id'
+```
+
+**Four properties, each pinned rather than asserted.**
+
+1. **What the model is shown IS what it may use.** `key_paths` is the mirror image of
+   `_lookup`: it lists a path if and only if `_lookup` would return a value for it, so an
+   object, a `null` and an empty container — all `UnresolvedReference` in the resolver —
+   never appear. A parametrised test resolves *every* listed path through the real
+   resolver, so the disclosure cannot drift into naming a field that then aborts its own
+   experiment. The two halves of the contract are welded, not coincidentally in agreement.
+2. **Structure, never values.** The line is built from `step`, the model's own request
+   text, and not from the resolved spec — a value substituted into a url by an *earlier*
+   reference therefore cannot ride out on it. Driven by a response whose values include a
+   session token and an email, on both the prompt and the note surface.
+3. **The prompt is the only boundary, and it already existed.** The block goes through
+   `LLMClient.propose` → `redact.text`, no second funnel. Paths-only is not leak-proof on
+   its own — a response keyed BY a credential, `{"sessions": {"<jwt>": …}}`, puts the
+   secret in the *path* — so that exact shape is the test, through the real client, and it
+   asserts the placeholder survives rather than the line being dropped. **A control that
+   transforms data is tested on both sides.**
+4. **Both bounds announce themselves.** Depth (4) and count (40) are deterministic, and
+   when either bites the line carries `[TRUNCATED: …]` on the record *and* in the prompt.
+   A partial list read as a complete one is a model concluding a field is absent when it
+   was merely cut — the same silent-failure class this closure exists to end, so the fix
+   for it does not get to fail silently either.
+
+**The fail-safe is not weakened, and that is its own test.** An unresolvable reference
+still raises `UnresolvedReference`, is still not dispatched and still not judged. Showing
+the paths removes the *reason* to guess; it does not make a guess survivable.
+
+**Carried in its own accumulator**, not in `outcomes` — the refine prompt windows that
+list to its last 8 entries, so on a nine-experiment round the shapes would have been
+exactly the entries the window discarded. The gap would have been closed in code and
+still absent from the prompt.
+
+**What this does NOT close.** It is a fix to the *contract*, verified against fixtures and
+the recorded 2C4 shape. Whether the comparators can now confirm a business-logic flaw on a
+live target is unmeasured until the next capability run, and this closure must not be cited
+as if it were that measurement.
 
 ---
 
@@ -2005,3 +2058,82 @@ precedes step 2, and why the fix cannot be applied to any run already made.
 **Until this is closed, every evaluation number in the paper is "trust our transcript".**
 That is a materially weaker claim than the one the governance thesis rests on, and it should
 be stated as a limitation if the paper is written before the publishable run exists.
+
+---
+
+## P1 — A PUBLISHED-KEY HMAC CHAIN DOES NOT GIVE THIRD-PARTY INTEGRITY (2026-09-06, OPEN)
+
+**Severity: P1 (it undercuts the win-axis the thesis leads on). RECORDED, NOT FIXED.**
+
+The intended resolution of *"every headline evaluation number is unverifiable by a reader"*
+is to publish one clean artifact bundle **together with its `BRUKAL_AUDIT_KEY`**, so a
+reader can run `brukal verify` and get `chain intact: True` from their own machine. That
+step is necessary and it is not sufficient, because **the property it demonstrates is not
+the property the reader wants.**
+
+The chain is HMAC — a SYMMETRIC construction. Verifying it requires the same key that
+produces it. So publishing the key does not turn the reader into an auditor; it turns them
+into someone who can confirm that a bundle we assembled is **internally consistent with
+itself**. Anyone holding that key — including us, before publication, at leisure — can edit
+any record and recompute every link after it. `chain intact: True` on a published bundle
+therefore evidences exactly one thing: *these files have not been corrupted or truncated
+since they were written or last rewritten.* It cannot evidence *we did not edit them*, which
+is the only question a sceptical reviewer is actually asking.
+
+**This is a strictly weaker claim than the one the paper leads on.** "Keyed tamper-evident
+audit chain; every action provable" reads to a reviewer as third-party verifiable, and it is
+not. The chain is a real and useful control against an agent or a process corrupting the
+ledger mid-run, and against silent bit-rot; it is not, and cannot be, evidence about the
+authors' own conduct. Publishing the key makes the check runnable without making its result
+mean more than it did.
+
+**Intended fix, either of:**
+
+- **Asymmetric signing with a published public key.** The signing key stays private, the
+  verification key ships with the bundle, and `chain intact` then means *signed by the
+  holder of a key that existed before publication* rather than *consistent with a key
+  everybody now has*. This is the real fix and it changes what the artifact proves.
+- **An external timestamped commitment of the chain head, made BEFORE scrutiny.** Publish
+  the final HMAC head to something we do not control and cannot backdate — a git tag pushed
+  to a public remote, a transparency log, an OTS timestamp — at the moment the run ends.
+  Any later edit changes the head and no longer matches the commitment. Weaker than
+  asymmetric signing (it pins one value, not every record's authorship) but far cheaper,
+  and it closes the specific hole: *we could have rewritten the ledger after seeing how the
+  results looked.*
+
+**Do not publish the bundle-plus-key as "third-party verifiable integrity" before one of
+these lands.** Publishing it as *"internally consistent, key included so you can check the
+files are the ones we describe"* is honest and still worth doing; the stronger wording is
+the claim this entry exists to stop, and it is exactly the shape of *the check must prove
+the claim, not a narrower proxy*.
+
+---
+
+## P2 — THE THREAT MODEL DOES NOT NAME WHO THE AUDIT CHAIN DEFENDS AGAINST (2026-09-06, OPEN)
+
+**Severity: P2 (a documentation gap that makes two other findings unrankable). RECORDED,
+NOT FIXED.**
+
+Invariant 5 says *"immutable scope, append-only tamper-evident audit (HMAC-keyed when
+`BRUKAL_AUDIT_KEY` is set)"*. It does not say **against whom**. There are three candidate
+adversaries and the control means something different against each:
+
+| Adversary | What the chain is defending | Is the current design sufficient? |
+|---|---|---|
+| **The AGENT** — an LLM-driven process that could edit the record of what it did | that the ledger describes the actions really taken | **Yes, largely.** The key lives in the orchestrator env, outside the cage; the agent cannot forge a link. This is the case the design was actually built for. |
+| **The OPERATOR** — us, editing our own evidence before publishing it | that the authors did not curate the result | **No.** The operator holds the key by construction, so a symmetric chain is self-consistent under any edit they make. See the P1 above. |
+| **A THIRD-PARTY READER's doubt** — a reviewer with the bundle and nothing else | that what they were handed is what was produced | **No.** Same reason, plus *a deleted audit log silently restarts the chain* — a reader cannot distinguish a fresh run from a truncated one by inspecting the artifact. |
+
+**This is not pedantry: two open findings are unrankable until it is answered.** *"A deleted
+audit log silently restarts the chain"* is a P2 nuisance against the agent and a P1 hole
+against a reader. The operator-held key is a non-issue against the agent and disqualifying
+against a reviewer. Both were filed at severities that quietly assume an answer nobody has
+written down, and **severity tracks blast radius when it fires** — which requires knowing
+whose hand is on the trigger.
+
+**Intended fix:** state the adversary explicitly in `PROJECT_STATE.md`'s invariant 5 and in
+the paper's threat-model section, then re-rank every audit-chain finding against it. If the
+answer is *the agent* — which is the defensible one for the current design — say so, and
+demote the third-party claims to what the design earns. If the answer is *a third-party
+reader*, the P1 above is a blocker for the paper's central win-axis and not a nice-to-have.
+Pick one; do not let the ambiguity keep flattering the stronger reading.
