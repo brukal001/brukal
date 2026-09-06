@@ -3721,6 +3721,12 @@ class AssistSession:
             return 0
 
         outcomes: list = []
+        # The SHAPE of what each setup request returned, accumulated across the round so
+        # the next one can be shown it. Separate from `outcomes` on purpose: that list is
+        # windowed to its last 8 entries in the refine prompt, and on a round of nine
+        # experiments the shapes — the one thing that would fix the next round — would be
+        # the entries pushed out.
+        shapes: list = []
         proposals = _hyp.parse(reply)
         # Record the attempt BEFORE the early return. The first live run asked the model,
         # got a truncated reply, parsed nothing, and left no trace at all — the coverage
@@ -3745,7 +3751,7 @@ class AssistSession:
         rounds = 0
         while proposals and rounds < 2:
             rounds += 1
-            confirmed += self._run_one_round(proposals[:max_run], outcomes)
+            confirmed += self._run_one_round(proposals[:max_run], outcomes, shapes)
             if confirmed or rounds >= 2:
                 break
             # Nothing held. A refinement is only worth a second model call if the first
@@ -3755,11 +3761,28 @@ class AssistSession:
             if not outcomes:
                 break
             try:
+                # WHAT THE SETUP RETURNED, before the results that depend on it. Run
+                # 2C4 lost 9 of 9 experiments to `{{setup.0.id}}` against a body of
+                # `{"user": {"id": 25, ...}}`: the reference GRAMMAR is documented to the
+                # model and the SCHEMA of the response it references never was, so it was
+                # asked to name a field it had never seen while the harness held the
+                # answer. Structure only — never values — and it rides the same prompt
+                # and the same `redact.text` funnel as everything else here, rather than
+                # opening a second boundary that would have to be defended separately.
+                shown = shapes[:_hyp.SETUP_SHAPE_MAX_LINES]
+                shape_block = ""
+                if shown:
+                    shape_block = ("\n\n" + _hyp.SETUP_SHAPE_HEADER + "\n"
+                                   + "\n".join(f"  - {s}" for s in shown))
+                    if len(shapes) > len(shown):
+                        shape_block += (f"\n  [TRUNCATED: {len(shown)} of "
+                                        f"{len(shapes)} setup responses listed]")
                 reply2 = llm.propose(
                     _hyp.REFINE_PROMPT.format(
                         comparators=", ".join(_hyp.comparator_names())),
                     f"Authorised target base URL: {base}{auth}\n\n"
-                    f"Attack surface:\n{grounding}\n\nResults of your last round:\n"
+                    f"Attack surface:\n{grounding}{shape_block}"
+                    f"\n\nResults of your last round:\n"
                     + "\n".join(f"  - {o}" for o in outcomes[-8:]),
                     max_tokens=8000)
             except Exception:
@@ -3770,8 +3793,12 @@ class AssistSession:
                               note="refined round, informed by the first round's results")
         return confirmed
 
-    def _run_one_round(self, proposals, outcomes) -> int:
-        """Execute one batch of experiments; returns how many became findings."""
+    def _run_one_round(self, proposals, outcomes, shapes=None) -> int:
+        """Execute one batch of experiments; returns how many became findings.
+
+        `shapes` collects one line per distinct setup response describing its KEY PATHS,
+        for the next round to be shown. Optional so the signature stays compatible; when
+        it is None the disclosure is still written to the engagement record."""
         from . import hypothesis as _hyp
         from .findings import Finding
         from .web import WebAction
@@ -3818,6 +3845,17 @@ class AssistSession:
                                            spec.get("url", "")):
                         _ds, rs = self.browser.run(WebAction("request", **spec))
                     setup_results.append(rs)
+                    # The response is captured HERE and, until this line, was read once
+                    # by the resolver and dropped. Describing it costs nothing and is the
+                    # only thing standing between a model that guesses at field names and
+                    # one that knows them. `step`, not `spec`: the model's own request
+                    # text, so a value substituted into a resolved url by an earlier
+                    # reference cannot ride out on this line.
+                    _shape = _hyp.describe_setup_shape(
+                        len(setup_results) - 1, step, rs)
+                    self.note(f"[experiment] setup shape: {_shape}")
+                    if shapes is not None and _shape not in shapes:
+                        shapes.append(_shape)
                 cspec = _hyp.resolve_setup_refs(h.control, setup_results)
                 vspec = _hyp.resolve_setup_refs(h.variant, setup_results)
                 # Read before `as` is popped off the spec by the dispatch below.

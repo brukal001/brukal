@@ -320,6 +320,103 @@ def resolve_setup_refs(spec: dict, setup_results: list) -> dict:
     return out
 
 
+# How much of a setup response's SHAPE the next round is shown. Bounds, not guesses:
+# a response body is target data of unknown size, and an unbounded key dump would push
+# the results it is meant to explain out of the prompt. Both caps are announced when
+# they bite — see `key_paths`'s second return value.
+_SHAPE_MAX_DEPTH = 4                # `user.addresses.0.id` is four segments, and real
+_SHAPE_MAX_PATHS = 40               # APIs rarely bury an id deeper than that
+SETUP_SHAPE_MAX_LINES = 8           # distinct setup responses described per round
+
+SETUP_SHAPE_HEADER = (
+    "What your setup requests actually RETURNED. These are FIELD PATHS ONLY \u2014 no "
+    "values are shown \u2014 and they are exactly the paths a {{setup.<i>.<path>}} "
+    "reference may name. Arrays are listed at index 0; other indices have the same "
+    "shape. A line marked TRUNCATED is incomplete: more paths exist than are listed, "
+    "so a field you expect and cannot see here may still be present.")
+
+
+def key_paths(body, max_depth: int = _SHAPE_MAX_DEPTH,
+              max_paths: int = _SHAPE_MAX_PATHS):
+    """(paths, truncation) \u2014 the dotted paths into a setup response body that a
+    `{{setup.i.<path>}}` reference could actually resolve.
+
+    Deterministic walk, no eval and no model (invariant 1), and the mirror image of
+    `_lookup`: it lists a path if and only if `_lookup` would return a value for it. So
+    only INLINABLE LEAVES appear \u2014 an object, an array, a `null` and an empty
+    container are all `UnresolvedReference` there, and listing one here would point the
+    model at a reference that then aborts its own experiment. What the model is shown is
+    exactly what the model may use; the two are pinned to each other by test.
+
+    This exists because run 2C4 lost all nine experiments to `{{setup.0.id}}` against a
+    body of `{"user": {"id": 25, ...}}`. The model was documented the reference GRAMMAR
+    and never the SCHEMA of the response it was referencing \u2014 it cannot name a field
+    it has never been shown, and the harness was holding the response.
+
+    `truncation` is "" when the whole shape fits, and otherwise says which bound bit and
+    by how much. It is not decoration: a partial list read as a complete one is a model
+    concluding a field is absent when it was merely cut, which is the same silent-failure
+    class this disclosure was built to end.
+    """
+    try:
+        doc = json.loads(body or "")
+    except ValueError:
+        return [], ""
+    paths: list = []
+    total = 0
+    depth_capped = False
+
+    def walk(node, prefix: str, depth: int):
+        nonlocal total, depth_capped
+        if isinstance(node, dict):
+            children = list(node.items())
+        elif isinstance(node, list):
+            # Index 0 only. Sibling elements of a JSON array repeat the same shape, so
+            # walking all of them multiplies the list without adding information \u2014
+            # and an array of a thousand rows would spend the entire budget on one field.
+            children = [("0", node[0])] if node else []
+        else:
+            # A leaf. `bool` is caught by the `int` arm, exactly as `_lookup` catches it.
+            if prefix and isinstance(node, (str, int, float)):
+                total += 1
+                if len(paths) < max_paths:
+                    paths.append(prefix)
+            return
+        if depth >= max_depth:
+            if children:
+                depth_capped = True
+            return
+        for key, value in children:
+            walk(value, f"{prefix}.{key}" if prefix else str(key), depth + 1)
+
+    walk(doc, "", 0)
+    notes = []
+    if len(paths) < total:
+        notes.append(f"{len(paths)} of {total} field paths listed (cap {max_paths})")
+    if depth_capped:
+        notes.append(f"fields nested deeper than {max_depth} levels are not listed")
+    return paths, "; ".join(notes)
+
+
+def describe_setup_shape(index: int, step: dict, result,
+                         max_depth: int = _SHAPE_MAX_DEPTH,
+                         max_paths: int = _SHAPE_MAX_PATHS) -> str:
+    """One line describing what setup response `index` carries, for the next round.
+
+    `step` is the model's OWN request text, deliberately not the resolved spec: a
+    resolved url has values from an earlier setup response substituted into it, and this
+    line must be derivable from structure alone. Naming the request matters as much as
+    the paths \u2014 an index means nothing until the model knows which of its own
+    requests wore it."""
+    paths, truncation = key_paths(getattr(result, "body", None), max_depth, max_paths)
+    fields = ", ".join(paths) if paths else (
+        "(none \u2014 the body is not JSON, or carries no inlinable value)")
+    line = (f"setup.{index} {(step.get('method') or 'GET').upper()} "
+            f"{step.get('url', '')} -> HTTP {getattr(result, 'status', None)}; "
+            f"field paths: {fields}")
+    return f"{line} [TRUNCATED: {truncation}]" if truncation else line
+
+
 class Hypothesis:
     """One proposed experiment: optional setup, a control, a variant, and a comparator.
 
