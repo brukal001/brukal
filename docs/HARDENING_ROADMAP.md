@@ -1840,9 +1840,9 @@ and count its own denials.
 
 ---
 
-## P1 — THE REDACTION CONTRACT IS ASYMMETRIC: IT PROTECTS CREDENTIALS WE INJECT, NOT CREDENTIALS WE DISCOVER (2026-08-23, OPEN)
+## ~~P1 — THE REDACTION CONTRACT IS ASYMMETRIC: IT PROTECTS CREDENTIALS WE INJECT, NOT CREDENTIALS WE DISCOVER~~ — **CLOSED FOR SELF-DESCRIBING CREDENTIALS 2026-09-07 (`2b7e671`); OPAQUE CREDENTIALS STILL OPEN** (2026-08-23)
 
-**Severity: P1 (a live credential in shareable artifacts). RECORDED, NOT FIXED.**
+**Severity: P1 (a live credential in shareable artifacts).**
 
 Run 2C4's leak check was clean on exactly the axis every previous run measured: **tenant
 A's token 0, the second principal's token 0, across all 96 surfaces.** Both are credentials
@@ -1881,6 +1881,87 @@ distributable.
 **Fix (not this session):** register discovered credentials at the point they are
 recognised (the JWT/token detectors already parse them), and give the finding a structural
 rendering — claims and header, value masked — so the evidence survives redaction.
+
+### CLOSED FOR SELF-DESCRIBING CREDENTIALS 2026-09-07 (`2b7e671`)
+
+**The intended fix above was wrong about WHERE, and finding out why was the work.** It
+proposed registering "at the point they are recognised". Tracing the two capture paths
+shows that point is always **after** the first record is written:
+
+| Path | First write of the body | When the detector sees it |
+|---|---|---|
+| shell | `Executor.run` → `audit.append("execution", result)`, **stdout included** | `_absorb_shell`, after `executor.run` has returned |
+| web (crawl) | `_absorb_web` → notes + `_persist_finding("web", …, body[:800])` → blackboard | `scan_web_body`, called by the crawl *after* `run_web` returned |
+| web (agent's own action) | same `_absorb_web` write | **never** — `scan_web_body` has only two call sites, both in the crawl |
+
+**So the ordering is the defect, not the omission**, and on the shell path no
+session-level hook can be early enough: the executor has already sealed a hash-chained
+entry. A record cannot be fixed afterwards — masking it changes its bytes, breaks the
+chain from there on, and destroys the tamper-evidence that is the only reason to publish
+the bundle. This is the same trap the publishable-bundle P1 names, arriving from inside.
+
+**Discovery therefore lives in `redact.text` itself.** `redact.observe()` registers any
+self-describing credential on its way past, so the first record to carry a credential is
+also the first to mask it, and all eight funnels — plus every future writer — inherit it
+without having to remember. `redact.data`'s empty-registry short-circuit was removed with
+it: that is exactly the state an engagement is in when the target first hands it a
+credential, so the record carrying it was being waved straight through.
+
+**Recognition is a DECODE, not a regex, and the distinction is load-bearing.** redact.py's
+standing rule is that no pattern is trusted to say what a secret looks like. A JWT does not
+need one: it either splits into three base64url segments whose header and payload decode to
+JSON objects, or it is not a JWT. Four parametrised lookalikes (payload not JSON, header not
+an object, two segments, payload an array) and a clean-body test pin that an ordinary record
+stays byte-identical — over-redaction that shreds records is a regression, not caution.
+
+**The tension the entry raised is resolved the way it predicted, and it needed one thing the
+entry did not anticipate.** `jwtscan.describe()` records what a token IS — `alg`, `typ`, the
+claim KEYS, whether an `exp` exists, signature length — with no claim value, and `scan_jwt`
+files it beside the weaknesses. This is not decoration: 2C4's token was **RS256 with a valid
+signature**, so the only weakness `scan_token` declared was the missing `exp`, and `alg`
+appeared nowhere in the record at all. Masking the value would have left a finding no reader
+could evaluate. The digest is conditional on there being a weakness to explain — it keeps a
+finding provable and is not itself one; unconditional, it manufactured a finding against an
+app whose only defect was elsewhere and turned `test_defaultcreds`'s *"an app that accepts
+anything confirms nothing"* red. **That guard was right and the first cut of the code was
+wrong.**
+
+**The operator's live view is untouched.** Nothing mutates `result.body` or
+`ExecResult.stdout` — only what is written. The human running the engagement still sees the
+real value; the persisted record does not carry it.
+
+### ⛔ WHAT REMAINS OPEN: OPAQUE CREDENTIALS
+
+**The contract is now symmetric for SELF-DESCRIBING credentials only, and the gap is
+structural rather than a missing case.** A session cookie, an API key, a signed URL
+parameter, an opaque bearer value — none of these can be recognised by decoding, because
+there is nothing inside them to decode. `observe()` cannot see them, and closing that gap
+by *shape* would mean exactly the regex-guessing this module refuses: a rule loose enough
+to catch a 32-character opaque token also catches a hash, a UUID, a build id and a base64
+image fragment, and shredding those destroys the records the artifacts exist to be.
+
+Consequences to carry forward, not paper over:
+
+- A discovered **cookie** or **API key** is still recorded in cleartext. The class that
+  bit us happened to be self-describing; the next one may not be.
+- The honest claim is **"credentials we inject, plus self-describing credentials the
+  target discloses"** — never "credentials are redacted".
+- A publishable bundle still needs a **per-run leak check** before release. This fix
+  narrows what that check has to catch; it does not replace it.
+
+### ⛔ RUN 2C4'S ARTIFACTS REMAIN UNPUBLISHABLE, AND CANNOT BE RETROFITTED
+
+The fix is at **write time**, so it applies to runs made *after* it and to no run made
+before. 2C4's bundle still carries the admin JWT in cleartext across the eleven surfaces
+listed above, and post-hoc masking is not an option for the reason this file has stated
+twice: the records are hash-chained, so editing any one of them breaks the chain from that
+entry onward and destroys the tamper-evidence that was the entire point of publishing it.
+You would be sanitising the evidence you are citing, and the verification you invited the
+reader to perform would then fail.
+
+**The publishable bundle must come from a NEW run.** That was already the plan — step 1 of
+*"every headline evaluation number is unverifiable by a reader"* is this closure, and step 2
+is the clean run — and it is now unblocked for the JWT class specifically.
 
 ---
 

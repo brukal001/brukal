@@ -440,8 +440,14 @@ Everything else on the roadmap is a cited limitation, not a prerequisite for wri
 | Target | OWASP Juice Shop v20.2.0, recreated fresh, isolated bridge, no published ports |
 | Spend | 82 calls · 765,744 in / 111,932 out · **~$4.05** · stopped on the $4.00 cap at step 51 |
 
-**⚠ These artifacts may not be shared or published until the asymmetric-redaction P1 below is closed** —
-they contain a live admin credential for the target in cleartext.
+**⛔ These artifacts may NEVER be shared or published, and the fix does not reach them.** They contain a
+live admin credential for the target in cleartext across eleven surfaces. The asymmetric-redaction P1 was
+**CLOSED 2026-09-07 (`2b7e671`) for self-describing credentials** — but at WRITE time, so it applies to runs
+made after it and to no run made before, and post-hoc masking is not available: the records are hash-chained,
+so editing one breaks the chain from that entry on and destroys the tamper-evidence that is the entire reason
+to publish the bundle. **The publishable bundle has to come from a NEW run.** Still open for OPAQUE
+credentials (cookies, API keys, structureless bearer values), which no decode can recognise — so a per-run
+leak check remains required before any release.
 
 ---
 
