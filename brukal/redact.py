@@ -23,17 +23,48 @@ so a future writer inherits the boundary instead of having to remember it.
 
 WHAT COUNTS AS A SECRET
 -----------------------
-Not a guess. There is ONE source of truth — the credential set this engagement actually
-injected, registered by `_session_auth_for` at the moment it reads it off the
-GovernedBrowser. The redactor replaces those exact values and nothing else, so ordinary
-content is recorded byte-identical and no regex has to be trusted to recognise a token.
+Not a guess. There are TWO sources of truth, and neither is a pattern match.
+
+1. **Credentials we INJECT.** The set this engagement actually used, registered by
+   `_session_auth_for` at the moment it reads it off the GovernedBrowser.
+2. **Credentials the TARGET DISCLOSES.** `observe()` below, and this half was missing.
+   Run 2C4 captured a live admin JWT out of a response body and wrote it in cleartext
+   across ten artifact files, because the registry only ever knew about (1). A
+   credential nobody injected was, by construction, not a secret.
+
 It masks the VALUE, never the structure: an audit line still reads
 
     nuclei -u http://host/x -H 'Authorization: Bearer [REDACTED:1f3a9c02]'
 
 so the record stays meaningful and the gate's decision stays auditable.
 
-No LLM is involved (invariant 1) — this is a dict lookup and a string replace.
+DISCOVERY IS A DECODE, NOT A REGEX
+----------------------------------
+The rule above — no regex trusted to recognise a token — still holds, and `observe` is
+not an exception to it. A JWT is SELF-DESCRIBING: it either splits into three base64url
+segments whose first two decode to JSON objects, or it is not a JWT. That is a parse
+with a yes/no answer, the same standard `jwtscan` already applies before analysing one,
+so a value that merely *looks* tokenish is left strictly alone and an ordinary record
+stays byte-identical.
+
+The limit is exactly as sharp: an OPAQUE credential — a session cookie, an API key, a
+bearer value with no internal structure — cannot be recognised this way and is NOT
+covered. The contract is closed for self-describing credentials only.
+
+WHY DISCOVERY LIVES IN THE FUNNEL, NOT AT THE CAPTURE SITE
+----------------------------------------------------------
+Because the ordering is the defect, and a hook at a capture site cannot fix it. On the
+shell path `Executor.run` appends the `execution` record — stdout included — and only
+then returns to `AssistSession._absorb_shell`; any session-level registration therefore
+runs AFTER the audit already holds the credential, and that entry is hash-chained. There
+is no second chance: masking it later changes its bytes, breaks the chain from there on,
+and destroys the tamper-evidence the record exists to provide.
+
+Registering inside `text()` means the FIRST write of a credential registers it and masks
+it in the same call, and every present and future writer inherits that without having to
+remember. `text()` is therefore deliberately not pure — it is the boundary, not a helper.
+
+No LLM is involved (invariant 1) — this is a decode, a dict lookup and a string replace.
 """
 from __future__ import annotations
 
@@ -85,6 +116,28 @@ def register_auth_header(header: str) -> None:
     register(parts[1].strip() if len(parts) == 2 else header.strip())
 
 
+# How many distinct self-describing credentials to take out of any ONE value. A body
+# echoing a token table should not be able to fill the registry, and the replace loop
+# below is linear in it.
+_MAX_DISCOVERED_PER_VALUE = 8
+
+
+def observe(value) -> None:
+    """Register any SELF-DESCRIBING credential `value` carries, before it is recorded.
+
+    Deterministic and offline: `jwtscan.find_tokens` yields only strings that actually
+    DECODE as a JWT — three base64url segments whose header and payload are JSON objects
+    — so this recognises a credential rather than guessing at one. A lookalike that does
+    not decode registers nothing and is recorded unchanged.
+
+    Called from `text()` so it runs inside the write funnel itself. See the module
+    docstring: the ordering is the whole defect, and only the funnel is early enough."""
+    if not isinstance(value, str) or "eyJ" not in value:
+        return                       # every JWT header begins `{"` -> `eyJ`; cheap gate
+    from . import jwtscan            # local: jwtscan must not import redact back
+    register(*jwtscan.find_tokens(value, limit=_MAX_DISCOVERED_PER_VALUE))
+
+
 def has_placeholder(value) -> bool:
     """True if `value` carries a redaction marker — i.e. a RECORD artifact has looped
     back round into somewhere it is about to be USED.
@@ -112,9 +165,15 @@ def clear() -> None:
 
 
 def text(value):
-    """Redact one string. Non-strings and strings holding no registered secret are
-    returned unchanged — identity, not a rewrite."""
-    if not isinstance(value, str) or not _SECRETS or not value:
+    """Redact one string. Non-strings and strings holding no secret are returned
+    unchanged — identity, not a rewrite.
+
+    A credential the TARGET disclosed is registered here, on its way past, so the very
+    record that first carries it is also the first record to mask it."""
+    if not isinstance(value, str) or not value:
+        return value
+    observe(value)                   # may register; must run BEFORE the replace below
+    if not _SECRETS:
         return value
     # Longest first: a credential that contains another (a cookie jar string built from
     # several values) must not be half-replaced by the shorter one.
@@ -127,9 +186,13 @@ def text(value):
 def data(obj):
     """Redact every string inside a nested dict/list/tuple structure — used where the
     record is an object rather than a line (the audit log writes whole dataclasses, so a
-    token can ride in `action`, in captured stdout, or in a field added later)."""
-    if not _SECRETS:
-        return obj
+    token can ride in `action`, in captured stdout, or in a field added later).
+
+    There is deliberately NO empty-registry short-circuit here. It used to return `obj`
+    untouched whenever nothing was registered, which is exactly the state an engagement
+    is in when the target first hands it a credential — the record carrying it would
+    have been waved straight through. Every string reaches `text()`, which does its own
+    early-out after observing."""
     if isinstance(obj, str):
         return text(obj)
     if isinstance(obj, dict):

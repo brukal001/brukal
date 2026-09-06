@@ -2090,7 +2090,28 @@ class AssistSession:
         from . import jwtscan
         from .findings import Finding
         n = 0
-        for sev, label, line in jwtscan.scan_token(token):
+        hits = jwtscan.scan_token(token)
+        # WHAT THE TOKEN IS, recorded BESIDE what is wrong with it — and only then. The
+        # value is masked on every surface the moment it is written (redact.observe), and
+        # a bare `[REDACTED:…]` protects the credential by destroying the evidence for
+        # it: a reader could no longer see the algorithm, the claims or the missing
+        # expiry that made the exposure a finding. Structure, never values.
+        #
+        # Conditional on `hits`, because the digest exists to keep a FINDING provable and
+        # is not itself one. A token that reveals no weakness — our own well-formed
+        # session credential, most often — has nothing to explain, and emitting a record
+        # for it would put a finding on every authenticated engagement and manufacture
+        # one against an app whose only defect is elsewhere.
+        if hits:
+            shape = jwtscan.describe(token)
+            if shape:
+                self.findings.add(Finding(
+                    title="JWT structure disclosed", severity="info",
+                    target=source or self.target,
+                    evidence=f"{redact.placeholder_for(token)} — {shape}",
+                    source=f"JWT analysis · {source or 'captured token'}",
+                    category="api", confirmed=False))
+        for sev, label, line in hits:
             self.findings.add(Finding(
                 title=label, severity=sev, target=source or self.target, evidence=line,
                 source=f"JWT analysis · {source or 'captured token'}", category="api",

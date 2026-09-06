@@ -79,6 +79,34 @@ def decode(token: str):
     return header, payload, f"{parts[0]}.{parts[1]}".encode(), signature
 
 
+def describe(token: str) -> str:
+    """A structural digest of a token: what it IS, carrying nothing you could send.
+
+    The header's algorithm and type, the payload's claim KEYS in order, whether an `exp`
+    is present, and the signature length. **No claim VALUE appears** — the subject, the
+    role's value and the signature bytes are the parts worth stealing, and none of them
+    is needed to see why an exposed token matters.
+
+    This exists because masking a discovered credential must not shred the evidence for
+    it. `scan_token` below reports WEAKNESSES, and a token can be damaging without
+    tripping one of them: run 2C4's leaked admin JWT was RS256 with a real signature, so
+    the only weakness it declared was a missing `exp`, and once the value was masked the
+    record no longer said what algorithm it used or what it claimed to be. A reader has
+    to be able to reconstruct why it is a finding from the artifact alone.
+
+    Empty string for anything that does not decode — the caller records nothing rather
+    than describing a value it could not parse."""
+    parsed = decode(token)
+    if parsed is None:
+        return ""
+    header, payload, _si, signature = parsed
+    keys = ", ".join(str(k) for k in payload) or "(none)"
+    return (f"alg={header.get('alg', '?')} typ={header.get('typ', '?')}; "
+            f"claim keys: {keys}; "
+            f"{'exp present' if 'exp' in payload else 'NO exp claim'}; "
+            f"signature {len(signature)} bytes")
+
+
 def crack_hmac_secret(token: str, extra_secrets=()) -> str | None:
     """Recover the signing key of an HS256/384/512 token by trying weak candidates
     against its OWN signature. Entirely offline: no request, no side effect, and a hit
