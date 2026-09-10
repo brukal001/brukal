@@ -266,6 +266,17 @@ class Suggestion:
     # a retry. It means "we never got an answer", NOT "there is nothing left to do" — the
     # loop must not report those the same way.
     truncated: bool = False
+    # True when the model FINISHED a reply that plainly meant to propose an action — a
+    # RUN:/WEB:/MANUAL:/SESSION: marker or a code fence is there — and nothing parsed out
+    # of it, even after a retry. Same meaning as `truncated` and the same consequence:
+    # we did not get an answer. The two are kept apart because they need different
+    # sentences, not because the loop treats them differently.
+    #
+    # `truncated` was the narrower property. It keyed on the backend's finish_reason, so
+    # a reply that finished and was unreadable slipped past every guard: in run CM1 that
+    # ended an engagement at step 16 of 70 with $2.93 of $4.00 unspent, reported as
+    # "done". A reply we could not READ is not a decision either.
+    unreadable: bool = False
 
 
 def _has_action(s: "Suggestion") -> bool:
@@ -376,6 +387,7 @@ def parse_options(text: str, default_target: str, limit: int = 4) -> list[Sugges
 
 def _parse(text: str, default_target: str) -> Suggestion:
     text = text or ""
+    unreadable = False
     phase = _field(text, "PHASE")
     goal = _field(text, "GOAL")
     reasoning = _field(text, "REASONING")
@@ -426,6 +438,10 @@ def _parse(text: str, default_target: str) -> Suggestion:
         if salvaged:
             command = salvaged
         elif re.search(r"(?im)^\s*(RUN|WEB|MANUAL|SESSION)\s*:|```", text):
+            # The model TRIED to name an action and we could not read it. This condition
+            # was already computed here and spent on a log line nobody consumed; it is
+            # the signal, so it now travels on the Suggestion.
+            unreadable = True
             log.warning("strategist: could not extract an action from model reply: %r",
                         (text[:200] + "…") if len(text) > 200 else text)
 
@@ -436,7 +452,8 @@ def _parse(text: str, default_target: str) -> Suggestion:
 
     return Suggestion(rationale=reasoning, command=command,
                       target=default_target if command else None, manual=manual,
-                      phase=phase, goal=goal, web=web, session=session)
+                      phase=phase, goal=goal, web=web, session=session,
+                      unreadable=unreadable)
 
 
 class StrategistAgent:
@@ -520,9 +537,17 @@ class StrategistAgent:
         return self._llm.propose(STRATEGIST_ANSWER_SYSTEM, "\n\n".join(parts),
                                  max_tokens=700).strip()
 
-    # A reply cut off before its action line is not an answer. One retry with room to
-    # finish; a model that overruns four times the allowance will not land it on a third
-    # call either, and the loop is told rather than left to guess.
+    # A reply that did not GIVE US AN ANSWER is not a decision. One retry with room to
+    # finish; a model that fails twice will not land it on a third call either, and the
+    # loop is told rather than left to guess.
+    #
+    # There are two ways not to get an answer and they were not always both covered.
+    # TRUNCATED: the reply never reached its action line. UNREADABLE: the reply finished,
+    # plainly meant to name an action, and nothing parsed. The first shipped in
+    # `37b3957`; the second went uncovered until run CM1 ended an engagement on it. The
+    # retry belongs to the shared property, so it is keyed on `_unanswered`, not on
+    # either cause — a third cause found later inherits the retry instead of needing a
+    # second fix in the same shape.
     _TRUNCATION_RETRY_FACTOR = 4
 
     def advise(self, target: str, findings: str, notes: str = "",
@@ -534,17 +559,31 @@ class StrategistAgent:
         prompt, budget = "\n\n".join(parts), 800
         text = self._llm.propose(STRATEGIST_SYSTEM, prompt, max_tokens=budget)
         suggestion = _parse(text, target)
-        if _has_action(suggestion) or not self._was_truncated():
+        if not self._unanswered(suggestion):
             return suggestion
         # The action line (RUN:/WEB:) comes last in the template, so an overrun eats the
-        # action and leaves reasoning that reads like a decision. Ask again with room.
+        # action and leaves reasoning that reads like a decision; an unreadable reply
+        # leaves the same wreckage with the sentence intact. Ask again with room.
         text = self._llm.propose(STRATEGIST_SYSTEM, prompt,
                                  max_tokens=budget * self._TRUNCATION_RETRY_FACTOR)
         retried = _parse(text, target)
-        if _has_action(retried) or not self._was_truncated():
+        if not self._unanswered(retried):
             return retried
-        retried.truncated = True
+        # `unreadable` is already set by the parse when that is what happened; only the
+        # truncation flag has to be applied here, because it is a property of the CALL
+        # rather than of the text.
+        retried.truncated = self._was_truncated()
         return retried
+
+    def _unanswered(self, suggestion: "Suggestion") -> bool:
+        """Did this reply fail to give us an answer, as opposed to deciding there is none?
+
+        A reply with an action is an answer. A reply with none is an answer ONLY if the
+        model finished it and did not try to name one — otherwise we are looking at our
+        own failure to obtain or read a reply, and reporting that as the model's decision
+        is the defect this method exists to make impossible to reintroduce."""
+        return not _has_action(suggestion) and (self._was_truncated()
+                                                or suggestion.unreadable)
 
     def _was_truncated(self) -> bool:
         """Did the last reply stop because it hit the token ceiling? `max_tokens` is

@@ -714,6 +714,13 @@ class GroundedLoop:
                 if suggestion.truncated:
                     return self._finish("truncated", suggestion.goal or
                                         (suggestion.rationale or "").strip()[:160])
+                # Same reason, second door: the model finished a reply that meant to name
+                # an action and we could not read it. Run CM1 ended here at step 16 of 70
+                # with $2.93 of $4.00 unspent, and called itself "done" — the most
+                # confident word available — on every surface a reader has.
+                if suggestion.unreadable:
+                    return self._finish("unreadable", suggestion.goal or
+                                        (suggestion.rationale or "").strip()[:160])
                 return self._finish("done", suggestion.goal or
                                     (suggestion.rationale or "").strip()[:160])
 

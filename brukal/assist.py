@@ -7719,6 +7719,32 @@ def _session_vault(session):
     return getattr(getattr(session, "blackboard", None), "root", "runs/vault")
 
 
+# What the operator is told, per stop reason. `report.md` prints the RAW reason, so these
+# two surfaces must name the same event: a reason with no entry here falls through to its
+# bare identifier, which reads as a different ending from the one the report describes.
+# `tests/test_unreadable_reply.py` scans loop.py for every `_finish()` reason and fails if
+# one has no sentence — the guard that keeps this table from going stale silently.
+_STOP_LABELS = {
+    "solved": "SOLVED — success verified from real gated output",
+    "manual": "the next step is yours (intrusive/interactive exploitation)",
+    "escalation": "a step needs your sign-off (ESCALATE)",
+    "stalled": "no safe next step — over to you",
+    "exhausted": "hit the step budget",
+    "aborted": "STOPPED by kill switch",
+    "budget": "hit an engagement budget cap",
+    "done": "nothing left to safely automate",
+    "truncated": "the model's reply was cut off before it named an action — "
+                 "retried once and still incomplete, so this is NOT 'nothing left to do'",
+    "unreadable": "the model's reply finished but could not be parsed into an action — "
+                  "retried once and still unreadable, so this is NOT 'nothing left to do'",
+    # Found by the scan this table now has, not by a run: `target-unhealthy` has been
+    # emittable since the health monitor landed and had no sentence, so run 2C2 ended
+    # with the operator reading the bare identifier.
+    "target-unhealthy": "the TARGET stopped answering healthily — stopped to avoid "
+                        "hammering it; findings so far are kept",
+}
+
+
 def _write_session_report(session, result, cage, audit, spend=""):
     """Build engagement metadata from the live session and write report.md + .json
     to the vault. Best-effort — a report failure must never fail the hunt."""
@@ -7986,18 +8012,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         return 1
     _restore_signals()                       # autonomous phase done — Ctrl-C back to normal
 
-    handoff = {
-        "solved": "SOLVED — success verified from real gated output",
-        "manual": "the next step is yours (intrusive/interactive exploitation)",
-        "escalation": "a step needs your sign-off (ESCALATE)",
-        "stalled": "no safe next step — over to you",
-        "exhausted": "hit the step budget",
-        "aborted": "STOPPED by kill switch",
-        "budget": "hit an engagement budget cap",
-        "done": "nothing left to safely automate",
-        "truncated": "the model's reply was cut off before it named an action — "
-                     "retried once and still incomplete, so this is NOT 'nothing left to do'",
-    }.get(result.stop_reason, result.stop_reason)
+    handoff = _STOP_LABELS.get(result.stop_reason, result.stop_reason)
     spend = _spend_line(session)
 
     # Write the deliverable report (findings + engagement metadata) to the vault.

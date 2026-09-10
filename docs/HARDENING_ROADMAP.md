@@ -2352,3 +2352,29 @@ itself with the same word as a run that finished.
 **Do not fix by loosening the parser alone.** The property is that *the loop must not treat "we
 could not read the reply" and "there is nothing to do" as the same state* — the parse failure
 needs its own stop reason and its own line in the report, whatever the parser then recovers.
+
+#### CLOSED 2026-09-10 — the original property was too narrow, and this is the uncovered door
+
+`37b3957` shipped *"a reply that never FINISHED is not a decision"*, keyed on the backend's
+`finish_reason`. That is **one cause** of a missing action line. The general property is
+*"a reply that did not give us an ANSWER is not a decision"*, and an unparseable-but-complete
+reply satisfies it while failing every check the narrower version had: `end_turn` is not a
+truncation stop reason, so the retry never armed and the loop fell straight through to `done`.
+
+**Fixing the reported symptom left the class open.** This is the same lesson the `-n` third
+construction site and the truncation-then-phase-still-unreached entry above teach, arriving here
+as *a property stated at the level of its first cause*. The retry is therefore now keyed on
+`StrategistAgent._unanswered()` — "no action, and either truncated or unreadable" — so a third
+cause discovered later inherits the retry rather than needing a third fix in the same shape.
+
+- `Suggestion.unreadable` carries the condition `strategist.py` was **already computing** at the
+  warning site and spending on a log line nobody consumed.
+- `loop.py` gains a `unreadable` stop reason beside `truncated`; `done` now means only what it says.
+- The operator sentences moved to a module-level `_STOP_LABELS`, and a test scans `loop.py` for
+  every `_finish()` reason and fails when one has no sentence. **That scan immediately found a
+  pre-existing gap: `target-unhealthy` had no label**, so run 2C2 — which stopped for exactly that
+  reason — showed the operator a bare identifier. Added in the same change.
+- Tests: `tests/test_unreadable_reply.py`, 9 tests, **7 red first**. The two that were green from
+  the start are the must-not-break direction (a usable reply is not retried; a genuinely
+  action-free reply is still `done`) and they **protected nothing new** — they are there so the
+  fix cannot buy its retry by re-asking questions the model already answered.
