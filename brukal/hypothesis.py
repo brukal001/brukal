@@ -344,11 +344,14 @@ _SHAPE_MAX_PATHS = 40               # APIs rarely bury an id deeper than that
 SETUP_SHAPE_MAX_LINES = 8           # distinct setup responses described per round
 
 SETUP_SHAPE_HEADER = (
-    "What your setup requests actually RETURNED. These are FIELD PATHS ONLY \u2014 no "
-    "values are shown \u2014 and they are exactly the paths a {{setup.<i>.<path>}} "
-    "reference may name. Arrays are listed at index 0; other indices have the same "
-    "shape. A line marked TRUNCATED is incomplete: more paths exist than are listed, "
-    "so a field you expect and cannot see here may still be present.")
+    "What the PREVIOUS round's setup requests returned. These are FIELD PATHS ONLY "
+    "\u2014 no values are shown \u2014 shown so you know which paths those requests "
+    "yield. Those responses are NOT still addressable: they belonged to the round that "
+    "has finished, and a {{setup.<i>.<path>}} reference always addresses the setup list "
+    "of the proposal it appears in. To use any of these paths, REPEAT the setup request "
+    "in your own proposal's `setup`. Arrays are listed at index 0; other indices have "
+    "the same shape. A line marked TRUNCATED is incomplete: more paths exist than are "
+    "listed, so a field you expect and cannot see here may still be present.")
 
 
 def key_paths(body, max_depth: int = _SHAPE_MAX_DEPTH,
@@ -677,6 +680,12 @@ Reply with ONLY a JSON array, using EXACTLY these keys — the same ones as befo
 Do NOT rename them. A refined round that answered with "name" and "type" instead of \
 "title" and "comparator" was discarded in full, so the second round contributed nothing \
 at all and the first round's results were wasted.
+
+Every {{setup.<i>.<path>}} reference addresses YOUR OWN setup list, in THIS proposal. \
+The previous round's setup responses are gone: if you want a value one of them returned, \
+put that request back in your own setup and reference it at its index there. All three \
+proposals in one measured round referenced setup.0 while supplying no setup at all, and \
+all three were refused without ever being run.
 
 Reply [] if the results suggest nothing worth another try.
 """

@@ -2348,6 +2348,29 @@ round that is gone.
 experiment's evidence depend on state established by a different experiment, which is the seeding
 problem the milestone forbids. The contract, not the lifetime, is what is wrong.
 
+#### CLOSED 2026-09-10 — the disclosure is scoped to its round, and the prompt says so
+
+**The choice, and why.** Two fixes were available: carry the prior round's setups forward so the
+references resolve, or scope the disclosure and state the rule. **Scoped.** Carrying them forward
+would let one experiment's control depend on another experiment's setup — precisely what *"no
+external seeding"* excludes. The milestone asks that **the ledger alone** support a claim, and a
+value produced by an experiment that is not the one being judged is not in that experiment's
+record. Fixing the lifetime would have bought three working references at the cost of the property
+the whole phase exists to measure.
+
+`SETUP_SHAPE_HEADER` now names the round it describes and says outright that those responses are
+**not still addressable** and must be repeated in the proposal's own `setup` to be used;
+`REFINE_PROMPT` states the same rule in the reply contract, with the measured consequence beside
+it. Note the shape of the original defect: **the disclosure added to stop the model guessing at
+field names invited it to reference a round that no longer existed** — a fix creating its own
+successor, the pattern this file has now recorded four times.
+
+Tests: `tests/test_setup_scope_per_round.py`, 5 tests, **2 red first** — the two that pin the
+contract. The other three are the must-not-break direction (both rounds keep the reference syntax;
+an unbacked reference still aborts; a proposal supplying its own setup still resolves) and
+**protected nothing new** — they are there so a future edit cannot buy clarity by loosening the
+fail-safe.
+
 ### P2 — A SETUP REQUEST THAT FAILED IS REPORTED TO THE NEXT ROUND AS A BAD REFERENCE
 
 **Severity: P2 (it points the model at the wrong repair). RECORDED, NOT FIXED.**
