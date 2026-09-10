@@ -2321,6 +2321,29 @@ costs one sweep instead of six. `test_confirmation_is_not_paid_on_every_login` a
 `test_confirmation_is_probed_once_across_a_round_of_experiments` exist because that regression was
 real and the suite caught it, not because it was anticipated.
 
+#### ⛔ RESIDUAL — WHAT THIS CONTROL DOES NOT COVER (recorded 2026-09-11, before run CM2)
+
+**The guarantee is "no experiment runs on a session PROVEN unhonoured". It is NOT "no vacuous
+comparison is judged".** Those are different claims and only the first is enforced.
+
+The refusal fires on `confirmed=False` alone — an identity oracle existed, and no carriage passed
+it. Where **no usable oracle is found** (`confirmed=None`) the session is **untested**, the
+experiment runs, and a comparison between two callers the target may both be reading as strangers
+can still reach a comparator and be judged. That is the same vacuous comparison the entry above
+describes, arriving through the case the control declines to police.
+
+**And `None` is the MAJORITY case, not an edge.** `_IDENTITY_PROBE_PATHS` is ten conventional
+routes; most applications expose none of them, and an endpoint that answers with a nonce or a
+timestamp is skipped as an unusable oracle rather than believed — correctly, and it lands in the
+same `None`. Juice Shop happens to have `/rest/user/whoami`, so this target is covered; a target
+chosen for the next measurement may not be, and **the coverage has to be read off the run's own
+ledger, per principal, rather than assumed from the fix existing**.
+
+Treating `None` as a refusal was considered and rejected: it would refuse the cross-account class
+on every target without a conventional identity endpoint, trading this defect for a strictly worse
+one. The honest position is that this control **narrows** the vacuous-comparison class and does not
+close it, and any claim made about a run has to say which of the two guarantees it rests on.
+
 Tests: `tests/test_authentication_confirmed.py`, 9 tests, **7 red first**, plus the 2 cost guards
 written after the regression. The doubles decide from the REQUEST HEADERS the way a real app does
 and come in three modes — cookie-reading, header-reading, honouring-neither — because a double
