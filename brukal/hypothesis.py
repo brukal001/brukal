@@ -233,6 +233,18 @@ class UnresolvedReference(ValueError):
     """A `{{setup.i.path}}` reference nothing in the setup responses can satisfy."""
 
 
+class SetupRequestFailed(UnresolvedReference):
+    """A reference could not be satisfied because its SETUP REQUEST failed.
+
+    A subclass on purpose: every caller that aborts on `UnresolvedReference` must go on
+    aborting, because the state the experiment is about was never established either way.
+    What changes is the sentence the next round is handed. "The reference is unresolvable"
+    and "the setup request failed" name two different repairs, and a model shown only the
+    first has no reason to fix the request that actually broke — in run CM1 a `POST
+    /api/Addresses` answered 500 and the model was told its dotted path was wrong.
+    """
+
+
 class PrincipalNotAuthenticated(ValueError):
     """The principal an experiment named holds a session this target does not honour.
 
@@ -313,7 +325,23 @@ def _resolve_text(value: str, setup_results: list) -> str:
         ref = m.group(0)
         if idx >= len(setup_results) or setup_results[idx] is None:
             raise UnresolvedReference(f"{ref}: no setup response at index {idx}")
-        return _lookup(getattr(setup_results[idx], "body", None), path, ref)
+        result = setup_results[idx]
+        # BEFORE the body is walked: a setup that failed did not establish the state this
+        # experiment is about, so nothing about its body is worth reporting. Checked here
+        # rather than in `_lookup` because the status is a fact about the REQUEST, and
+        # `_lookup` is only ever given a body.
+        status = getattr(result, "status", None)
+        if status is None:
+            raise SetupRequestFailed(
+                f"{ref}: setup request {idx} got NO ANSWER (status None) — it was refused "
+                f"by the gate or the target did not reply, so the state this experiment "
+                f"needs was never established. Fix that request, not the reference.")
+        if status >= 400:
+            raise SetupRequestFailed(
+                f"{ref}: setup request {idx} FAILED with HTTP {status} — the state this "
+                f"experiment needs was never established. Fix that request (method, path, "
+                f"body, or the principal it runs as), not the reference.")
+        return _lookup(getattr(result, "body", None), path, ref)
     return _SETUP_REF_RE.sub(sub, value)
 
 

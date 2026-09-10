@@ -4088,6 +4088,14 @@ class AssistSession:
                 outcomes.append(f"SECOND PRINCIPAL UNAVAILABLE (experiment NOT run, "
                                 f"this is not a result) {h.title}: {exc}")
                 continue
+            except _hyp.SetupRequestFailed as exc:
+                # Ahead of UnresolvedReference (its parent) so the sentence the next round
+                # reasons from names the repair that is actually available. Same shape as
+                # the refusals above it: not dispatched, not judged, not a result.
+                self.note(f"[experiment] SETUP FAILED, not run: {h.title} ({exc})")
+                outcomes.append(f"SETUP FAILED (experiment NOT run, this is not a result) "
+                                f"{h.title}: {exc}")
+                continue
             except _hyp.UnresolvedReference as exc:
                 # NOT a negative result. The experiment never ran, and saying so keeps a
                 # missing data-flow visible instead of letting it wear a comparator's

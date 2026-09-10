@@ -2389,6 +2389,30 @@ status but the outcome text the model actually reasons from does not.
 (the resolver truthfully reports what it could not resolve) is wrong about what the next component
 will do with its output.
 
+#### CLOSED 2026-09-10 — the status is consulted before the path is blamed
+
+`_resolve_text` already held the setup's `WebResult`; it read only `.body`. It now reads `.status`
+first and raises `SetupRequestFailed` for a `>= 400` or a `None`, naming the status and saying
+which request to fix. `_run_one_round` catches it ahead of its parent and records
+`SETUP FAILED (experiment NOT run, this is not a result)`.
+
+**`SetupRequestFailed` subclasses `UnresolvedReference` deliberately.** Every existing
+`except UnresolvedReference` goes on aborting exactly as before — a failed setup leaves the state
+unestablished either way — so this change alters **what is said and nothing about what runs**. A
+sibling class would have been a behaviour change wearing a message fix.
+
+**The boundary is half the fix.** 2C4's failure was a rich body and a wrong path, and that must
+keep pointing at the path: a `200` whose JSON lacks the field still says `no field 'id'`, and a
+`200` that is not JSON still says `not JSON`. Both are pinned, because a fix that swallowed them
+into "setup failed" would trade one misdirection for another.
+
+Tests: `tests/test_setup_failure_is_not_a_bad_reference.py`, 7 tests, **6 red first** — though two
+of those six were red only on the missing class name, so their behavioural value arrives with the
+fix rather than before it. The single test green from the start (a working setup still resolves)
+**protected nothing new**. The last test drives the real `_run_one_round` against a target that
+500s every POST, because the whole loss in CM1 was in the hand-off from resolver to outcome text,
+and a test of the exception alone would not have covered it.
+
 ### P1 — ONE UNPARSEABLE STRATEGIST REPLY ENDS THE ENGAGEMENT, REPORTED AS "DONE"
 
 **Severity: P1 (it abandoned 54 of 70 steps and $2.93 of a $4.00 budget on one reply).
