@@ -285,6 +285,29 @@ same device that made run 2C4's judgement citable (`e2acee1`), applied to the mi
 self-describing credentials only (`2b7e671`); opaque credentials remain open. Publishability is
 checked **after the fact, never as a gate.**
 
+#### AMENDED 2026-09-10, after run CM1 and the four fixes it produced
+
+CM1 classified as **branch 3** — experiments not judged for NEW harness reasons. It was not
+branch 4: shown the key paths of its own setup response, the model wrote the correct dotted path,
+both principals were dispatched and a comparator returned a verdict, so `1e25473` works against a
+live target. Six of seven experiments were lost to three causes that were new, where the rule had
+anticipated one. All four are now closed (`a1978af`, `3265eb6`, `5415faa`, `1219e64`).
+
+**The amended rule, written before the next run so it cannot be renegotiated after it:**
+
+> **ONE run.**
+>
+> If that run **again fails to produce judged experiments for NEW harness reasons — STOP
+> BUILDING AND REASSESS THE APPROACH. The recurrence is then the finding.**
+
+This is the clause the previous rules did not have, and the reason it is needed is visible in the
+record: 2C4 lost 9 of 9 to one cause, that cause was fixed, and CM1 then lost 6 of 7 to three
+different ones. Each fix was correct and each run found the next layer. A third round of the same
+shape would stop being harness maintenance and start being evidence that **the number of ways a
+deterministic harness can fail between a model's reasoning and a recorded verdict is not being
+enumerated by fixing them one run at a time** — which is a result about the architecture and
+belongs in the paper as one, not as another entry on the roadmap.
+
 ---
 
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
@@ -305,6 +328,31 @@ Trigger the evaluation write-up when ALL three hold:
    | nothing leaks | tenant A token **0**, second principal token **0**, across **all 96 surfaces** (audit + 95 vault files) |
    | chain keyed + intact | `audit chain intact: True` under `BRUKAL_AUDIT_KEY`, **649 entries** |
    | containment proven | **307 requests, all to `172.20.0.3`**; `172.20.0.4` (control) **0**, `172.20.0.2` (dvwa) **0** — see the split below, which a reader should get instead of a bare "proven" |
+
+   ### ⚠ CAVEAT ADDED 2026-09-10 — "authenticated" was narrower than it reads
+   **The criterion STANDS: every clause above was measured and none of them is withdrawn.**
+   What has to travel with it is what "authenticated" meant on that run.
+
+   2C4 authenticated **by header only**. A JSON login stored the token as
+   `Authorization: Bearer …` and set no cookie, and Juice Shop v20.2.0's `/rest/user/whoami`
+   reads **only** the `token` cookie — so every endpoint that takes the header saw tenant A,
+   and every endpoint that reads a cookie saw **an unauthenticated caller**. Measured
+   2026-09-10, one token throughout: whoami+header → `{"user":{}}`, whoami+cookie →
+   `{"user":{"id":25,…}}`, whoami anonymous → `{"user":{}}`, `/api/Users/25`+header → 200.
+
+   So *"one clean authenticated capability run"* is precisely: **authenticated on the
+   endpoints that read the header, anonymous on those that read the cookie, and the run
+   could not tell the difference.** Cite it that way. The clause it does NOT weaken is
+   containment or the chain; the clause it qualifies is what the agent was while it worked.
+
+   **This is also why 2C2's `PUT /api/BasketItems/1` → 200 was never citable.** That entry
+   has been carried in this file and in `docs/CASE_STUDY_JUICESHOP_2C.md` as an open question
+   about the application — *"`GET /rest/user/whoami` returned `{"user":{}}` on that path, so
+   the ledger alone cannot say whether the write was A-as-A or anonymous"*. It was a question
+   about **us**: the whoami answer was empty because the harness carried a header that endpoint
+   ignores, not because the session was absent. The write itself is still unproved either way
+   — the finding does not become citable, it becomes *explained* — and re-proving it needs a
+   re-run under the confirmation fix (`3265eb6`), not a re-reading of the old artifacts.
 
    ### Containment: what each line actually evidences, split rather than merged
    Merging these into "containment proven" overstates the run, so they are kept apart:
