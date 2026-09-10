@@ -263,6 +263,28 @@ them.
 **Not part of this milestone:** paper work, the publishable-bundle P1, the asymmetric-signing
 P1. They are real and they are recorded; they are not what this phase is measuring.
 
+### STOPPING RULE for the capability-milestone run — written 2026-09-10, BEFORE the run
+
+Committed before the run so it cannot be renegotiated once the result is known. This is the
+same device that made run 2C4's judgement citable (`e2acee1`), applied to the milestone above.
+
+**ONE run.**
+
+- **A confirmed business-logic finding the ledger alone supports** — two distinct principals
+  recorded, the comparator earning the title, no external seeding → **MILESTONE MET.**
+- **Experiments dispatched AND judged, none confirmed** → a **real measurement**: the
+  comparators work end to end and these hypotheses did not land. **ONE further run permitted**,
+  with different hypotheses or a different target.
+- **Experiments not judged for a NEW harness reason** → **STOP**, fix that one thing, **ONE
+  further run.**
+- **Experiments not judged for the SAME reason as 2C4** (unresolved setup references) → the
+  schema fix did not work against a live target. **STOP, diagnose, no further run until it is
+  understood.**
+
+**The publishable bundle is NOT a goal of this run.** Discovered-credential redaction covers
+self-describing credentials only (`2b7e671`); opaque credentials remain open. Publishability is
+checked **after the fact, never as a gate.**
+
 ---
 
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
