@@ -2218,3 +2218,137 @@ answer is *the agent* — which is the defensible one for the current design —
 demote the third-party claims to what the design earns. If the answer is *a third-party
 reader*, the P1 above is a blocker for the paper's central win-axis and not a nice-to-have.
 Pick one; do not let the ambiguity keep flattering the stronger reading.
+
+---
+
+## RUN CM1 — the capability-milestone measurement (2026-09-10). Four findings, RECORDED, NOT FIXED
+
+Run CM1 was made under the stopping rule committed in `62226d7` **before** the run. Artifacts:
+`runs/audit_juiceshop_cm1.jsonl` (562 entries, keyed, `chain intact: True`) and
+`runs/vault-cm1/172.20.0.3/` (54 files), scope `brukal-juiceshop-cm1-172.20.0.3`, OWASP Juice
+Shop v20.2.0 recreated fresh on the cage's isolated bridge, `rate_limit_per_min: 120` disclosed
+in the scope file. 16 of 70 steps, 32 calls, ~$1.07 of a $4.00 cap.
+
+**The experiment funnel, which is what the run was for: proposed 7 · dispatched 7 · RESOLVED 1 ·
+JUDGED 1 · confirmed 0.** One experiment — `IDOR on /api/Cards/{id}` — resolved
+`{{setup.0.data.id}}` from a `POST /api/Cards` → 201 whose shape disclosure listed
+`status, data.id, data.UserId, …`, dispatched control as `self` and variant as `second`, and was
+judged NOT CONFIRMED on `a_denied_b_allowed` (control HTTP 200/124B vs variant HTTP 400/55B).
+
+⚠ **This is NOT a recurrence of 2C4, and the distinction is load-bearing.** 2C4 lost 9 of 9
+experiments because the model named a field the response did not carry — a rich body, a wrong
+path — which is exactly what `1e25473` was built to prevent. In CM1 the fix demonstrably WORKED
+where it could: shown the key paths of its own setup response, the model wrote the correct dotted
+path and the experiment reached a comparator. The six that did not reach one failed for **three
+new reasons, none of them the resolver**, recorded below.
+
+### P1 — A JSON SESSION IS CARRIED AS A BEARER HEADER ONLY, SO AN IDENTITY ENDPOINT THAT READS A COOKIE ANSWERS EVERY "WHO AM I" AS ANONYMOUS
+
+**Severity: P1 (it is the direct cause of the single most-cited uncitable result in this file).
+RECORDED, NOT FIXED.**
+
+`login(..., login_type="json")` puts the token in `browser.auth_header` and sets no cookie.
+Juice Shop v20.2.0's `/rest/user/whoami` reads **only** the `token` cookie. Measured from inside
+the cage on 2026-09-10, same token throughout:
+
+| Request | Answer |
+|---|---|
+| `/rest/user/whoami` + `Authorization: Bearer …` | `{"user":{}}` |
+| `/rest/user/whoami` + `-b token=…` | `{"user":{"id":25,"email":…}}` |
+| `/rest/user/whoami` anonymous | `{"user":{}}` |
+| `/api/Users/25` + `Authorization: Bearer …` | **200** |
+
+So the session IS attached and IS honoured — by every endpoint except the one that reports who
+you are. **The authenticated answer and the anonymous answer are byte-identical**, which is the
+same shape as the `as: second` → `anonymous` collapse closed in `c829482`, arriving this time
+from the target's side rather than ours.
+
+**Consequences, and they are larger than two lost experiments.** Two of CM1's seven proposals
+(`/api/Users/{id}`, `/rest/basket/{id}`) chose `whoami` as their setup — the obvious choice, and
+the same one 2C4's model made — and died at `no field 'id' in the setup response`. The shape
+disclosure faithfully reported `field paths: (none — the body is not JSON, or carries no
+inlinable value)`, so **the model was correctly told the body was empty and had no way to learn
+why**. This is also the unresolved half of *"do not cite from 2C2 without a controlled re-test"*:
+that run's `GET /rest/user/whoami` → `{"user":{}}` was read as a possible anonymous write, and it
+was this, not the application.
+
+**Not a dropped cookie.** The login response carries **no `Set-Cookie` at all** (verified: only
+`HTTP/1.1 200 OK` and `Content-Type`); the SPA's own client sets the cookie from the JSON body.
+Any fix therefore has to *synthesise* a cookie from the login response rather than record one,
+which is a new behaviour and needs its own test-first session — exactly why it is recorded here
+rather than patched mid-engagement.
+
+**Positive control (this is why the finding is attributed to the session carriage and not to the
+resolver):** in the same pre-flight, `GET /api/Products/1` → `data.id` resolved and reached a
+comparator (1 confirmed), and `POST /rest/user/login` → `authentication.bid` resolved and was
+judged across two distinct principals. The resolver works.
+
+### P2 — THE REFINE ROUND PROPOSES `{{setup.N.*}}` REFERENCES WITH NO SETUP STEPS AT ALL
+
+**Severity: P2 (it silently costs a whole refine round). RECORDED, NOT FIXED.**
+
+All **three** of CM1's second-round proposals referenced `{{setup.0.data.id}}` /
+`{{setup.0.data.BasketId}}` while supplying an **empty `setup` list**, and all three were refused
+with `no setup response at index 0`. The fail-safe behaved correctly — not dispatched, not judged,
+fed back as not-a-result.
+
+The likely mechanism is a prompt-contract gap rather than a model error: `REFINE_PROMPT` shows the
+previous round's setup **shapes** under `SETUP_SHAPE_HEADER`, which reads as though those setup
+responses are still addressable. They are not — `setup_results` is rebuilt per proposal inside
+`_run_one_round`, so index 0 exists only if *that* proposal carries its own setup step. The
+disclosure that was added to stop the model guessing field names now invites it to reference a
+round that is gone.
+
+**Do not "fix" this by making setup results persist across rounds** — that would make an
+experiment's evidence depend on state established by a different experiment, which is the seeding
+problem the milestone forbids. The contract, not the lifetime, is what is wrong.
+
+### P2 — A SETUP REQUEST THAT FAILED IS REPORTED TO THE NEXT ROUND AS A BAD REFERENCE
+
+**Severity: P2 (it points the model at the wrong repair). RECORDED, NOT FIXED.**
+
+CM1's `/api/Addresses/{id}` experiment ran `POST /api/Addresses` as setup; the target answered
+**HTTP 500**. The outcome fed back was
+`UNRESOLVED REFERENCE … {{setup.0.data.id}}: setup response body is not JSON`.
+
+That sentence is true and it is misleading: it describes the reference, when the fact that matters
+is that **the setup request failed**. A model reading it has every reason to change the dotted
+path and none to fix the request body that 500'd — and in CM1 the next round did neither, because
+of the P2 above. The shape line has the same gap: `HTTP 500; field paths: (none …)` names the
+status but the outcome text the model actually reasons from does not.
+
+**Same family as the two entries above it in this file:** a component correct on its own axis
+(the resolver truthfully reports what it could not resolve) is wrong about what the next component
+will do with its output.
+
+### P1 — ONE UNPARSEABLE STRATEGIST REPLY ENDS THE ENGAGEMENT, REPORTED AS "DONE"
+
+**Severity: P1 (it abandoned 54 of 70 steps and $2.93 of a $4.00 budget on one reply).
+RECORDED, NOT FIXED.**
+
+CM1 stopped at step 16 with `stop_reason: "done"`, rendered to the operator as
+**"nothing left to safely automate"** and printed into `report.md` as **"Stopped because: done"**.
+The actual event, one line earlier in the transcript:
+
+```
+strategist: could not extract an action from model reply: "PHASE: exploitation\n\nGOAL: Fix the
+UNION-based SQLi against `/rest/products/search` — our first attempt threw a syntax error because
+the closing parens didn't match the app's actual WHERE clause nesti…"
+```
+
+The model had proposed a next action. `strategist.py:429` warns only when the reply *clearly tried*
+to propose one (a marker or a fence is present), so the warning firing is itself evidence that this
+was an attempted action and not a deliberate advice-only turn. `_salvage_command` did not recover
+it, every field came back `None`, and the loop read "no action" as "finished".
+
+**This is the truncated-reply defect (`37b3957`, 2026-08-12) from a second angle, and it is worse
+in one respect.** That fix keyed on the backend's `finish_reason` so a cut-off reply could no
+longer end the loop. This reply was not cut off by the backend — it was *unparseable by us* — so
+it takes a different path to the same wrong conclusion, and arrives at a **more confident** wording:
+truncation stopped the loop saying "nothing left to do", while this stops it saying **"done"**, on
+every surface a reader has. A run that abandons 77% of its budget must not be able to describe
+itself with the same word as a run that finished.
+
+**Do not fix by loosening the parser alone.** The property is that *the loop must not treat "we
+could not read the reply" and "there is nothing to do" as the same state* — the parse failure
+needs its own stop reason and its own line in the report, whatever the parser then recovers.
