@@ -2283,6 +2283,51 @@ resolver):** in the same pre-flight, `GET /api/Products/1` → `data.id` resolve
 comparator (1 confirmed), and `POST /rest/user/login` → `authentication.bid` resolved and was
 judged across two distinct principals. The resolver works.
 
+#### CLOSED 2026-09-10 — the harness now CONFIRMS the session, and refuses when it cannot
+
+The fix is deliberately not "synthesise a cookie and carry on" — that is the same unchecked
+claim one layer down. **After authenticating, the carriage is PROVED or the claim is not made.**
+
+- **The oracle has to earn the job first.** An identity endpoint from `_IDENTITY_PROBE_PATHS` is
+  asked **anonymously twice**. Two identical answers make it usable; two different ones mean it
+  carries a nonce or a timestamp, so it cannot tell principals apart and is skipped rather than
+  believed. Only then is it asked with our session, and only a **difference from the stable
+  anonymous answer** counts as being logged in. Nothing pattern-matches a body for words like
+  `user` — the whole defect is that authenticated and anonymous *look identical*, so a shape
+  heuristic would be guessing at the very thing under test.
+- **Cookie carriage comes from an allowlist, never a guess.** `_SESSION_COOKIE_NAMES`, the same
+  discipline as `_JSON_SIGNUP_PATHS`. `csrf`/`XSRF` are deliberately absent: those are
+  anti-forgery values, not credentials.
+- **Three outcomes, not two.** `confirmed=True` proved · `False` an oracle existed and no carriage
+  passed it · `None` no usable oracle. **Only `False` refuses.** Treating `None` as a refusal
+  would break every target that exposes no conventional identity endpoint — trading this defect
+  for a worse one — so an untested session stays untested and says so on the ledger.
+- **The refusal is `hypothesis.PrincipalNotAuthenticated`**, sibling of
+  `SecondPrincipalUnavailable`, raised in `_as_identity` before the request is built and caught
+  ahead of the generic handler, fed back as `NOT AUTHENTICATED (experiment NOT run, this is not a
+  result)`. An `as: self` from a session the target reads as a stranger is not `self`; it is
+  byte-for-byte `anonymous` — the collapse `c829482` closed from our side, closed here from the
+  target's.
+- **The carriage is on the ledger** (`authentication_carriage`, per principal), because
+  "authenticated" with no record of HOW is the unprovable shape `2fdbc7f` closed for experiments.
+
+**⚠ WHAT THIS FIX GOT WRONG FIRST, and the guard now pinning it.** The first cut probed inside
+`login()`. Five suites went red: ~5 detectors call `login()` per engagement, so an identity sweep
+landed on each — **the exact expense `13bc501` closed** — and it perturbed the detectors that
+reason about login's own request/cookie sequence, flipping `test_an_app_that_rotates_yields_nothing`.
+Confirmation is now **owed at login and PAID at first authenticated use**, memoised per principal:
+`_as_identity` is the single point every dispatch passes through, so a round of three experiments
+costs one sweep instead of six. `test_confirmation_is_not_paid_on_every_login` and
+`test_confirmation_is_probed_once_across_a_round_of_experiments` exist because that regression was
+real and the suite caught it, not because it was anticipated.
+
+Tests: `tests/test_authentication_confirmed.py`, 9 tests, **7 red first**, plus the 2 cost guards
+written after the regression. The doubles decide from the REQUEST HEADERS the way a real app does
+and come in three modes — cookie-reading, header-reading, honouring-neither — because a double
+that answered the same way for all three would let this fix pass without doing anything. The
+redaction test uses a target that **echoes the token back in its own body** and asserts the ledger
+is clean; assuming it would have proved nothing.
+
 ### P2 — THE REFINE ROUND PROPOSES `{{setup.N.*}}` REFERENCES WITH NO SETUP STEPS AT ALL
 
 **Severity: P2 (it silently costs a whole refine round). RECORDED, NOT FIXED.**

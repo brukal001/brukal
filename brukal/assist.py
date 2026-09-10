@@ -85,6 +85,25 @@ _JSON_SIGNUP_PATHS = (
     "/register", "/api/register", "/auth/register", "/api/auth/register",
     "/rest/user/register", "/signup", "/api/signup", "/accounts",
 )
+# WHERE to ask "who am I", and WHAT a session cookie is conventionally called. Both are
+# explicit allowlists for the same reason `_JSON_SIGNUP_PATHS` is one: the alternative is
+# a regex loose enough to match anything, which is how a probe starts POSTing at
+# arbitrary routes or a "session cookie" turns out to be a CSRF token or a locale
+# preference. Never a guess — a documented, conventional name or nothing.
+#
+# Read-only GETs, tried in order, stopping at the first that tells an authenticated
+# caller apart from an anonymous one.
+_IDENTITY_PROBE_PATHS = (
+    "/rest/user/whoami", "/api/me", "/me", "/api/user/me", "/rest/user/me",
+    "/api/users/me", "/api/account", "/api/profile", "/user/profile", "/whoami",
+)
+# Cookie names that conventionally CARRY a session token. Ordered: the first that proves
+# itself wins. `csrf`/`XSRF` are deliberately absent — those are anti-forgery values, not
+# credentials, and setting a token as one would prove nothing and corrupt a real one.
+_SESSION_COOKIE_NAMES = (
+    "token", "jwt", "access_token", "auth_token", "authToken",
+    "session", "sessionid", "session_id", "sid", "connect.sid",
+)
 # URLs that DESTROY the session: never fetch these during a crawl, or we log
 # ourselves out and the rest of an AUTHENTICATED crawl runs unauthenticated (a
 # classic authenticated-scanning trap — the scanner clicks its own "logout").
@@ -1708,7 +1727,147 @@ class AssistSession:
         self.notes.append(
             f"[login] {login_url} as {username} ({lt}) → "
             f"{'AUTHENTICATED via ' + how if ok else 'login may have FAILED — check creds/field names/type'}")
+        if ok:
+            # Confirmation is OWED from here, not taken here. Probing inside login() cost
+            # every caller extra requests, and ~5 detectors call login() per engagement —
+            # the exact expense `13bc501` closed — while also perturbing the detectors
+            # that reason about login's own request/cookie sequence (session fixation
+            # compares the identifier across exactly this boundary). It is paid instead at
+            # first authenticated USE, which is the only place the answer changes anything.
+            pr = self._ensure_principal()
+            pr.carriage, pr.confirmed = "", None
+            self._carriage_memo = None
         return ok
+
+    # ---- CONFIRMING the session, rather than assuming it -------------------------
+    #
+    # `login()` above returns True when the login endpoint accepted our credentials and
+    # we stored something. That is a claim about the LOGIN endpoint. Every authorization
+    # question we go on to ask is a claim about OTHER endpoints, and run CM1 measured the
+    # gap between them: a valid Juice Shop token carried as `Authorization: Bearer` is
+    # honoured by `/api/Users/25` and ignored by `/rest/user/whoami`, which answers the
+    # authenticated caller and a stranger with the same bytes. Two experiments built
+    # their setup on that endpoint and could not resolve their own id; a third would have
+    # compared a stranger with a stranger and been judged.
+
+    def _probe_identity(self, url: str, with_session: bool):
+        """One gated GET at an identity endpoint, with or without our session.
+
+        Returns the WebResult, or None when the path does not exist here (404) or the
+        target did not answer. Anonymous is issued through `_separate_identity`, which is
+        the tested way to make a request as nobody without destroying our own session."""
+        from .web import WebAction
+        action = WebAction("request", method="GET", url=url)
+        try:
+            if with_session:
+                _d, r = self.browser.run(action)
+            else:
+                with self._separate_identity():
+                    _d, r = self.browser.run(action)
+        except Exception:
+            return None
+        status = getattr(r, "status", None)
+        if status is None or status == 404:
+            return None
+        return r
+
+    @staticmethod
+    def _answers_differ(a, b) -> bool:
+        return (getattr(a, "status", None) != getattr(b, "status", None)
+                or (getattr(a, "body", "") or "") != (getattr(b, "body", "") or ""))
+
+    def _settle_carriage(self, carriage: str, confirmed, probe_url: str) -> str:
+        """Record which carriage this target honours, on the ledger and on the Principal.
+
+        A cross-account claim rests on which principal saw what; "authenticated" with no
+        record of HOW is the same unprovable shape `2fdbc7f` closed for experiments."""
+        pr = self._ensure_principal()
+        pr.carriage, pr.confirmed = carriage, confirmed
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is not None:
+            audit.append("authentication_carriage", {
+                "principal": self.identity or "self", "carriage": carriage,
+                "confirmed": confirmed, "probe": probe_url, "target": self.target,
+            })
+        how = carriage or "none"
+        verdict = {True: "CONFIRMED", False: "REFUTED", None: "UNTESTED"}[confirmed]
+        self.notes.append(f"[login] session carriage {verdict} ({how})"
+                          + (f" at {probe_url}" if probe_url else ""))
+        return carriage
+
+    def confirm_authentication(self) -> str:
+        """Prove which carriage this target honours — or prove that it honours none.
+
+        Method, and the discipline is the point: an identity endpoint is asked ANONYMOUSLY
+        TWICE first. Two identical anonymous answers make it a usable oracle; two different
+        ones mean the endpoint carries a nonce or a timestamp and cannot tell principals
+        apart, so it is skipped rather than believed. Only then is the same endpoint asked
+        with our session, and only a DIFFERENCE from the stable anonymous answer counts as
+        being logged in. Nothing here pattern-matches a body for words like "user" — that
+        would be guessing at what authenticated looks like, and the whole defect is that
+        the two look identical.
+
+        If the carriage we hold is refuted, the token is retried as a COOKIE, one
+        conventional name at a time from `_SESSION_COOKIE_NAMES`, keeping the first that
+        proves itself and leaving the jar untouched if none does.
+
+        Sets `principal.confirmed` to True (proved), False (an oracle existed and no
+        carriage passed it) or None (no usable oracle — unknown, and NOT treated as a
+        refusal: most targets expose no conventional identity endpoint at all, and
+        refusing them would trade this defect for a worse one)."""
+        browser = self.browser
+        if browser is None or not self.authenticated:
+            return ""
+        # ONCE per principal. "Probe identity once" is the contract; a per-call probe
+        # would put the cost back on every detector that logs in, and the answer cannot
+        # change while the same credential is carried the same way.
+        memo = (self._login_url, self.identity)
+        if getattr(self, "_carriage_memo", None) == memo:
+            return self._ensure_principal().carriage
+        self._carriage_memo = memo
+        from urllib.parse import urljoin
+        base = self._login_url or f"http://{self.target}/"
+        held = "header" if getattr(browser, "auth_header", "") else (
+            "cookie:" + next(iter(getattr(browser, "_cookies", {}) or {}), "") 
+            if (getattr(browser, "_cookies", {}) or {}) else "")
+        token = self.session_token()
+        for path in _IDENTITY_PROBE_PATHS:
+            url = urljoin(base, path)
+            anon_a = self._probe_identity(url, with_session=False)
+            if anon_a is None:
+                continue
+            anon_b = self._probe_identity(url, with_session=False)
+            if anon_b is None or self._answers_differ(anon_a, anon_b):
+                continue                      # noisy oracle — it cannot prove anything
+            mine = self._probe_identity(url, with_session=True)
+            if mine is None:
+                continue
+            if self._answers_differ(mine, anon_a):
+                return self._settle_carriage(held, True, url)
+            # The oracle works and does not know us. Try cookie carriage.
+            if not token:
+                return self._settle_carriage("", False, url)
+            saved = dict(getattr(browser, "_cookies", {}) or {})
+            for name in _SESSION_COOKIE_NAMES:
+                browser._cookies = dict(saved, **{name: token})
+                got = self._probe_identity(url, with_session=True)
+                if got is not None and self._answers_differ(got, anon_a):
+                    # A cookie we SET is a credential we INJECTED, so it is registered
+                    # the moment it starts being carried — the same rule, and the same
+                    # line, as every other injected credential in this file.
+                    redact.register(token)
+                    return self._settle_carriage(f"cookie:{name}", True, url)
+            browser._cookies = saved          # nothing worked; leave the jar as it was
+            return self._settle_carriage("", False, url)
+        return self._settle_carriage(held, None, "")
+
+    @property
+    def auth_carriage(self) -> str:
+        return self._ensure_principal().carriage
+
+    @property
+    def auth_confirmed(self):
+        return self._ensure_principal().confirmed
 
     # Identity/authentication facts live on `self.principal` (a `Principal`, in
     # auth.py); these keep the 40+ existing call sites and their tests working
@@ -3565,6 +3724,27 @@ class AssistSession:
             raise _h.SecondPrincipalUnavailable(
                 "no second principal was established on this target "
                 "(self-registration did not yield an account)")
+        # Confirmation is owed before an authenticated request is issued, and this is the
+        # single point every experiment dispatch passes through — the same argument the
+        # provenance record is written here for. Memoised, so a round of four experiments
+        # pays for one probe, not twelve. Instrumentation must never fail a run: a probe
+        # that raises leaves the session UNTESTED (None), which is not a refusal.
+        if who != "anonymous" and self._ensure_principal().confirmed is None:
+            try:
+                self.confirm_authentication()
+            except Exception:
+                self._settle_carriage("", None, "")
+        # And the same refusal when the session we DO hold was proved not to be honoured.
+        # `as: self` from a session the target reads as a stranger is not "self"; it is
+        # byte-for-byte `anonymous`, so the comparison would be between two strangers and
+        # the verdict would be about Brukal. Only a REFUTED session refuses — an untested
+        # one (None) is not a disproof and must not read as one.
+        if who != "anonymous" and self._ensure_principal().confirmed is False:
+            from . import hypothesis as _h
+            raise _h.PrincipalNotAuthenticated(
+                f"this target does not honour the session we hold "
+                f"(carriage tried: {self._ensure_principal().carriage or 'none'}), so "
+                f"'{who}' would be issued as a stranger")
         self._record_principal(who, who, role, url)
         if who == "self" or browser is None:
             yield
@@ -3888,6 +4068,15 @@ class AssistSession:
                 with self._as_identity(vspec.pop("as", "self"), "variant",
                                        vspec.get("url", "")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
+            except _hyp.PrincipalNotAuthenticated as exc:
+                # NOT a negative result, and ahead of the generic handler for the reason
+                # the two below it are: the experiment never ran, and a transport-shaped
+                # message ("ERRORED before reaching the target") would hide a governance
+                # fact behind a plumbing one.
+                self.note(f"[experiment] NOT AUTHENTICATED, not run: {h.title} ({exc})")
+                outcomes.append(f"NOT AUTHENTICATED (experiment NOT run, this is not a "
+                                f"result) {h.title}: {exc}")
+                continue
             except _hyp.SecondPrincipalUnavailable as exc:
                 # NOT a negative result, and caught ahead of the generic handler for the
                 # same reason UnresolvedReference is: the comparator this experiment
@@ -4385,6 +4574,11 @@ class AssistSession:
         # second-identity login inside this context leaves `strategy` set to
         # whichever was tried last instead of our own.
         saved_strategy = self._ensure_principal().strategy
+        # Same kind of fact as `strategy`, and for the same reason: a second-identity
+        # login inside this context proves ITS carriage, and leaving that behind would
+        # attribute the second principal's confirmation to us.
+        saved_carriage = self._ensure_principal().carriage
+        saved_confirmed = self._ensure_principal().confirmed
         try:
             browser._cookies = {}
             browser.auth_header = ""
@@ -4396,6 +4590,8 @@ class AssistSession:
             self._login_password = saved_password
             self.authenticated = saved_authed
             self._ensure_principal().strategy = saved_strategy
+            self._ensure_principal().carriage = saved_carriage
+            self._ensure_principal().confirmed = saved_confirmed
 
     # Field names on a signup form, by role. Ordered: the first match wins, so
     # `cpassword`/`confirm` must be tested before the bare password pattern or a

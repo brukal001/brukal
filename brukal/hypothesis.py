@@ -233,6 +233,21 @@ class UnresolvedReference(ValueError):
     """A `{{setup.i.path}}` reference nothing in the setup responses can satisfy."""
 
 
+class PrincipalNotAuthenticated(ValueError):
+    """The principal an experiment named holds a session this target does not honour.
+
+    Sibling of `SecondPrincipalUnavailable`, and for the same reason: the comparator the
+    experiment selected is UNCONSTRUCTIBLE, so any verdict it reached would be a claim
+    about Brukal wearing the costume of a claim about the application. An `as: self`
+    request from a session the target reads as a stranger is not "self" — it is exactly
+    `anonymous`, which is the collapse `c829482` closed from our side and this closes
+    from the target's.
+
+    Raised by `_as_identity` BEFORE the request is built, so the degraded request cannot
+    exist and nothing is attributed to one that never happened.
+    """
+
+
 class SecondPrincipalUnavailable(ValueError):
     """An experiment named `as: second` on a target where no second account exists.
 

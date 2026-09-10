@@ -362,6 +362,15 @@ class Principal:
     login_type: str = ""
     login_password: str = ""
     strategy: str = ""
+    # HOW the session is actually honoured by this target, and whether that was proved
+    # rather than assumed. `login()` returning True says the login endpoint accepted our
+    # credentials; it says nothing about whether the thing we stored is read by the
+    # endpoints we are about to reason about. Run CM1 held a valid token the identity
+    # endpoint ignored, so authenticated and anonymous answers were byte-identical.
+    #   carriage : "header" | "cookie:<name>" | "" (nothing worked / not established)
+    #   confirmed: True proved, False disproved against an anonymous control, None untested
+    carriage: str = ""
+    confirmed: "bool | None" = None
 
     def snapshot(self) -> dict:
         return dict(self.__dict__)
