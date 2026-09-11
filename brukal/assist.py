@@ -1705,6 +1705,13 @@ class AssistSession:
 
         self.authenticated = ok
         self._ensure_principal().strategy = strategy.name
+        if ok:
+            # The login reply is already held (`AuthAttempt.body`), so this costs nothing.
+            # `_separate_identity` is what makes `who` right: a second-principal login runs
+            # inside it, and `self.identity` is that principal for the duration.
+            self._record_principal_ids(
+                "second" if getattr(self, "_establishing_second", False) else "self",
+                "login", getattr(attempt, "body", ""))
 
         if ok and not self.identity:
             # Who we are was once set ONLY in the token branch, so a cookie-session
@@ -1843,6 +1850,9 @@ class AssistSession:
             if mine is None:
                 continue
             if self._answers_differ(mine, anon_a):
+                self._record_principal_ids(
+                    "second" if getattr(self, "_establishing_second", False) else "self",
+                    "whoami", getattr(mine, "body", ""))
                 return self._settle_carriage(held, True, url)
             # The oracle works and does not know us. Try cookie carriage.
             if not token:
@@ -1852,6 +1862,9 @@ class AssistSession:
                 browser._cookies = dict(saved, **{name: token})
                 got = self._probe_identity(url, with_session=True)
                 if got is not None and self._answers_differ(got, anon_a):
+                    self._record_principal_ids(
+                        "second" if getattr(self, "_establishing_second", False) else "self",
+                        "whoami", getattr(got, "body", ""))
                     # A cookie we SET is a credential we INJECTED, so it is registered
                     # the moment it starts being carried — the same rule, and the same
                     # line, as every other injected credential in this file.
@@ -1860,6 +1873,35 @@ class AssistSession:
             browser._cookies = saved          # nothing worked; leave the jar as it was
             return self._settle_carriage("", False, url)
         return self._settle_carriage(held, None, "")
+
+    def _record_principal_ids(self, who: str, source: str, body) -> None:
+        """Merge the identifiers a response carried into that principal's own set.
+
+        Called at the three points a principal's authenticated responses arrive — its
+        login reply, its identity probe, its signup reply — so no extra request is made
+        for any of this. `who` keys it, and nothing merges across keys: an identifier
+        belongs to the account whose response carried it, and crossing them would hand
+        the model a false premise that every cross-account proposal built on it inherits."""
+        from . import hypothesis as _hyp
+        found = _hyp.own_identifiers(body)
+        if not found:
+            return
+        store = getattr(self, "_principal_ids", None)
+        if store is None:
+            store = self._principal_ids = {}
+        bucket = store.setdefault(who, {})
+        for path, value in found.items():
+            bucket[f"{source}.{path}"] = value
+
+    def principal_identifiers(self) -> dict:
+        """{principal: {source.path: value}} — what each account is known to own.
+
+        Empty for a principal whose responses carried no identifier, which is the honest
+        answer for a target that does not expose one. See `hypothesis.own_identifiers`."""
+        store = dict(getattr(self, "_principal_ids", None) or {})
+        for who in ("self", "second"):
+            store.setdefault(who, {})
+        return store
 
     @property
     def auth_carriage(self) -> str:
@@ -3774,6 +3816,18 @@ class AssistSession:
             return self._second_identity.get("user", "")
         if self.browser is None or not self.allow_intrusive:
             return ""
+        # The window in which a login or an identity probe belongs to the SECOND
+        # principal. try/finally, not a trailing assignment: this method returns early on
+        # four separate failure paths, and a flag left True would file the NEXT `self`
+        # login under `second` — a crossed disclosure, which is the one thing worse than
+        # no disclosure because every proposal built on it inherits a false premise.
+        self._establishing_second = True
+        try:
+            return self._establish_second_identity_inner()
+        finally:
+            self._establishing_second = False
+
+    def _establish_second_identity_inner(self):
         with self._separate_identity():
             # The FORM first: an account created through the application's own signup
             # form is self-evidently what it grants a stranger, which is what makes a
@@ -3859,6 +3913,27 @@ class AssistSession:
                 f'"anonymous" to issue it as a stranger with no session, or omit it for '
                 f"your own. Objects and identifiers belonging to '{second_user}' are the "
                 f"ones worth trying to reach from your own session, and vice versa.")
+        # WHAT EACH PRINCIPAL ALREADY OWNS. Until this existed the model was told two
+        # email addresses and the sentence "objects and identifiers belonging to <them>
+        # are the ones worth trying to reach" — an instruction to reference objects it had
+        # no way to name. Its only route was to CREATE one first, and in run CM2 that is
+        # where five of seven cross-account proposals died: four on a setup the target
+        # answered 500 and one on a reference to it.
+        #
+        # Every value here was carried by a response this engagement actually received, so
+        # the disclosure cannot name something unusable — the same guarantee the setup
+        # shape lines give, applied to values. Through `redact.text` because it is built
+        # from response bodies, and a body is exactly where a discovered credential lives.
+        ids_note = ""
+        _ids = {who: vals for who, vals in self.principal_identifiers().items() if vals}
+        if _ids:
+            _lines = []
+            for _who, _vals in _ids.items():
+                _label = {"self": "you", "second": f"the second account"}.get(_who, _who)
+                _rendered = ", ".join(f"{k.split('.')[-1]}={v}" for k, v in _vals.items())
+                _lines.append(f"  - {_who} ({_label}): {_rendered}")
+            ids_note = ("\n\n" + _hyp.PRINCIPAL_IDS_HEADER + "\n"
+                        + redact.text("\n".join(_lines)))
         prompt = _hyp.PROMPT.format(comparators=", ".join(_hyp.comparator_names()))
         try:
             # The BASE URL, not the bare IP. The first live run handed the model
@@ -3905,7 +3980,7 @@ class AssistSession:
                                 f"Every url MUST start with exactly that base."
                                 f"{auth}\n\n"
                                 f"Attack surface:\n{grounding}"
-                                f"{second_note}{source_note}",
+                                f"{second_note}{ids_note}{source_note}",
                                 max_tokens=8000)
         except Exception as exc:
             # RECORD, do not widen. What is caught is unchanged — the engagement still
@@ -4806,6 +4881,10 @@ class AssistSession:
             if email not in json.dumps(got):
                 continue
             self.note(f"[experiment] second principal registered via JSON signup at {url}")
+            # The account the application just created describes itself here, and this is
+            # the ONLY response that does: a second principal whose identity endpoint is
+            # never confirmed would otherwise reach the model with no id at all.
+            self._record_principal_ids("second", "signup", text)
             return email, password
         return None
 

@@ -371,6 +371,64 @@ _SHAPE_MAX_DEPTH = 4                # `user.addresses.0.id` is four segments, an
 _SHAPE_MAX_PATHS = 40               # APIs rarely bury an id deeper than that
 SETUP_SHAPE_MAX_LINES = 8           # distinct setup responses described per round
 
+# Keys a RESPONSE itself names as an identifier. Not a guess at what an id might be
+# called: `id`, `<thing>Id`, `<thing>_id`, and `bid`, which is what a login reply calls the
+# basket it just issued. A looser rule would sweep in every scalar and a tighter one would
+# miss the field the endpoints are actually parameterised by.
+_ID_KEY_RE = re.compile(r"^(?:id|bid|[A-Za-z][A-Za-z0-9]*(?:Id|_id))$")
+
+# Bounds, announced rather than silent, for the same reason `key_paths` has them: a
+# response is target data of unknown size and an unbounded dump would push the surface it
+# is meant to explain out of the prompt.
+_ID_MAX_DEPTH = 4
+_ID_MAX_VALUES = 12
+
+PRINCIPAL_IDS_HEADER = (
+    "Known identifiers, per principal \u2014 these are objects each account ALREADY OWNS, "
+    "read from its own authenticated responses. Use them directly in a url: a "
+    "cross-account experiment needs NO setup step when the id is already here. Values "
+    "only, no credentials. An identifier listed under one principal belongs to that "
+    "principal and to no other.")
+
+
+def own_identifiers(body, max_depth: int = _ID_MAX_DEPTH,
+                    max_values: int = _ID_MAX_VALUES) -> dict:
+    """The identifier-shaped scalars a response carried, as {dotted path: value}.
+
+    Deterministic, no model, and no invention: every value returned was present in a body
+    the harness actually received. That is the same guarantee `key_paths` gives the setup
+    disclosure — it may not name something the model cannot use — applied to values rather
+    than to paths. A body that carries no identifier yields {}, which is how a target that
+    discloses nothing degrades: to silence, never to a fabricated id."""
+    try:
+        doc = json.loads(body or "")
+    except (ValueError, TypeError):
+        return {}
+    found: dict = {}
+
+    def walk(node, prefix: str, depth: int):
+        if len(found) >= max_values or depth > max_depth:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                path = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, (str, int)) and not isinstance(v, bool) \
+                        and _ID_KEY_RE.match(k):
+                    # A long string under an id-shaped key is a token, not an id. The
+                    # redaction funnel is the real guard; this keeps the obvious case out
+                    # of the prompt in the first place.
+                    if isinstance(v, int) or (0 < len(v) <= 64):
+                        found[path] = v
+                elif isinstance(v, (dict, list)):
+                    walk(v, path, depth + 1)
+        elif isinstance(node, list):
+            for i, v in enumerate(node[:3]):
+                walk(v, f"{prefix}.{i}", depth + 1)
+
+    walk(doc, "", 1)
+    return found
+
+
 SETUP_SHAPE_HEADER = (
     "What the PREVIOUS round's setup requests returned. These are FIELD PATHS ONLY "
     "\u2014 no values are shown \u2014 shown so you know which paths those requests "

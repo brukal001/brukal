@@ -2675,3 +2675,52 @@ reasoning is used as-is (`_parse` never cared about order), the reasoning is sti
 and recorded, a genuinely actionless reply is still `done`, and `stop_reason` still agrees
 with the operator sentence. They exist so this fix cannot buy reliability by suppressing
 the thinking or by re-asking questions the model already answered.
+
+
+---
+
+## FIX B (2026-09-11) — the model could not reference a resource it had never been shown
+
+**CLOSED.** Answers CM2's *"not one judged experiment used the second principal"*.
+
+**What the model was told about either principal, before this:** two email addresses. Plus
+the sentence *"Objects and identifiers belonging to '<email>' are the ones worth trying to
+reach from your own session, and vice versa"* — an instruction to reference objects it had
+no way to name. The only route left was to CREATE one first, and creating one is exactly
+where CM2 died: four proposals on a setup the target answered **HTTP 500**, one on a
+reference to it, five of seven in the cross-account class.
+
+**What it is told now.** `hypothesis.own_identifiers()` extracts identifier-shaped scalars
+from a response body — keys the response ITSELF names (`id`, `<thing>Id`, `<thing>_id`,
+and `bid`, which is what a login reply calls the basket it issues). Deterministic, no model
+in the path, bounded at depth 4 / 12 values, and **no guess at what an id is called**: a key
+qualifies because the response used that name.
+
+**Zero extra requests.** The three responses are already in hand — `AuthAttempt.body` from
+the login, the identity probe from `confirm_authentication`, and the JSON signup reply,
+which is the only response that describes the second account at all (and therefore the only
+source for a second principal whose identity endpoint is never confirmed — see the open P1
+above).
+
+**Per principal, never crossed.** `_establishing_second` marks the window in which a login
+or probe belongs to the second account, and it is closed in a `finally`, not by a trailing
+assignment: `establish_second_identity` returns early on four failure paths, and a flag left
+True would file the next `self` login under `second`. **A crossed disclosure is worse than
+no disclosure**, because every proposal built on it inherits a false premise that nothing
+downstream can detect.
+
+**It mirrors the setup-shape guarantee.** A shape line may only name paths a reference could
+resolve; an identifier line may only name values a response actually carried. A target that
+exposes no identifier yields `{}`, the block is omitted entirely rather than emitted empty —
+an empty block reads as *"this principal owns nothing"* rather than *"we could not tell"* —
+and nothing is invented.
+
+**Credentials.** The disclosure is built from response bodies, which is exactly where a
+discovered credential lives, so it passes through `redact.text`. Long strings under
+id-shaped keys are dropped before that as well. Verified against a double that **echoes the
+session token in the same body the ids are read from** — not assumed.
+
+Tests: `tests/test_principal_identifier_disclosure.py`, 6 tests, **5 red first**. The one
+born green is the no-credential check, which **protected nothing new** — no credential was
+reaching the prompt before, because nothing was. It is there so the disclosure cannot
+acquire one later.
