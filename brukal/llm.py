@@ -273,8 +273,20 @@ class _AnthropicBackend:
         # ordinary call untouched.
         return self._propose_once(system, user, bigger, stream=True)
 
+    # Requests at or above this size STREAM, decided by size on the client rather than by
+    # a flag each caller has to remember. The SDK refuses a non-streaming request whose
+    # max_tokens implies it could run past ten minutes, and that ceiling is model- and
+    # estimator-dependent — so the safe rule is "large means streamed", not "this one
+    # caller passes stream=True". Every caller inherits it, and no test double has to grow
+    # a parameter it does not use.
+    _STREAM_AT = 8_000
+
+    def _streams_at(self, max_tokens: int) -> bool:
+        return max_tokens >= self._STREAM_AT
+
     def _propose_once(self, system: str, user: str, max_tokens: int,
                       stream: bool = False) -> str:
+        stream = stream or self._streams_at(max_tokens)
         # The system prompt is the stable prefix of every turn in an engagement — the
         # methodology, the schema, the rules — while only the user turn changes. Marking
         # it cacheable bills it at ~0.1x on every call after the first, which on a long

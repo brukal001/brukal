@@ -566,6 +566,16 @@ Suite: **911 tests** (910 passed, 1 skipped).
 ahead of `REASONING:` would change what the model is asked to do — reasoning before
 answering is doing work, not padding — and would silently move every published metric.
 The retry makes the ordering survivable; reordering it is a separate, measured experiment.
+
+> ⏱ **THIS CONSTRAINT EXPIRED 2026-09-11, and is recorded as expired rather than quietly
+> overridden.** It rested on protecting published metrics. The paper is deferred by
+> decision, and every metric it protected is superseded by runs CM1 and CM2. The reason
+> not to reorder is gone; the cost of not reordering was measured twice — CM1 stopped at
+> step 16 of 70 and CM2 at step 22 of 70, both on a reply truncated at 800 and again at
+> its 4x retry, CM2 leaving $10.55 of a $12.00 cap unspent. Reordered in the commit that
+> carries this note. The half of the original reasoning that was never wrong is honoured:
+> `REASONING:` is still asked for, still 2-4 sentences, and still recorded — the answer
+> moved, the thinking did not.
 **Out of scope too:** `StrategistAgent.options()` (operator-facing menu — a truncation
 there costs an option, not the engagement; it falls back to `advise()` when empty) and the
 recon/exploit/verify specialists, whose truncated replies fail a single step rather than
@@ -2613,3 +2623,55 @@ for hours because the watch used `pgrep -f "brukal.cli auto …"`, which **match
 running it**. That failure mode is already recorded in this project's memory from an earlier
 session and was reproduced exactly. No budget was lost — the spend line is unchanged from 09:41 —
 only wall-clock.
+
+
+---
+
+## FIX A (2026-09-11) — the strategist's reply was the binding constraint
+
+**CLOSED. Two levers, pinned by separate tests so a run can say which paid.**
+
+`37b3957` and `a1978af` made a truncated reply *survivable* — retried, and honestly named
+if it still has no action. Neither made it *less likely*, and it remained the single
+largest waste in the programme: two consecutive runs ended before half their step budget
+because the model's reply ran out before its action line.
+
+**Lever (i) — ORDER.** `RUN:`/`WEB:`/`MANUAL:`/`SESSION:` now precede `REASONING:` in the
+template, with the reason stated to the model in the template itself: *a reply whose
+reasoning is truncated still works; a reply whose action is truncated ends the
+engagement.* No parser change was needed or made — `_parse` was always order-independent,
+which is exactly why **no parser test can detect this lever**. The instruction is the fix,
+so the test asserts the instruction.
+
+**Lever (ii) — ALLOWANCE.** `800 -> 2,000`, retry `3,200 -> 8,000` (the factor of 4 is
+unchanged). 800 is the number both runs were cut at; 3,200 is the number CM2 was cut at a
+second time, so both are known-failing values. Cost of the raise: ~1,200 extra output
+tokens per call, about **$0.63 across a 35-call engagement** at sonnet-5 rates, against
+the **$10.55 CM2 left unspent**.
+
+**Streaming became a property of SIZE, not of the retry.** `_AnthropicBackend._STREAM_AT =
+8_000`: any request at or above it streams. The strategist's raised retry needs it, and
+the alternative — a `stream=` flag threaded from each caller — would force a parameter
+onto every test double in the suite to serve one call site. Ordinary traffic is untouched:
+the strategist plans at 2,000 and the specialists ask for less, so the only callers at or
+above the threshold are `run_hypotheses` (8,000) and a retry.
+
+**Two pre-existing tests in `test_streaming_retry.py` were amended, and they had been RIGHT
+when written.** They encoded *"only the retry streams"*, which was true while streaming was
+a property of the retry. The property moved deliberately; the guarantee they existed for —
+the 32,000 retry streams — is unchanged and still asserted. The boundary they defended was
+restated at a size that is actually ordinary (2,000), and a new test checks that **usage is
+metered on a streamed FIRST call** rather than assuming it from the retry's test.
+
+⚠ **COMPARABILITY.** Reordering the template changes what the model is asked to produce.
+**No step count, finding count or spend figure from a run made before this commit should be
+compared with one made after it without saying so** — 2C4, CM1 and CM2 are all pre-change.
+The funnel counts (proposed/dispatched/resolved/judged/confirmed) are more robust than the
+step counts, but they are not immune either.
+
+Tests: `tests/test_action_survives_truncation.py`, 9 tests, **5 red first**. The 4 born
+green are the boundaries and **protected nothing new**: an action-first reply cut in its
+reasoning is used as-is (`_parse` never cared about order), the reasoning is still produced
+and recorded, a genuinely actionless reply is still `done`, and `stop_reason` still agrees
+with the operator sentence. They exist so this fix cannot buy reliability by suppressing
+the thinking or by re-asking questions the model already answered.

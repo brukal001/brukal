@@ -87,17 +87,21 @@ STRATEGIST_SYSTEM = (
     "Talk like a teammate thinking out loud, not a tool dispatcher. Keep the human "
     "oriented: what are we doing and why. Reason from the findings and, if given, "
     "the OBJECTIVES the box is asking the operator to answer.\n\n"
-    "Reply in EXACTLY this template:\n"
+    "Reply in EXACTLY this template. THE ACTION LINE COMES BEFORE THE REASONING, and "
+    "that order is not cosmetic: if your reply is cut off at the token limit you lose "
+    "whatever came LAST, so put the answer first and the explanation after it. A reply "
+    "whose reasoning is truncated still works; a reply whose action is truncated ends "
+    "the engagement.\n"
     "PHASE: <recon | enumeration | exploitation | privilege-escalation | looting>\n"
     "GOAL: <the concrete thing we're trying to achieve right now, one line>\n"
-    "REASONING: <2-4 sentences: what we've learned, what it implies, why this next "
-    "step. Reference specific ports/services/findings. If an objective can now be "
-    "answered, say so.>\n"
     "RUN: <one recon/enumeration command Brukal can run>   (optional)\n"
     "WEB: <a governed browser action for web-app testing>   (optional)\n"
     "MANUAL: <a step the operator does themselves — cracking a hash offline, "
     "submitting a flag, a GUI/interactive step>   (optional)\n"
-    "SESSION: <a line for a PERSISTENT live shell>   (optional)\n\n"
+    "SESSION: <a line for a PERSISTENT live shell>   (optional)\n"
+    "REASONING: <2-4 sentences: what we've learned, what it implies, why this next "
+    "step. Reference specific ports/services/findings. If an objective can now be "
+    "answered, say so.>\n\n"
     "Use SESSION when you need STATE to carry across steps — a foothold shell, a "
     "privesc chain, `cd`/env that must persist, reading `user.txt`/`root.txt` after a "
     "shell. It is a real interactive shell in the cage that survives turns; every line "
@@ -556,7 +560,12 @@ class StrategistAgent:
         parts = self._context_parts(target, findings, notes, reference, objectives,
                                     plan, known=known, tried=tried)
         parts.append("Give me the next step in the template.")
-        prompt, budget = "\n\n".join(parts), 800
+        # 800 was the number BOTH CM1 and CM2 were cut at, and 4x that (3,200) cut CM2
+        # again on the retry. 2,000 leaves room for the template plus 2-4 sentences with
+        # the action already emitted, and costs ~1,200 extra output tokens on a call —
+        # about $0.63 across a 35-call engagement at sonnet-5 rates, against the $10.55
+        # CM2 left unspent when it stopped at step 22 of 70.
+        prompt, budget = "\n\n".join(parts), 2000
         text = self._llm.propose(STRATEGIST_SYSTEM, prompt, max_tokens=budget)
         suggestion = _parse(text, target)
         if not self._unanswered(suggestion):

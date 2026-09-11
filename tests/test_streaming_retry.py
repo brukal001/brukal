@@ -126,10 +126,17 @@ def test_a_retry_above_the_nonstreaming_ceiling_is_dispatched_rather_than_raisin
 
 def test_the_retry_is_streamed_at_the_size_the_live_run_used():
     """run_hypotheses asks at 8,000, so the retry is always 32,000 — the exact pair that
-    failed 3/3 against the live crawl."""
+    failed 3/3 against the live crawl.
+
+    AMENDED 2026-09-11. This test was RIGHT when written: streaming was then a property of
+    the RETRY, so the first call at 8,000 went unstreamed. `_STREAM_AT` made it a property
+    of SIZE instead, because the strategist's raised retry (8,000) needed it and threading
+    a per-call flag would have forced a parameter onto every test double in the suite. The
+    guarantee this test exists for is unchanged and still asserted: the 32,000 retry
+    streams. What moved is the first call beside it, deliberately."""
     b = _backend([("max_tokens", ["thinking"], ""), ("end_turn", ["text"], "ok")])
     b.propose("sys", "user", 8000)
-    assert [(s, st) for _k, s, st in b._client.calls] == [(8000, False), (32_000, True)]
+    assert [(s, st) for _k, s, st in b._client.calls] == [(8000, True), (32_000, True)]
 
 
 def test_capping_below_the_ceiling_is_not_what_fixes_this():
@@ -212,12 +219,29 @@ def test_an_ordinary_reply_is_unchanged_and_costs_one_call():
     assert b._client.calls == [("create", 1000, False)], "a normal call must not stream"
 
 
-def test_a_first_call_under_the_ceiling_is_still_not_streamed():
-    """Only the RETRY changes. The first call is well under the ceiling and streaming it
-    would alter every call in the system to fix a case that only the retry reaches."""
+def test_an_ordinary_sized_call_is_still_not_streamed():
+    """THE BOUNDARY the amended rule still has to honour, restated at a size that is
+    actually ordinary.
+
+    Its predecessor asserted this at 8,000 and was right to: streaming was a property of
+    the retry, and turning it on for every call to fix a case only the retry reaches would
+    have been a change out of all proportion. `_STREAM_AT = 8_000` keeps that proportion —
+    the strategist plans at 2,000 and the specialists below it ask for less, so the whole
+    ordinary path is untouched, and the only callers at or above the threshold are the
+    experiment proposal and a retry."""
     b = _backend([("max_tokens", ["thinking"], ""), ("end_turn", ["text"], "ok")])
-    b.propose("s", "u", 8000)
-    assert b._client.calls[0] == ("create", 8000, False)
+    b.propose("s", "u", 2000)
+    assert b._client.calls[0] == ("create", 2000, False)
+
+
+def test_usage_is_recorded_on_a_STREAMED_FIRST_call_too():
+    """Not assumed from the retry's test. Spend is metered off the returned message, and a
+    first call that now streams must meter identically or the raised allowance would
+    silently understate every engagement's cost."""
+    b = _backend([("end_turn", ["text"], "ok")])
+    b.propose("sys", "user", 8000)
+    assert b._client.calls[0][2] is True, "precondition: this first call streamed"
+    assert b.last_usage.get("input") == 100 and b.last_usage.get("output") == 10
 
 
 def test_a_genuine_truncation_is_still_not_retried():
