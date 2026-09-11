@@ -2493,3 +2493,123 @@ cause discovered later inherits the retry rather than needing a third fix in the
   the start are the must-not-break direction (a usable reply is not retried; a genuinely
   action-free reply is still `done`) and they **protected nothing new** — they are there so the
   fix cannot buy its retry by re-asking questions the model already answered.
+
+---
+
+## RUN CM2 — capability milestone, attempt 2 (2026-09-11). What the four fixes did, and four new findings
+
+Artifacts, preserved: `runs/audit_juiceshop_cm2.jsonl` (587 entries, keyed, `chain intact: True`) ·
+`runs/vault-cm2/172.20.0.3/` (62 files) · pre-flight `runs/audit_preflight_cm2.jsonl` (67 entries)
+and `runs/vault-preflight-cm2/`. Scope `brukal-juiceshop-cm2-172.20.0.3`, Juice Shop v20.2.0
+recreated fresh, `rate_limit_per_min: 120`, `--max-steps 70 --max-cost 12.00` (dollar cap set above
+the projected spend so STEPS bind — disclosed in the scope's `_budget_note`). 22 of 70 steps,
+34 calls, **~$1.45**.
+
+**Funnel: proposed 7 · dispatched 7 · RESOLVED 2 · JUDGED 2 · confirmed 1.** Compare CM1
+(7/7/1/1/0) and 2C4 (9/9/0/0/0).
+
+### The three fixes that demonstrably worked, measured on this run
+
+- **Fix 3 (`5415faa`) — closed, and the number is unambiguous.** CM1's artifacts contain
+  `no setup response at index` **9 times**; CM2's contain it **0 times**. Every reference in CM2
+  addressed a setup request that actually ran. Scoping the disclosure rather than carrying setups
+  forward was the correct half of that choice.
+- **Fix 4 (`1219e64`) — closed and load-bearing.** Four of the seven experiments were refused with
+  `SETUP FAILED … HTTP 500 … Fix that request, not the reference`, naming the status. Under CM1's
+  wording all four would have read as bad references.
+- **Fix 1 (`a1978af`) — the sibling branch fired and was reported correctly.** The run ended on a
+  truncated reply. `stop_reason: truncated` in the checkpoint, `| Stopped because | truncated |` in
+  `report.md`, and the operator line was *"the model's reply was cut off before it named an action
+  — retried once and still incomplete, so this is NOT 'nothing left to do'"*. **Ledger, report and
+  operator agree, and the word `done` was not used.**
+- **Fix 2 (`3265eb6`) — worked for the first principal.** Carriage `cookie:token`, `confirmed: True`,
+  recorded on the ledger against `brkAad87e07da2@brukal.test`. `/rest/user/whoami` returned
+  `{"user":{"id":25,…}}` where CM1 got `{"user":{}}`. `auth_confirmed` was `None` immediately after
+  login, confirming the cost fix: owed at login, paid at first authenticated use.
+
+### P1 — THE SECOND PRINCIPAL IS NEVER CONFIRMED, AND ON THIS TARGET IT IS ANONYMOUS TO HALF THE APP
+
+**Severity: P1 (it is the cross-account class, which is the milestone). Found in PRE-FLIGHT, before
+any budget was spent, and recorded here after the run. RECORDED, NOT FIXED.**
+
+`confirm_authentication` is a method on the session's own `Principal`. The second identity is a
+**dict** (`_second_identity`), established inside `_separate_identity`, and
+`establish_second_identity` never pays the confirmation. The carriage ledger for CM2 therefore holds
+**one** `authentication_carriage` record, for the first principal only — so "recorded per principal"
+is, precisely, *recorded for one of two principals*.
+
+Measured on the live target before the run:
+
+| request | answer |
+|---|---|
+| `whoami` as `self` | `{"user":{"id":25,"email":"brkAad87e07da2@…"}}` |
+| `whoami` as `second` | `{"user":{}}` — **byte-identical to anonymous** |
+| `whoami` as `anonymous` | `{"user":{}}` |
+| `/api/Cards` as `self` | `200 {"data":[{"UserId":25,…}]}` |
+| `/api/Cards` as `second` | `200 {"data":[]}` — distinct from anonymous |
+| `/api/Cards` as `anonymous` | `401` |
+
+So `as: second` is a **real, distinct principal on header-reading endpoints and collapses to
+anonymous on cookie-reading ones**, because the second identity holds a bearer header and an empty
+cookie jar. This is one layer below the residual recorded in `8b2c92a`: that entry covers *"no
+oracle exists"*; this is *"an oracle exists, the first principal is confirmed, the second is never
+asked"*. The fix has to make confirmation a property of a PRINCIPAL rather than of the session.
+
+### P2 — NOT ONE JUDGED EXPERIMENT USED THE SECOND PRINCIPAL
+
+**Severity: P2 (it makes the milestone unreachable by construction on this run). RECORDED, NOT FIXED.**
+
+Five of seven proposals named the cross-account class (`a_denied_b_allowed` on baskets, basket
+items and reviews). **All five died before dispatch** — four on setup 500s, one on an unresolved
+reference. The two that reached a comparator were both `bodies_differ` on
+`/rest/user/security-question`, issued `anonymous` vs `anonymous`.
+
+The nine `experiment_principal` records are `setup/self ×5`, `control/anonymous ×2`,
+`variant/anonymous ×2`. **`second` appears zero times.** The second principal was registered
+in-harness, held a session, and was never once used in a judged comparison — so CM2 measured the
+comparator plumbing and did not measure the cross-account capability at all.
+
+### P2 — THE MODEL DID NOT REPAIR A FAILING SETUP ACROSS ROUNDS, EVEN WHEN TOLD WHICH REQUEST FAILED
+
+**Severity: P2. RECORDED, NOT FIXED.**
+
+`POST /api/BasketItems` answered **HTTP 500** three separate times across both rounds, and
+`POST /rest/products/1/reviews` once. Fix 4's message named the status and said *"Fix that request
+(method, path, body, or the principal it runs as), not the reference"* — and the next round
+proposed the same endpoint with the same shape.
+
+The honest reading is that this is **not** a harness defect: the harness reported the failure
+correctly and the target genuinely refuses that body. It is a capability limit at the boundary
+between the model and the target's API contract, and it is what actually cost CM2 its
+cross-account measurement. **Worth noting before anyone proposes a fifth harness fix: the sentence
+was right and it did not change the behaviour.**
+
+### P3 — THE SHAPE DISCLOSURE ONLY COVERS ENDPOINTS A PREVIOUS ROUND ALREADY DISPATCHED
+
+**Severity: P3. RECORDED, NOT FIXED.**
+
+One experiment set up `GET /rest/user/whoami` and referenced `{{setup.0.id}}`, where the body is
+`{"user":{"id":…}}` — 2C4's exact failure. But the shape line for that response
+(`field paths: user.id, user.email, …`) was recorded **in the same proposal that failed**, and the
+disclosure is only fed to the NEXT round. The model had never been shown whoami's shape when it
+wrote the reference, and the run ended before a round that would have had it.
+
+**So this is not a recurrence despite the disclosure — it is the disclosure's boundary.** It helps
+on an endpoint a previous round already used and cannot help on first use. Note also that this
+reference was only reachable at all because Fix 2 made whoami return a populated body.
+
+### P3 — THE PROCESS DOES NOT EXIT AFTER THE ENGAGEMENT COMPLETES
+
+**Severity: P3 (operational). RECORDED, NOT FIXED.**
+
+CM2 printed its full summary — report path, `chain intact: True`, spend line — at 09:41 and the
+process was still alive at 17:25, nearly eight hours later, with no further audit writes. An orphan
+`python3 -m http.server 29465 --directory /tmp` the agent had started as an OOB listener was still
+running inside the cage at 7h40m. In-cage with no published ports, so not an exposure; but a run
+that has finished should not need to be noticed.
+
+**Operator note, and it is the maintainer's error rather than Brukal's:** the hang was not detected
+for hours because the watch used `pgrep -f "brukal.cli auto …"`, which **matches the very shell
+running it**. That failure mode is already recorded in this project's memory from an earlier
+session and was reproduced exactly. No budget was lost — the spend line is unchanged from 09:41 —
+only wall-clock.
