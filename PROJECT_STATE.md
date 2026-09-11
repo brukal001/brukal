@@ -308,6 +308,36 @@ deterministic harness can fail between a model's reasoning and a recorded verdic
 enumerated by fixing them one run at a time** — which is a result about the architecture and
 belongs in the paper as one, not as another entry on the roadmap.
 
+#### AMENDED AGAIN 2026-09-11, after CM2 and before CM3
+
+CM2 did not trip the clause above: it judged 2 experiments and confirmed 1, so the harness was
+not the thing that failed. But the metric the milestone actually needs has not moved at all.
+
+| run | judged | confirmed | **cross-account judged** |
+|---|---|---|---|
+| 2C4 | 0 | 0 | **0** |
+| CM1 | 1 | 0 | **0** |
+| CM2 | 2 | 1 | **0** |
+
+**Judged experiments are rising and cross-account judged is flat at zero across three runs.**
+Two fixes ship with this note (`34813af`, `5e7219a`) aimed squarely at that column — the reply
+no longer truncates before its action, and each principal is now told what it owns so a
+cross-account experiment needs no setup step at all.
+
+**The rule for CM3, written before the run so it cannot be renegotiated after it:**
+
+> **CM3 is ONE run.** If it judges **ZERO cross-account experiments** — dispatched with two
+> distinct principals and reaching a comparator — then **the limitation is the TARGET, not the
+> harness. CHANGE TARGET. Do not fix the harness again.**
+
+The justification is the table. Three runs have moved the adjacent metrics and left this one at
+zero; a fourth harness fix against a flat column is precisely the pattern this rule exists to
+stop. Juice Shop's cross-account surface has now refused, in order: an unresolvable identity
+endpoint, a second principal that is anonymous to half the application, and a creation endpoint
+that answers 500 to every shape the model proposed. At some point that is a statement about the
+target, and the honest response is to measure a different one rather than to keep adapting to
+this one.
+
 ---
 
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
