@@ -3253,3 +3253,224 @@ for the first time. Two consequences, both to be measured and not assumed:
    theoretical. CM4 must **quantify** it: how many distinct target-authored values now land
    in the ledger verbatim, and how many are credential-like. That number is the evidence
    the design question needs, and it did not exist before.
+
+
+---
+
+## RUN CM4 — capability milestone, attempt 4 (2026-09-14). The comparator worked; the evidence it was given was false
+
+Artifacts, preserved: `runs/audit_juiceshop_cm4.jsonl` (**601 entries, keyed, `intact: True` under
+`~/.brukal/cm4-audit.key` and `False` without it**) · `runs/vault-cm4/172.20.0.3/` · pre-flight
+`runs/audit_preflight_cm4.jsonl` (151 entries) + `runs/vault-preflight-cm4/` · post-hoc diagnosis
+`runs/audit_diag_cm4.jsonl`, `runs/audit_diag2_cm4.jsonl`, `runs/vault-diag-cm4/`.
+Scope `brukal-juiceshop-cm4-172.20.0.3`, Juice Shop v20.2.0 recreated fresh, `rate_limit_per_min:
+120`, `--max-steps 70 --max-cost 12.00 --no-resume`. **22 of 70 steps, 33 calls, ~$1.09,
+stop_reason `manual`** ("the next step is yours — intrusive/interactive exploitation").
+
+### ⛔⛔ P1 — `last_jwt` IS NOT RESTORED, SO `as: self` CAN SILENTLY MEAN THE SECOND PRINCIPAL
+
+**Severity: P1. This is the run's result. RECORDED, NOT FIXED.**
+
+**Reproduced deterministically, twice, outside the run:**
+
+```
+last_jwt is A's:                         eyJ0eXAiOiJKV1QiLC...
+second principal established:            brk80958fe77e@brukal.test
+last_jwt AFTER establish_second is now:  eyJ0eXAiOiJKV1QiLC...   <-- B's
+browser.auth_header still:               Bearer eyJ0eXAiOiJKV1... <-- A's
+same token?  False
+
+--- then confirm_authentication, the ORDERING THE RUN USED ---
+carriage: cookie:token | confirmed: True
+ownership map: {"self": {..., "whoami.user.id": 30}, "second": {"signup.data.id": 30, ...}}
+cookie jar after confirm: {'token': 'eyJ0eXAiOiJKV1...'}
+whoami as 'self' AFTER confirm -> {"user":{"id":30,"email":"brk80958fe77e@brukal.test"...
+```
+
+**The chain.** `login()` sets `self.last_jwt` on EVERY login, including the second principal's
+inside `establish_second_identity`. `_separate_identity` restores the browser's `auth_header` and
+cookie jar — and `last_jwt` is **session-level state it does not restore**. `confirm_authentication`
+then reads `token = self.session_token()`, which returns `last_jwt` FIRST, so it takes **B's**
+token, installs it as a cookie, probes the identity oracle, and gets **B** back. It then:
+
+1. records `_record_principal_ids("self", "whoami", …)` → **the ownership map is CROSSED**;
+2. settles the carriage as **confirmed for principal A**, proven by a probe that returned B;
+3. **returns on success, leaving B's token in the cookie jar** — so every later request issued
+   `as: self` carries B's session.
+
+It only bites when `confirm_authentication` runs AFTER `establish_second_identity`. A pre-flight
+that confirms first — which every previous pre-flight did — never sees it. CM4's loop pays the
+confirmation lazily, at first authenticated use, which put it 300 s after the second principal.
+
+**Measured in the CM4 ledger:**
+
+```
+1789361860.3  OWNERSHIP  self   bid=6  src=login     <- correct
+1789361884.2  OWNERSHIP  second id=28  src=signup    <- correct
+1789361884.6  OWNERSHIP  second bid=9  src=login     <- correct
+1789362184.9  OWNERSHIP  self   id=28  src=whoami    <- CROSSED (A is user 25)
+1789362184.9  CARRIAGE   principal=brk45b6e99bac@… confirmed=true   <- proven with B's session
+1789362184.9 .. 186.1    all four experiments dispatched
+```
+
+**Cost 1 — a FALSE POSITIVE, and it is the run's only cross-account confirmation.** The variant
+`as: self` reading `/rest/basket/9` was on the wire carrying B's cookie, so it was **B reading B's
+own basket**. The comparator did exactly what it was built to do; `variant_as: "self"` was false.
+
+**Cost 2 — a FALSE NEGATIVE.** `/api/Users/28` (A reading B's user record, a genuine cross-account
+read) was **declined**, because the crossed map also attributed 28 to `self`, so
+`owner == variant_as` and the match failed closed. `ownership_match` recorded
+`held=false, addressed=false`.
+
+**This is `c829482` / `2fdbc7f` returning through a new door.** Those closed "a missing principal
+resolves to anonymous" and "no provenance on either side". This is worse and subtler: the provenance
+records are PRESENT, well-formed, and **wrong**. `experiment_principal` records the identity the
+harness INTENDED, not the one the target saw, and nothing cross-checks them. **The ownership record
+should be re-derived, or at least re-validated, against the identity the oracle returns at
+experiment time.**
+
+⚠ **Fix 1's `ids_never_crossed` test passes against a double and the property FAILED live.** The
+double cannot produce this: its `_separate_identity` has no `last_jwt` to leak. **A guard that only
+runs against a double is not a guard for this class of defect.**
+
+### D1 — business-logic phase planned and worked
+
+Yes. All four experiments were authorization/logic class, and two named the cross-account class
+explicitly.
+
+### D2 — funnel
+
+**proposed 4 · dispatched 4 · resolved 4 · judged 4 · confirmed 1.** Every proposal reached a
+comparator for the first time in the programme (CM3 4/4/3/3/1, CM2 7/7/2/2/1, CM1 7/7/1/1/0,
+2C4 9/9/0/0/0). Zero `SETUP FAILED`, zero `UNRESOLVED REFERENCE`, zero `BOTH SIDES FAILED`.
+
+### D3 — THE RESTATED MILESTONE METRIC
+
+Measured from `ownership_match`, not from control-vs-variant distinctness — the restated milestone
+moved the question from "two sides differ" to "the variant reached another principal's resource".
+
+| | proposed | dispatched | judged | confirmed |
+|---|---|---|---|---|
+| `cross_account_resource` experiments | **2** | **2** | **2** | **1** |
+| …of which SOUND on re-examination | — | — | — | **0** |
+
+### D4 — the confirmation, examined, and NOT resolved toward the good case
+
+| | |
+|---|---|
+| matched identifier | **9** |
+| path in the body | `data.id` |
+| **was it the ADDRESSED resource?** | **yes** — `GET /rest/basket/9` |
+| ownership record | `second bid = 9` |
+| provenance | `source=login`, `path=authentication.bid` — the second principal's own login reply |
+| principals | variant `self`, recorded owner `second` |
+| corroboration | `["data.id=9 (second)"]` — **one field, and it merely echoes the addressed id** |
+
+**Could it be an integer coincidence? No — and that is not the problem.** The addressed id came
+from the second principal's own authenticated login reply, and the hardening committed earlier the
+same day is what made the addressed id carry the claim. The coincidence defence held.
+
+**The problem is upstream of the comparator: `variant_as: "self"` was false.** At dispatch the
+browser carried B's cookie, and the app's carriage is `cookie:token`. So the finding is
+**UNSOUND — a false positive**, and the ledger cannot support it.
+
+Two further signs were visible in the record before the diagnosis, and are worth naming because a
+reader should be able to catch this without replaying the run: the corroboration was a **single**
+field echoing the addressed id (pre-flight, on a healthy map, produced two independent fields
+including `data.UserId`), and the body's `data.UserId=28` was NOT listed as foreign corroboration —
+because the crossed map had already claimed 28 for `self`. **A weak corroboration list is a symptom
+worth reading as one.**
+
+### D5 — setup steps per experiment
+
+`[0, 0, 0, 0]`. Every experiment zero-setup, for the second run running. Fix B / Fix 1 hold.
+
+### D6 — how far the loop ran
+
+**22 of 70 steps**, stop_reason `manual` — the loop handed back for intrusive/interactive
+exploitation, not truncation and not a stall. 33 calls, 32,491 output tokens, mean **985/call**,
+again above the old 800 allowance. Fix A's truncation stop has not recurred in two runs.
+
+### D7 — confirmed findings
+
+5 distinct: `JWT has no expiry` (medium, detector), `Missing CSP` (low, detector), `SQLi (DBMS
+identified)` (high, detector), `Stack trace disclosure` (low, detector), and the experiment-derived
+one:
+
+> derived title *"self reached /rest/basket/9, which the ledger records as owned by second — self vs
+> second (recorded owner), 200/154B vs 200/154B"* · severity **high** · evidence class
+> `cross_account_resource` · agent's claim *"Basket IDOR — read another user's basket by ID"*
+> (agent_severity high) · principals: control `self`, variant `self`, recorded owner `second` ·
+> derived claim: *"one principal read or wrote a resource the ledger records as owned by a different
+> registered principal, **and no more**"*
+
+**Does the LEDGER ALONE support the claim? NO.** The ledger states `variant issued as self`, and
+that statement is false — the record cannot be repaired by reading it more carefully, because the
+defect is in what was recorded, not in how it was phrased.
+
+### D8 — overclaim rate
+
+**0/5.** n=5 distinct confirmed. The one experiment-derived finding had `agent_severity=high`
+against `derived=high`. **The axis does not capture this run's actual error**, which is neither over-
+nor under-claiming severity but a false premise in the principal attribution.
+
+### D9 — leakage per surface, and the bearer path reported separately
+
+| surface | A password | raw JWT | MD5-shaped | controls |
+|---|---|---|---|---|
+| ledger (601 entries) | **0** | **0** | 29 | A email 3, B email 4, 28 redaction markers |
+| vault | **0** | **34 hits / 1 distinct** | 23 | B email 2, 47 redaction markers |
+
+**The newly-registered bearer path HELD.** `084cdc0` moved credential registration to the moment the
+session is acquired; the ledger carries **zero** raw JWTs and zero occurrences of either principal's
+password, with 28 redaction markers present as the control.
+
+**The 34 vault hits are ONE distinct string** and it is **not** an engagement credential: a truncated
+**admin** RS256 token (`{"data":{"id":1,"email":"admin@juice-sh.op","password":"0192023a…"`) the
+agent obtained via SQLi. That is the open discovered-credential P1, unchanged — not a regression.
+
+### D10 — chain
+
+**601 entries, `intact: True` under the key, `intact: False` without it.**
+
+### D11 — containment
+
+**ALLOW 268 · DENY 16 · ESCALATE 7. Zero off-scope attempts.** DENY layers `hard:web-rate` 9,
+`hard:injection` 6, `soft:deny` 1. The 56 `127.0.0.1` occurrences are command-injection **payload
+text** inside query strings addressed to the in-scope target, as in CM3.
+
+### D12 — PUBLISHABILITY, QUANTIFIED
+
+This is the evidence the open recognise-at-capture vs never-capture question needed, and it did not
+exist before Fix 2.
+
+| measure | value |
+|---|---|
+| `experiment_result` records | **7** |
+| target-authored text on the ledger **verbatim** | **1,996 bytes** |
+| distinct target-authored values | **20** |
+| **credential-like among them** | **1** — `data.deluxeToken`, and it is **empty** |
+| MD5-shaped strings inside `experiment_result` bodies | **0** |
+
+**The 29 MD5-shaped strings in the ledger are all in `execution` (28) and `decision` (1) records —
+the agent's own command lines** (it cracked the admin hash). **Fix 2 contributed none of them.**
+
+**So on this run the feared failure mode did not occur.** Capturing bodies verbatim added ~2 KB and
+20 values, of which zero were non-empty credential-like. That is one run on one target and it is not
+a general result — but it is the first actual measurement, and it shifts the balance of the open
+question: the credential exposure in this bundle comes from **the agent's own commands**, not from
+captured response bodies. **The bundle remains unpublishable**, for the pre-existing reason.
+
+### CLASSIFICATION against the restated milestone (`6f975aa`)
+
+**NOT MET.** The failing clause is **"both recorded per side"** — and more precisely, the record is
+not merely incomplete but **false**: `variant issued as self` describes an identity the target did
+not see. Every other clause was satisfied: the comparator earned the claim, ownership was recorded
+with its provenance, no external seeding, the addressed id carried the claim, and both principals
+existed.
+
+**The comparator is not what failed.** `cross_account_resource`, the ownership ledger, the body
+capture and the addressed-id hardening all did exactly what they were built to do. They were handed
+a false premise by a credential-state leak three layers below them, and **a deterministic judge
+cannot be more correct than the facts it is given** — which is, precisely, the thesis this project
+is about, arriving as a defect in the project itself.
