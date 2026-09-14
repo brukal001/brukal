@@ -3831,6 +3831,35 @@ class AssistSession:
             "target": self.target,
         })
 
+    def _record_ownership_match(self, h, vspec, variant_result, variant_as, held) -> None:
+        """WHY a cross-account verdict went the way it did, onto the ledger.
+
+        The matched identifier, its path in the response body, whether it was the
+        ADDRESSED resource, the recorded owner, and the verdict. Written for refusals as
+        well as confirmations, because the refusals are where an integer coincidence gets
+        declined — on a target whose id spaces overlap, that is the interesting half.
+
+        A reader can then CHECK the match against the `principal_ownership` records and
+        the captured body, instead of taking a HIGH cross-account title on trust, which is
+        exactly the failure `1940f09` was written for."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        from . import hypothesis as _hyp
+        ev = _hyp.ownership_evidence(vspec, getattr(variant_result, "body", ""),
+                                     self.principal_identifiers(), variant_as)
+        audit.append("ownership_match", {
+            "held": bool(held),
+            "variant_as": variant_as,
+            "owner": ev["owner"],
+            "value": str(ev["value"]),
+            "addressed": ev["addressed"],
+            "body_path": ev["path"],
+            "corroborating": [f"{p}={v} ({o})" for p, v, o in ev["corroborating"]],
+            "url": (vspec or {}).get("url", ""),
+            "target": self.target,
+        })
+
     @contextmanager
     def _as_identity(self, who: str, role: str = "", url: str = ""):
         """Issue requests as one of the three principals an experiment may name.
@@ -4298,8 +4327,18 @@ class AssistSession:
             # `_record_principal_ids` writes to the ledger as `principal_ownership`, in the
             # same call, so the map this judgement reads and the map a reader can
             # reconstruct from the bundle cannot disagree.
-            _ctx = {"ownership": self.principal_identifiers(), "variant_as": _v_as}
+            # `vspec` is the RESOLVED variant request — references substituted, `as`
+            # already popped — so the comparator sees what was actually addressed rather
+            # than the template the model wrote.
+            _ctx = {"ownership": self.principal_identifiers(), "variant_as": _v_as,
+                    "variant_spec": vspec, "profile": getattr(self, "profile", None)}
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
+            # SHOW THE MATCH, not just its verdict — and record it whether or not the
+            # comparator held. An ownership claim a reader cannot check is the thing this
+            # whole line of work exists to stop, and a refusal is as worth seeing as a
+            # confirmation: it is where an integer coincidence gets declined.
+            if h.comparator == "cross_account_resource":
+                self._record_ownership_match(h, vspec, b, _v_as, bool(holds))
             if not holds:
                 # Keep what happened — a round that confirms nothing is still the only
                 # information the next round has. But only when the target actually
@@ -4334,16 +4373,15 @@ class AssistSession:
             # recorded map rather than carried out of the predicate, so the claim and the
             # verdict are derived from one source; `[]` when nothing matched, and
             # `derive_claim` fails closed on a missing owner rather than asserting one.
-            _foreign = _hyp.foreign_owned_ids(getattr(b, "body", ""),
-                                              self.principal_identifiers(), _v_as)
+            _ev = _hyp.ownership_evidence(vspec, getattr(b, "body", ""),
+                                          self.principal_identifiers(), _v_as)
             _cl = _hyp.derive_claim(
                 h.comparator, _c_as, _v_as,
                 control={"url": h.control["url"], "status": a.status,
                          "size": len(a.body or "")},
                 variant={"url": h.variant["url"], "status": b.status,
                          "size": len(b.body or ""),
-                         "owner": _foreign[0][2] if _foreign else "",
-                         "owned_id": _foreign[0][1] if _foreign else ""})
+                         "owner": _ev["owner"], "owned_id": _ev["value"]})
             self.findings.add(Finding(
                 title=_cl["title"], severity=_hyp.cap_severity(h.severity, _cl["severity_cap"]),
                 category="logic",

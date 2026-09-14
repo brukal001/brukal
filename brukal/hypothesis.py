@@ -117,6 +117,70 @@ def foreign_owned_ids(body, ownership, variant_as: str) -> list:
     return out
 
 
+def addressed_identifiers(spec) -> set:
+    """The values a request ADDRESSED: URL path segments, query values, request-body ids.
+
+    "Addressed" is the whole of the tightening. Ownership is matched by VALUE (see
+    `foreign_owned_ids`), and on a target whose id spaces overlap — Juice Shop's baskets,
+    users and products are all small integers — an unrelated integer in a response body
+    will eventually equal some other principal's owned id. Matching the body alone
+    therefore confirms a cross-account read that never happened, at HIGH severity, which
+    is the `1940f09` defect arrived at from the other direction.
+
+    What a request ADDRESSED is not a coincidence: it is what the experiment chose to
+    reach for. `/rest/basket/8` addresses 8; a body of `{"BasketId": 8}` addresses 8; a
+    product listed inside the response addresses nothing."""
+    spec = spec or {}
+    out: set = set()
+    url = str(spec.get("url") or "")
+    # Path and query only — never the netloc, or a port would be an "addressed id".
+    tail = url.split("://", 1)[-1]
+    path = tail.split("/", 1)[1] if "/" in tail else ""
+    for seg in re.split(r"[/?&=#]", path):
+        seg = seg.strip()
+        if seg:
+            out.add(seg)
+    body = spec.get("body")
+    if body:
+        for _p, value in own_identifiers(body).items():
+            out.add(str(value))
+    return out
+
+
+def ownership_evidence(spec, body, ownership, variant_as: str) -> dict:
+    """What the record can SHOW about a cross-account claim, rather than assert.
+
+    Returns the matched identifier, its path in the response body, whether it was the
+    ADDRESSED resource, and the recorded owner — so the ledger carries the match itself
+    and a reader can check it instead of trusting it.
+
+    `owner` is set ONLY when the addressed identifier is the one a different registered
+    principal owns. A body-only match is reported as corroboration and never as the
+    claim: it is exactly the coincidence this function exists to refuse."""
+    addressed = addressed_identifiers(spec)
+    corroborating = foreign_owned_ids(body, ownership, variant_as)
+    index: dict = {}
+    for who, vals in (ownership or {}).items():
+        if who not in _REGISTERED_PRINCIPALS:
+            continue
+        for _key, value in (vals or {}).items():
+            index.setdefault(str(value), who)
+    owner, value = "", ""
+    for candidate in sorted(addressed):
+        who = index.get(candidate)
+        if who and who != variant_as:
+            owner, value = who, candidate
+            break
+    # The body path for the SAME value, when the response corroborates the addressed id.
+    path = ""
+    for p, v, _own in corroborating:
+        if str(v) == str(value):
+            path = p
+            break
+    return {"owner": owner, "value": value, "addressed": bool(owner), "path": path,
+            "corroborating": [(p, v, o) for p, v, o in corroborating]}
+
+
 def _cross_account_resource(a, b, ctx=None) -> bool:
     """Both sides allowed, and the VARIANT read or wrote somebody else's resource.
 
@@ -127,13 +191,30 @@ def _cross_account_resource(a, b, ctx=None) -> bool:
     sides allowed**, and until this existed nothing in the closed set could ask whether an
     allowed read was allowed WRONGLY. The milestone was literally unaskable.
 
-    The decision is made from two recorded facts — the ownership map (`principal_ownership`)
-    and the body (`experiment_result`) — and no model text is consulted anywhere in it."""
+    The decision is made from recorded facts — the ownership map (`principal_ownership`),
+    the request the experiment issued, and the captured body (`experiment_result`) — and
+    no model text is consulted anywhere in it.
+
+    THREE conditions, and each one refuses a specific false positive:
+
+    1. **Both sides succeeded.** The BOLA shape is both-allowed, so "allowed" must mean
+       something.
+    2. **The ADDRESSED identifier is the foreign one.** Not merely an identifier somewhere
+       in the response: on a target whose id spaces overlap, a product id equal to another
+       principal's basket id would otherwise confirm a read that never happened. The body
+       CORROBORATES; it does not carry the claim alone.
+    3. **The variant response is substantive.** A 200 with an empty body does not
+       demonstrate that a resource was READ, and the milestone asks for a read or a write
+       of a resource, not for an accepted request. This FAILS CLOSED, and the cost is
+       stated rather than hidden: a blind write that returns nothing will be missed."""
     ctx = ctx or {}
     if not (_succeeded(a) and _succeeded(b)):
         return False
-    return bool(foreign_owned_ids(getattr(b, "body", ""), ctx.get("ownership"),
-                                  ctx.get("variant_as", "")))
+    if not _substantive(b, ctx.get("profile")):
+        return False
+    ev = ownership_evidence(ctx.get("variant_spec"), getattr(b, "body", ""),
+                            ctx.get("ownership"), ctx.get("variant_as", ""))
+    return bool(ev["owner"])
 
 # WHO a request is issued as. A closed set, for exactly the reason the comparators are
 # one: the model names a principal, deterministic code decides what that means. Without

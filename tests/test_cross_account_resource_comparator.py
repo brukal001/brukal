@@ -65,9 +65,11 @@ A_BASKET = json.dumps({"status": "success",
                        "data": {"id": 6, "coupon": None, "UserId": 25, "Products": []}})
 
 
-def _ctx(variant_as="self", ownership=None):
+def _ctx(variant_as="self", ownership=None, variant_spec=None):
     return {"ownership": OWNERSHIP if ownership is None else ownership,
-            "variant_as": variant_as}
+            "variant_as": variant_as,
+            "variant_spec": variant_spec if variant_spec is not None
+            else {"method": "GET", "url": "http://t:3000/rest/basket/8"}}
 
 
 # --------------------------------------------------------------------------- #
@@ -91,9 +93,15 @@ def test_a_principal_reading_its_own_resource_does_not_confirm():
 
 
 def test_an_id_no_ownership_record_covers_does_not_confirm():
-    """FAIL CLOSED. An id the ledger cannot attribute proves nothing about ownership."""
+    """FAIL CLOSED. An id the ledger cannot attribute proves nothing about ownership.
+
+    The request must ADDRESS the unrecorded id too — addressing basket 8 while the body
+    carries unknown ids is a different case (the addressed id IS attributable), and this
+    test is about the unattributable one."""
     unknown = json.dumps({"status": "success", "data": {"id": 999, "UserId": 998}})
-    holds, _ = hyp.judge(_h(), _R(200, A_BASKET), _R(200, unknown), None, _ctx("self"))
+    h = _h_at("http://t:3000/rest/basket/999")
+    holds, _ = hyp.judge(h, _R(200, A_BASKET), _R(200, unknown), None,
+                         _ctx("self", variant_spec=h.variant))
     assert not holds, "an unrecorded id was treated as owned"
 
 
@@ -133,6 +141,97 @@ def test_the_claim_fails_closed_when_no_owner_is_recorded():
         variant={"url": "http://t:3000/rest/basket/8", "status": 200, "size": 154})
     assert cl["authz"] is False
     assert cl["severity_cap"] != "high"
+
+
+# --------------------------------------------------------------------------- #
+# AN INTEGER COINCIDENCE MUST NOT CONFIRM
+#
+# Juice Shop's ids are small integers and the basket / user / product id spaces
+# OVERLAP. Matching ownership by value alone therefore confirms on an unrelated
+# integer that happens to equal another principal's owned id — a HIGH cross-account
+# read that never happened, which is precisely the `1940f09` defect this machinery
+# exists to prevent, arrived at from the other direction.
+#
+# The tightening: the identifier that was ADDRESSED — in the variant's URL or request
+# body — must be the one the ledger attributes to a different principal. The response
+# body CORROBORATES; it does not carry the claim alone.
+# --------------------------------------------------------------------------- #
+
+# self reads its OWN basket 6. The body lists a product whose id happens to be 8, and
+# the second principal's basket is 8. Nothing cross-account happened.
+COINCIDENCE = json.dumps({"status": "success", "data": {
+    "id": 6, "UserId": 25,
+    "Products": [{"productId": 8, "name": "Apple Juice"}]}})
+
+
+def _h_at(url, control_as="second", variant_as="self"):
+    return hyp.Hypothesis(
+        title="cross-account read", severity="high", comparator=COMPARATOR, setup=[],
+        control={"method": "GET", "url": url, "as": control_as},
+        variant={"method": "GET", "url": url, "as": variant_as})
+
+
+def test_an_unrelated_integer_equal_to_another_principals_id_does_not_confirm():
+    """THE DEFECT. `productId: 8` in a product listing is not a cross-account read of
+    basket 8, and the request never addressed basket 8 at all."""
+    h = _h_at("http://t:3000/rest/basket/6")
+    holds, _ = hyp.judge(h, _R(200, "{}"), _R(200, COINCIDENCE), None,
+                         _ctx("self", variant_spec=h.variant))
+    assert not holds, "an integer coincidence confirmed a cross-account read"
+
+
+def test_the_cm3_case_still_confirms_under_the_tightening():
+    """The tightening must not be field-name matching by another route: CM3's body calls
+    it `data.id` and the ownership record learned it as `bid`, and it must still hold."""
+    h = _h_at("http://t:3000/rest/basket/8")
+    holds, _ = hyp.judge(h, _R(200, A_BASKET), _R(200, B_BASKET), None,
+                         _ctx("self", variant_spec=h.variant))
+    assert holds, "the case this whole feature exists for stopped confirming"
+
+
+def test_an_addressed_id_in_the_request_BODY_also_counts():
+    """A write addresses its target in the BODY, not the path.
+
+    The response here deliberately carries NO owned identifier, so the only thing that
+    can make this confirm is reading the request body. A response echoing the foreign id
+    back would let this pass on the old value-matching rule and prove nothing."""
+    written = json.dumps({"status": "success", "data": {"quantity": 1}})
+    h = hyp.Hypothesis(
+        title="write into another basket", severity="high", comparator=COMPARATOR,
+        setup=[], control={"method": "POST", "url": "http://t:3000/api/BasketItems/",
+                           "as": "second"},
+        variant={"method": "POST", "url": "http://t:3000/api/BasketItems/", "as": "self",
+                 "body": json.dumps({"BasketId": 8, "ProductId": 1, "quantity": 1})})
+    holds, _ = hyp.judge(h, _R(200, "{}"), _R(200, written), None,
+                         _ctx("self", variant_spec=h.variant))
+    assert holds, "an id addressed in the request body was ignored"
+
+
+def test_an_empty_response_does_not_confirm_even_when_the_target_is_foreign():
+    """CHOSEN: FAIL CLOSED. The addressed resource belongs to another principal and the
+    response carried nothing to show for it. A 200 with no body does not demonstrate that
+    a resource was READ, and the milestone asks for a read or a write of a resource, not
+    for an accepted request. The cost is a blind write that returns nothing, which this
+    will MISS — recorded as a known limit rather than resolved toward the good case."""
+    h = _h_at("http://t:3000/rest/basket/8")
+    holds, _ = hyp.judge(h, _R(200, A_BASKET), _R(200, ""), None,
+                         _ctx("self", variant_spec=h.variant))
+    assert not holds
+
+
+def test_the_match_its_path_and_whether_it_was_addressed_are_all_available():
+    """The ledger must be able to show the match rather than ask a reader to trust it."""
+    h = _h_at("http://t:3000/rest/basket/8")
+    ev = hyp.ownership_evidence(h.variant, B_BASKET, OWNERSHIP, "self")
+    assert ev["owner"] == "second", ev
+    assert str(ev["value"]) == "8", ev
+    assert ev["addressed"] is True, ev
+    assert ev["path"], f"no field path for the corroborating body match: {ev}"
+
+    h2 = _h_at("http://t:3000/rest/basket/6")
+    ev2 = hyp.ownership_evidence(h2.variant, COINCIDENCE, OWNERSHIP, "self")
+    assert ev2["addressed"] is False, ev2
+    assert not ev2["owner"], f"a non-addressed coincidence must yield no owner: {ev2}"
 
 
 # --------------------------------------------------------------------------- #
@@ -325,4 +424,68 @@ def test_end_to_end_the_milestone_event_is_confirmed_and_the_ledger_carries_it(t
     assert finding.severity == "high", finding.severity
     assert "self" in finding.title and "second" in finding.title, finding.title
     assert "/rest/basket/8" in finding.title, finding.title
+    redact.clear()
+
+
+def test_the_ownership_match_reaches_the_ledger_for_a_confirmation(tmp_path):
+    """The match must be CHECKABLE from the bundle, not taken on trust."""
+    redact.clear()
+    target = _JuiceLike()
+    scope = load_scope(SCOPE)
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope), _E2EKali(), audit, approver=lambda d: True)
+    s = AssistSession(E2E_TARGET, ex, StrategistAgent(_E2ELLM()),
+                      browser=GovernedBrowser(scope, target, audit))
+    s.allow_intrusive = True
+    s.login(f"{E2E_BASE}/rest/user/login", MAIL_A, PASS_A,
+            user_field="email", login_type="json")
+    s.confirm_authentication()
+    s.crawl(seeds=[E2E_BASE + "/"], max_pages=5, max_depth=1)
+    assert s.establish_second_identity()
+
+    h = hyp.Hypothesis(
+        title="basket read across accounts", severity="high", comparator=COMPARATOR,
+        setup=[],
+        control={"method": "GET", "url": f"{E2E_BASE}/rest/basket/8", "as": "second"},
+        variant={"method": "GET", "url": f"{E2E_BASE}/rest/basket/8", "as": "self"})
+    s._run_one_round([h], [])
+
+    matches = [json.loads(l)["data"] for l in Path(audit.path).read_text().splitlines()
+               if l and json.loads(l)["kind"] == "ownership_match"]
+    assert matches, "no ownership_match record reached the ledger"
+    m = matches[0]
+    assert m["held"] is True and m["owner"] == "second" and m["value"] == "8", m
+    assert m["addressed"] is True, m
+    assert m["body_path"], f"no body path for the corroborating match: {m}"
+    redact.clear()
+
+
+def test_a_declined_coincidence_is_recorded_too(tmp_path):
+    """The refusals are the interesting half on a target whose id spaces overlap."""
+    redact.clear()
+    target = _JuiceLike()
+    scope = load_scope(SCOPE)
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope), _E2EKali(), audit, approver=lambda d: True)
+    s = AssistSession(E2E_TARGET, ex, StrategistAgent(_E2ELLM()),
+                      browser=GovernedBrowser(scope, target, audit))
+    s.allow_intrusive = True
+    s.login(f"{E2E_BASE}/rest/user/login", MAIL_A, PASS_A,
+            user_field="email", login_type="json")
+    s.confirm_authentication()
+    s.crawl(seeds=[E2E_BASE + "/"], max_pages=5, max_depth=1)
+    assert s.establish_second_identity()
+
+    # A reads its OWN basket 6. Nothing cross-account.
+    h = hyp.Hypothesis(
+        title="own basket", severity="high", comparator=COMPARATOR, setup=[],
+        control={"method": "GET", "url": f"{E2E_BASE}/rest/basket/6", "as": "second"},
+        variant={"method": "GET", "url": f"{E2E_BASE}/rest/basket/6", "as": "self"})
+    confirmed = s._run_one_round([h], [])
+    assert confirmed == 0
+
+    matches = [json.loads(l)["data"] for l in Path(audit.path).read_text().splitlines()
+               if l and json.loads(l)["kind"] == "ownership_match"]
+    assert matches and matches[0]["held"] is False, matches
+    assert not matches[0]["owner"], matches[0]
     redact.clear()

@@ -3165,3 +3165,91 @@ seeding — and asserts the ledger carries the ownership with its provenance, th
 `"UserId": 27`, and a `high` finding naming both principals and the resource. **That is the
 restated milestone, demonstrated against a double.** It is not the milestone itself, which
 requires a real target.
+
+
+---
+
+## HARDENING (2026-09-14, before CM4) — an integer coincidence must not confirm
+
+**CLOSED. The defect was real and was measured before it was fixed.**
+
+`cross_account_resource` matched ownership **by value**. Juice Shop's ids are small
+integers and the basket / user / product id spaces **overlap**, so an unrelated integer in
+a response body will eventually equal some other principal's owned id.
+
+**What the comparator did with it, measured:**
+
+```
+variant: GET /rest/basket/6  as self          (A reading its OWN basket)
+body:    {"data":{"id":6,"UserId":25,"Products":[{"productId":8,...}]}}
+ownership: second owns bid 8
+
+confirms today? -> True
+matched: [('data.Products.0.productId', 8, 'second')]
+```
+
+A **HIGH cross-account read that never happened**, off a product id in a listing. This is
+`1940f09`'s defect reached from the other direction: that one published a cross-account
+title a model wrote; this one would publish a cross-account title an *integer* wrote.
+
+**The tightening.** The identifier that was **ADDRESSED** — in the variant's URL path,
+query, or request body — must be the one the ledger attributes to a different registered
+principal. The response body **CORROBORATES**; it never carries the claim alone. What a
+request addressed is not a coincidence: it is what the experiment chose to reach for.
+
+**Field-name matching was NOT reintroduced**, and a test pins that: CM3's body calls it
+`data.id` while the ownership record learned it from a login reply as `bid`, and that case
+still confirms. Matching stays by value; what changed is *which* value is allowed to carry
+the claim.
+
+**Three conditions now, each refusing a specific false positive:** both sides 2xx; the
+addressed identifier is the foreign one; and the variant response is **substantive**.
+
+### The empty-body case, and which way it was chosen
+
+**CHOSEN: FAIL CLOSED — an empty response does NOT confirm**, even when the addressed
+resource belongs to another principal. A 200 with no body does not demonstrate that a
+resource was **read**, and the restated milestone asks for a read or a write of a
+resource, not for an accepted request.
+
+**The cost is stated rather than hidden: a blind write that returns nothing will be
+MISSED.** That is a real gap, it is recorded here, and it was preferred to the alternative
+because this project's failure history is overclaiming, not underclaiming — and because a
+missed finding is recoverable while a published false one is not.
+
+### The match is on the ledger, refusals included
+
+A new `ownership_match` record carries `{held, variant_as, owner, value, addressed,
+body_path, corroborating, url, target}` — written **whether or not the comparator held**,
+because on a target whose id spaces overlap the refusals are the interesting half: they
+are where a coincidence gets declined. A reader can check the match against the
+`principal_ownership` records and the captured body instead of taking a HIGH title on trust.
+
+Tests: 7 added to `tests/test_cross_account_resource_comparator.py` (now 23), **3 red
+first** — the coincidence case confirming, an id addressed in the request BODY being
+ignored, and `ownership_evidence` not existing. Two further new tests were **green at
+birth for the wrong reason** and were rewritten before implementing: the request-body case
+originally passed because the *response* echoed the foreign id (the old rule), and the
+empty-body case passed vacuously because an empty body has no ids to match. One existing
+test (`test_an_id_no_ownership_record_covers_does_not_confirm`) had an under-specified
+fixture — its default request addressed basket 8, which IS attributable — and was
+corrected to address the unrecorded id it is actually about.
+
+### ⚠ WHAT THIS MEANS FOR EVERY EARLIER RUN'S LEAK CHECK
+
+**2C4, CM1, CM2 and CM3 all reported clean leak checks, and those checks were partly clean
+because no response body was ever written down.** `web_result` recorded
+`{status, url, note, bytes}`; request bodies were never recorded at all (P2, above). A
+grep for a credential across those bundles was therefore searching a surface that largely
+did not exist — the negative is true and its scope is far narrower than it reads.
+
+**Fix 2 (`581480f`) changes that.** Experiment results now carry up to 2 KiB of
+target-authored text verbatim, so from CM4 onward a leak check is measuring something real
+for the first time. Two consequences, both to be measured and not assumed:
+
+1. A clean CM4 leak check is **stronger evidence** than any previous run's, because the
+   surface now exists.
+2. The open **recognise-at-capture vs never-capture** question (P1, above) stops being
+   theoretical. CM4 must **quantify** it: how many distinct target-authored values now land
+   in the ledger verbatim, and how many are credential-like. That number is the evidence
+   the design question needs, and it did not exist before.
