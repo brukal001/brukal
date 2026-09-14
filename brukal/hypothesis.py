@@ -57,7 +57,83 @@ _COMPARATORS = {
     "b_errors_a_does_not": (
         lambda a, b: (a.status == 200 and b.status is not None and b.status >= 500),
         "the variant drove the application into a server error the control did not"),
+    # THE CANONICAL BOLA SHAPE, and the only comparator that reads the LEDGER rather than
+    # only the two responses. See `_cross_account_resource`.
+    "cross_account_resource": (
+        lambda a, b, p=None, ctx=None: _cross_account_resource(a, b, ctx),
+        "the variant reached a resource the ledger records as owned by a different "
+        "registered principal"),
 }
+
+# Comparators that need the recorded ownership map, not just the two responses. An
+# EXPLICIT set rather than exception-based arity sniffing: `judge` used to pick a
+# signature by catching TypeError, which cannot tell "this predicate takes two arguments"
+# from "this predicate raised TypeError on line 3", and a comparator that silently
+# degraded to a two-argument call would be judging on less than it was given.
+_CONTEXT_COMPARATORS = ("cross_account_resource",)
+
+# Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
+# recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
+# distinction, because CM3 passed the old wording with an anonymous control.
+_REGISTERED_PRINCIPALS = ("self", "second")
+
+
+def _succeeded(r) -> bool:
+    """A 2xx. The BOLA shape is BOTH SIDES ALLOWED, so 'allowed' has to mean something."""
+    s = getattr(r, "status", None)
+    return isinstance(s, int) and 200 <= s < 300
+
+
+def foreign_owned_ids(body, ownership, variant_as: str) -> list:
+    """[(path, value, owner)] — identifiers in `body` that a DIFFERENT registered
+    principal owns, according to the ownership map the ledger records.
+
+    Deterministic and FAIL CLOSED in every direction: no map, no ids, an id the map does
+    not cover, or an owner that is not a registered account all yield []. Nothing is
+    inferred about ownership that was not recorded, which is the whole point — the
+    defect this closes (`1940f09`) was a cross-account title asserted over object ids
+    nothing in the record tied to any owner.
+
+    Matching is by VALUE, not by field name, and that is deliberate. CM3's basket body
+    calls it `data.id = 8` while the ownership record learned it from a login reply that
+    called it `bid = 8`; requiring the names to agree would have missed the one case this
+    exists for. The cost is that two resources of different types sharing an integer could
+    collide — which is why the matched id, its path, and the captured body are all on the
+    ledger beside the claim, so a reader can see the match rather than trust it."""
+    found = own_identifiers(body)
+    if not found:
+        return []
+    index: dict = {}
+    for who, vals in (ownership or {}).items():
+        if who not in _REGISTERED_PRINCIPALS:
+            continue
+        for _key, value in (vals or {}).items():
+            index.setdefault(str(value), who)
+    out = []
+    for path, value in found.items():
+        owner = index.get(str(value))
+        if owner and owner != variant_as:
+            out.append((path, value, owner))
+    return out
+
+
+def _cross_account_resource(a, b, ctx=None) -> bool:
+    """Both sides allowed, and the VARIANT read or wrote somebody else's resource.
+
+    Run CM3 issued `GET /api/Users/27` as the second principal and as self and got
+    200/329B on both sides. `a_denied_b_allowed` needs a refusal and `b_reveals_more`
+    needs a 2x size difference, so the experiment was correctly not confirmed — and
+    principal A had just read principal B's resource. **The canonical BOLA shape is both
+    sides allowed**, and until this existed nothing in the closed set could ask whether an
+    allowed read was allowed WRONGLY. The milestone was literally unaskable.
+
+    The decision is made from two recorded facts — the ownership map (`principal_ownership`)
+    and the body (`experiment_result`) — and no model text is consulted anywhere in it."""
+    ctx = ctx or {}
+    if not (_succeeded(a) and _succeeded(b)):
+        return False
+    return bool(foreign_owned_ids(getattr(b, "body", ""), ctx.get("ownership"),
+                                  ctx.get("variant_as", "")))
 
 # WHO a request is issued as. A closed set, for exactly the reason the comparators are
 # one: the model names a principal, deterministic code decides what that means. Without
@@ -96,6 +172,16 @@ _EVIDENCE_CLASS = {
     "a_denied_b_allowed": (
         "one principal was refused and a different principal was accepted for the same "
         "request",
+        "high", True),
+    # EARNS the cross-account claim, and at full severity, because it is grounded in
+    # RECORDED ownership rather than in a model's sentence. That is the exact distinction
+    # `1940f09` was written for: the 2026-08-22 findings were published as HIGH
+    # cross-account reads off `bodies_differ` with one principal on both sides and no
+    # owner recorded anywhere. Here the owner is on the ledger with its provenance, the
+    # id is in a captured body, and the match is deterministic.
+    "cross_account_resource": (
+        "one principal read or wrote a resource the ledger records as owned by a "
+        "different registered principal",
         "high", True),
 }
 
@@ -137,6 +223,29 @@ def derive_claim(comparator: str, control_as: str, variant_as: str,
     control, variant = control or {}, variant or {}
     claim, cap, authz = _EVIDENCE_CLASS.get(
         comparator, ("an experiment comparator reported a difference", "low", False))
+    if comparator == "cross_account_resource":
+        # This class's distinctness is NOT between the two sides. Both may legitimately be
+        # the same principal — the claim is about the variant's principal versus the
+        # RECORDED OWNER of what it reached, so that is the pair the bound must test.
+        owner = str(variant.get("owner") or "")
+        if not (owner and variant_as and owner != variant_as
+                and owner in _REGISTERED_PRINCIPALS):
+            # FAIL CLOSED. No recorded owner means no ownership claim, whatever the
+            # comparator reported: a derived claim may never assert what the record does
+            # not carry, which is the entire reason this function exists.
+            return {"title": (f"a resource was returned to {variant_as or 'a principal'} "
+                              f"at {_path_of(variant.get('url'))}, with no recorded owner"),
+                    "claim": "no ownership could be established from the record",
+                    "severity_cap": "low", "evidence_class": comparator, "authz": False,
+                    "principals": f"{variant_as or 'self'} (no recorded owner)"}
+        who = f"{variant_as} vs {owner} (recorded owner)"
+        vp = _path_of(variant.get("url"))
+        obs = (f"{control.get('status')}/{control.get('size')}B vs "
+               f"{variant.get('status')}/{variant.get('size')}B")
+        return {"title": (f"{variant_as} reached {vp}, which the ledger records as owned "
+                          f"by {owner} — {who}, {obs}"),
+                "claim": claim, "severity_cap": cap, "evidence_class": comparator,
+                "authz": True, "principals": who}
     distinct = bool(control_as and variant_as and control_as != variant_as)
     if authz and not distinct:
         # The authorization comparator fired, but both sides were the same session, so it
@@ -695,7 +804,7 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
     return out
 
 
-def judge(hypothesis, control_result, variant_result, profile=None):
+def judge(hypothesis, control_result, variant_result, profile=None, context=None):
     """(holds, meaning) for an executed hypothesis.
 
     The only place a proposal becomes a finding, and it consults the comparator rather
@@ -709,10 +818,16 @@ def judge(hypothesis, control_result, variant_result, profile=None):
         return False, ""
     predicate, meaning = entry
     try:
-        try:
-            held = predicate(control_result, variant_result, profile)
-        except TypeError:
-            held = predicate(control_result, variant_result)   # comparator ignores it
+        if hypothesis.comparator in _CONTEXT_COMPARATORS:
+            # Named explicitly, never sniffed: a context comparator that fell through to a
+            # two-argument call would judge on less than it was given and quietly answer a
+            # different question.
+            held = predicate(control_result, variant_result, profile, context)
+        else:
+            try:
+                held = predicate(control_result, variant_result, profile)
+            except TypeError:
+                held = predicate(control_result, variant_result)   # comparator ignores it
         if not held:
             return False, ""
     except Exception:

@@ -3081,3 +3081,87 @@ where target-authored bytes land in the ledger verbatim.
 
 **This must be answered before any bundle is published. It is not answered here, and no bundle
 should be published until it is.**
+
+
+---
+
+## FIX 3 (2026-09-14) — a comparator for the canonical IDOR shape
+
+**CLOSED.** This is the one that makes the restated milestone reachable.
+
+CM3's experiment #3 issued `GET /api/Users/27` as the **second** principal and as **self**
+and got **200/329B on both sides**. It was correctly not confirmed — `a_denied_b_allowed`
+needs a refusal, `b_reveals_more` needs a 2x size difference — and principal A had just read
+principal B's resource. **The canonical BOLA shape is BOTH SIDES ALLOWED**, and nothing in
+the closed set could ask whether an allowed read was allowed *wrongly*. The milestone was
+literally unaskable.
+
+**`cross_account_resource`** confirms when both sides returned 2xx **and** the variant's
+captured body carries an identifier the ledger's ownership record attributes to a **different
+registered principal**. The decision reads two recorded facts — `principal_ownership` (Fix 1)
+and `experiment_result` (Fix 2) — and **no model text is consulted anywhere in it**.
+
+**It EARNS the cross-account claim at `high`**, and that is the point of putting it in
+`_EVIDENCE_CLASS` beside the others: `1940f09` exists because two HIGH cross-account reads
+were once published off `bodies_differ` with one principal on both sides and no owner
+recorded anywhere. Here the owner is on the ledger with its provenance, the id is in a
+captured body, and the match is deterministic — so the claim is grounded in the record rather
+than in a model's sentence.
+
+**The derived claim, verbatim:**
+
+```
+title    : self reached /rest/basket/8, which the ledger records as owned by second
+           — self vs second (recorded owner), 200/154B vs 200/154B
+claim    : one principal read or wrote a resource the ledger records as owned by a
+           different registered principal
+severity : high     evidence_class: cross_account_resource     authz: True
+```
+
+**And its FAIL-CLOSED form**, when nothing in the record attributes an owner:
+
+```
+title    : a resource was returned to self at /rest/basket/8, with no recorded owner
+claim    : no ownership could be established from the record
+severity : low      evidence_class: cross_account_resource     authz: False
+```
+
+### Three design decisions worth stating
+
+1. **Distinctness is between the variant's principal and the recorded OWNER**, not between
+   the two sides. `derive_claim`'s existing `authz and not distinct` downgrade compares
+   `control_as` with `variant_as`, which is the right test for `a_denied_b_allowed` and the
+   wrong one here — both sides may legitimately be the same principal while the variant still
+   reaches somebody else's resource. This class gets its own branch, with the same
+   fail-closed discipline.
+2. **Matching is by VALUE, not by field name.** CM3's basket body calls it `data.id = 8`
+   while the ownership record learned it from a login reply that called it `bid = 8`;
+   requiring the names to agree would have missed the one case this exists for. The cost is
+   that two resources of different types sharing an integer could collide — which is why the
+   matched id, its path and the captured body are all on the ledger beside the claim, so a
+   reader can **see** the match rather than trust it. Recorded as a known limit, not hidden.
+3. **Context comparators are named EXPLICITLY** (`_CONTEXT_COMPARATORS`), not discovered by
+   catching `TypeError`. `judge`'s existing arity dispatch cannot tell *"this predicate takes
+   two arguments"* from *"this predicate raised TypeError on line 3"*, and a context
+   comparator that silently degraded to a two-argument call would judge on less than it was
+   given and answer a different question.
+
+`anonymous` can never be a recorded owner (`_REGISTERED_PRINCIPALS`). That distinction is
+exactly what CM3 passed the old milestone wording on, and it is now enforced in code rather
+than in a definition.
+
+Tests: `tests/test_cross_account_resource_comparator.py`, 16 tests, **7 red first** — one
+because the comparator did not exist, six because `judge()` had no `context` parameter. They
+go green only when the comparator exists **and discriminates**, because the positive and
+negative cases are asserted together. **8 were born green and protect nothing new**: seven are
+regression guards deliberately written against the PRE-EXISTING `judge()` signature (a
+boundary that only held under the new call shape would not notice the old one breaking), and
+one — the fail-closed claim — passed vacuously because an unknown comparator already fell to
+the default bound.
+
+**The sixteenth is the one that matters and it was red first: `test_end_to_end_...` runs the
+three fixes together through the real loop** — both principals established in-harness, no
+seeding — and asserts the ledger carries the ownership with its provenance, the body carrying
+`"UserId": 27`, and a `high` finding naming both principals and the resource. **That is the
+restated milestone, demonstrated against a double.** It is not the milestone itself, which
+requires a real target.

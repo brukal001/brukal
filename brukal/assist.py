@@ -4294,7 +4294,12 @@ class AssistSession:
                                 f"a result) {h.title}: control HTTP {_as}, variant "
                                 f"HTTP {_bs}")
                 continue
-            holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None))
+            # The ownership map travels to the comparator as CONTEXT. It is the same store
+            # `_record_principal_ids` writes to the ledger as `principal_ownership`, in the
+            # same call, so the map this judgement reads and the map a reader can
+            # reconstruct from the bundle cannot disagree.
+            _ctx = {"ownership": self.principal_identifiers(), "variant_as": _v_as}
+            holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
             if not holds:
                 # Keep what happened — a round that confirms nothing is still the only
                 # information the next round has. But only when the target actually
@@ -4325,12 +4330,20 @@ class AssistSession:
             # comparator and the two RESOLVED principals decide what may be asserted and
             # how loudly; the model's own words are kept below, marked UNVERIFIED, because
             # they are the most useful sentence in the record and the least trustworthy.
+            # WHO the ledger says owns what the variant reached. Recomputed from the same
+            # recorded map rather than carried out of the predicate, so the claim and the
+            # verdict are derived from one source; `[]` when nothing matched, and
+            # `derive_claim` fails closed on a missing owner rather than asserting one.
+            _foreign = _hyp.foreign_owned_ids(getattr(b, "body", ""),
+                                              self.principal_identifiers(), _v_as)
             _cl = _hyp.derive_claim(
                 h.comparator, _c_as, _v_as,
                 control={"url": h.control["url"], "status": a.status,
                          "size": len(a.body or "")},
                 variant={"url": h.variant["url"], "status": b.status,
-                         "size": len(b.body or "")})
+                         "size": len(b.body or ""),
+                         "owner": _foreign[0][2] if _foreign else "",
+                         "owned_id": _foreign[0][1] if _foreign else ""})
             self.findings.add(Finding(
                 title=_cl["title"], severity=_hyp.cap_severity(h.severity, _cl["severity_cap"]),
                 category="logic",
