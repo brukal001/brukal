@@ -117,6 +117,18 @@ If a proposed change would weaken/route-around any invariant: STOP, write the co
 - **A control that transforms data must be tested on BOTH sides** — what it writes, and what happens when its
   output is read back. (Redaction was verified for leakage but not for consumption; a `[REDACTED]` placeholder
   was accepted as a real credential until fixed.)
+- ★ **A GUARD THAT ONLY RUNS AGAINST A DOUBLE IS NOT A GUARD FOR DEFECTS LIVING IN STATE THE DOUBLE LACKS.**
+  Sibling of the both-sides rule, and it cost run CM4 its result. `test_the_ids_are_per_principal_and_never_crossed`
+  was **green throughout CM4 while the property failed on the live target**: `_separate_identity` did not restore
+  `last_jwt`, so a confirmation run after the second principal existed probed as the SECOND principal and filed
+  its id under `self`. The double could not reach it — it has **no `last_jwt` to leak**, and its identity oracle
+  reads the Authorization header rather than a cookie, so the branch that installs `session_token()` never runs.
+  The test was not wrong; the state it was written against was a subset of the real one.
+  **So: when a guard protects a property about STATE, ask which state the double actually carries. If the double
+  cannot hold the field, the guard cannot see the defect, and passing means nothing.** Either build the fixture
+  to carry the full state (what `tests/test_principal_switch_is_atomic.py` does — full session state, cookie-reading
+  oracle), or say in the test file that it is not the guard for that class. A green test that cannot fail is worse
+  than no test, because it is believed.
 - **A fix for a silent failure must not be able to fail silently itself.** Four instances now, the sharpest
   being `LLMClient.propose`'s thinking-retry: built so "the model had nothing to say" would stop being
   indistinguishable from "it never got to say it", it escalates into an SDK `ValueError` that a bare
