@@ -3542,3 +3542,52 @@ against a cookie-only oracle answers anonymously because that principal holds a 
 an empty jar. That is **CM2's recorded P1** (*"the second principal is anonymous to half the
 application"*), a separate open defect — so `second` is asserted field-by-field on the transport,
 and only `self` is asserted against the oracle, which is where the CM4 regression lives.
+
+
+---
+
+## ⛔ P1 OPEN — FIRST EVIDENCE ON THE DISCOVERED-CREDENTIAL QUESTION: THE LEAK IS THE COMMAND SURFACE, NOT CAPTURED BODIES
+
+**Severity: P1, still OPEN. This entry does not close it — it measures it for the first time,
+and the measurement points somewhere other than where the debate assumed.**
+
+The open question was stated as a choice: **recognise-at-capture** (guess what a secret is, which
+`redact` refuses) versus **never capture bodies verbatim** (safe by construction, and it would undo
+Fix 2). Fix 2 made the second option costly, so CM4 was the run that had to quantify it.
+
+**What CM4 measured on the Fix 2 surface:**
+
+| measure | value |
+|---|---|
+| `experiment_result` records | 7 |
+| target-authored text on the ledger **verbatim** | **1,996 bytes** |
+| distinct target-authored values | **20** |
+| credential-like among them | **1** — `data.deluxeToken`, and it is **empty** |
+| MD5-shaped strings inside captured bodies | **0** |
+
+**Where the credential material actually was:**
+
+| record kind | MD5-shaped strings | the admin password hash |
+|---|---|---|
+| `execution` (the agent's own commands) | **28** | yes |
+| `decision` (the gate's record of them) | **1** | yes |
+| `experiment_result` (Fix 2's captured bodies) | **0** | no |
+
+**So "never capture bodies verbatim" would have prevented NEITHER leak.** CM3's admin password
+hash and CM4's both arrived through the agent's own command lines — it cracked the hash with
+`md5sum`/`hashcat`, and the command string is what carries the secret. CM4's captured bodies
+contributed nothing. 2C4's leak was a live admin JWT, also not from an experiment body.
+
+**The credential work should therefore point at the COMMAND surface**, which is where three runs'
+worth of unpublishable material has actually come from, and not at the body capture the milestone
+depends on. That reframes the open question rather than answering it: recognise-at-capture is still
+the hard part, and it is now aimed at command strings and their output rather than at response
+bodies.
+
+⚠ **This is ONE RUN on ONE TARGET, and it is stated as first evidence, not as a general result.**
+Juice Shop hands out an MD5 hash to an agent that goes looking for one; a target whose API echoes
+session tokens in response bodies would produce the opposite table. The number to watch on CM5 and
+after is the last row — **credential-like values inside captured bodies** — and a single non-zero
+reading there is enough to reopen the balance.
+
+**The bundle remains unpublishable**, unchanged, for the pre-existing reason.
