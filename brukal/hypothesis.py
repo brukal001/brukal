@@ -1039,3 +1039,104 @@ Rules: URLs must be on the authorised target. Do not propose anything destructiv
 (no DELETE of data you did not create, no password changes to accounts you do not own, \
 no endpoints named reset/drop/wipe). If you have no good experiment, reply [].
 """
+
+
+# --------------------------------------------------------------------------- #
+# THE FUNNEL, derived from the LEDGER and from nothing else.
+# --------------------------------------------------------------------------- #
+#
+# Run CM5 computed proposed/dispatched/resolved/judged/confirmed by reading `[experiment]`
+# lines out of `engagement.md`, which renders `notes[-40:]`. Seventy steps evicted every
+# one of them, and the published funnel rested on lines that were no longer in the bundle.
+# `proposed` was not derivable from the audit log at all, and `judged` was an inference.
+#
+# These are the eleven terminal states a proposal can reach, grouped by HOW FAR it got.
+# The grouping is the whole definition: "dispatched" means the requests went out,
+# "resolved" means both sides answered, "judged" means a comparator read them.
+_REFUSED_BEFORE_DISPATCH = (
+    "skipped",                  # destructive path — the prompt forbids it, the code enforces it
+    "not_authenticated",        # the session this target honours is not the one we hold
+    "second_unavailable",       # the comparator named a principal that does not exist here
+    "setup_failed",             # a setup request the experiment depends on did not succeed
+    "unresolved_reference",     # {{setup.N.field}} addressed something that was not there
+    "errored",                  # never reached the target
+)
+_DISPATCHED_NOT_RESOLVED = (
+    "both_sides_failed",        # two 5xx — the application broke, it did not behave
+    "no_answer",                # the gate or the limiter refused; nothing was observed
+)
+_JUDGED = ("not_confirmed", "confirmed")
+
+
+def outcome_stage(outcome: str) -> str:
+    """How far a proposal got: 'refused' | 'unresolved' | 'judged'. Recorded beside the
+    outcome so a reader does not have to know this table to read the ledger."""
+    if outcome in _REFUSED_BEFORE_DISPATCH:
+        return "refused"
+    if outcome in _DISPATCHED_NOT_RESOLVED:
+        return "unresolved"
+    if outcome in _JUDGED:
+        return "judged"
+    return "unknown"
+
+
+def funnel(entries, comparator: str | None = None) -> dict:
+    """proposed / dispatched / resolved / judged / confirmed, from audit records alone.
+
+    `entries` is any iterable of decoded audit records. The ONE place these counts are
+    computed — every printed or reported figure comes from here, and nothing counts by
+    reading notes.
+
+    Also returns the cross-account line under `cross_account`, because that is the
+    milestone metric and it is the number most worth being unable to fudge.
+
+    A proposal with no recorded outcome is counted as proposed and nothing else: a run
+    killed mid-experiment should show the gap rather than have it silently absorbed."""
+    props, outs = [], []
+    for e in entries or ():
+        if not isinstance(e, dict):
+            continue
+        kind, data = e.get("kind"), e.get("data") or {}
+        if kind == "experiment_proposed":
+            props.append(data)
+        elif kind == "experiment_outcome":
+            outs.append(data)
+    if comparator is not None:
+        props = [d for d in props if d.get("comparator") == comparator]
+        outs = [d for d in outs if d.get("comparator") == comparator]
+
+    refused = sum(1 for d in outs if d.get("outcome") in _REFUSED_BEFORE_DISPATCH)
+    unresolved = sum(1 for d in outs if d.get("outcome") in _DISPATCHED_NOT_RESOLVED)
+    judged = sum(1 for d in outs if d.get("outcome") in _JUDGED)
+    confirmed = sum(1 for d in outs if d.get("outcome") == "confirmed")
+    out = {
+        "proposed": len(props),
+        "dispatched": unresolved + judged,
+        "resolved": judged,
+        "judged": judged,
+        "confirmed": confirmed,
+        "refused_before_dispatch": refused,
+        "dispatched_not_resolved": unresolved,
+        "unaccounted": max(0, len(props) - (refused + unresolved + judged)),
+    }
+    if comparator is None:
+        out["cross_account"] = funnel(entries, comparator="cross_account_resource")
+    return out
+
+
+def funnel_from_log(path) -> dict:
+    """`funnel()` over a JSONL audit file. Malformed lines are skipped rather than
+    raising: a count is instrumentation, and instrumentation must never fail a run."""
+    import json as _json
+    from pathlib import Path as _Path
+    rows = []
+    try:
+        text = _Path(path).read_text(errors="replace")
+    except Exception:
+        return funnel(())
+    for line in text.splitlines():
+        try:
+            rows.append(_json.loads(line))
+        except Exception:
+            continue
+    return funnel(rows)

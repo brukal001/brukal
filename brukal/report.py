@@ -119,6 +119,36 @@ def build_report(store: FindingStore, meta: dict) -> str:
                    f"login type before treating this as an authenticated assessment.")
         out.append("")
 
+    # --- the experiment funnel, DERIVED FROM THE AUDIT LOG --------------------
+    # Not from the notes. Run CM5 rendered `notes[-40:]`, evicted every `[experiment]`
+    # line from engagement.md, and left a published funnel resting on lines that were no
+    # longer in the bundle. These counts come from `hypothesis.funnel()` over the audit
+    # records, so a reader holding the ledger can recompute every one of them.
+    _f = m.get("funnel") or {}
+    if _f.get("proposed"):
+        _xa = _f.get("cross_account") or {}
+        out.append("## Model-proposed experiments — the funnel")
+        out.append("")
+        out.append("| | proposed | dispatched | resolved | judged | confirmed |")
+        out.append("|---|---|---|---|---|---|")
+        out.append(f"| all | {_f.get('proposed',0)} | {_f.get('dispatched',0)} | "
+                   f"{_f.get('resolved',0)} | {_f.get('judged',0)} | "
+                   f"{_f.get('confirmed',0)} |")
+        out.append(f"| cross-account | {_xa.get('proposed',0)} | "
+                   f"{_xa.get('dispatched',0)} | {_xa.get('resolved',0)} | "
+                   f"{_xa.get('judged',0)} | {_xa.get('confirmed',0)} |")
+        out.append("")
+        _refused = _f.get("refused_before_dispatch", 0)
+        _unres = _f.get("dispatched_not_resolved", 0)
+        _gap = _f.get("unaccounted", 0)
+        out.append(f"_{_refused} proposal(s) were refused before dispatch and "
+                   f"{_unres} dispatched without both sides answering; neither is a "
+                   f"result about the application. "
+                   + (f"**{_gap} proposal(s) have no recorded outcome** — the run ended "
+                      f"mid-experiment. " if _gap else "")
+                   + "Computed from the audit log, not from the engagement notes._")
+        out.append("")
+
     # --- what was assessed ----------------------------------------------------
     # A reader cannot tell an absent finding from an absent CHECK unless the report
     # says which it is. Brukal already insists a rate-limited sweep declare its own

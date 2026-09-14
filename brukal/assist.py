@@ -3866,6 +3866,56 @@ class AssistSession:
             "url": url, "target": self.target,
         })
 
+    def _record_experiment_proposed(self, h) -> None:
+        """EVERY proposal, on the ledger, before anything can refuse it.
+
+        Run CM5 exposed why this has to exist. The funnel — proposed / dispatched /
+        resolved / judged / confirmed — was computed for five runs by reading
+        `[experiment]` lines out of `engagement.md`, and `_write_notebook` renders
+        `notes[-40:]`. CM5 ran 70 steps, the window evicted every one of those lines, and
+        the file ended up containing the string "experiment" zero times.
+
+        Nothing was lost that mattered — the dispatch records survived — but `proposed`
+        was not derivable from the ledger AT ALL: a proposal left no record until it
+        dispatched or ran a setup, so a zero-setup proposal refused at reference
+        resolution was invisible. A published count that can only be obtained from a
+        truncating human note is not a measurement. Third instance in this project of a
+        self-report disagreeing with the ledger."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        audit.append("experiment_proposed", {
+            "title": getattr(h, "title", ""),
+            "comparator": getattr(h, "comparator", ""),
+            "setup_steps": len(getattr(h, "setup", []) or []),
+            "control_as": (getattr(h, "control", {}) or {}).get("as", "self"),
+            "variant_as": (getattr(h, "variant", {}) or {}).get("as", "self"),
+            "control_url": (getattr(h, "control", {}) or {}).get("url", ""),
+            "variant_url": (getattr(h, "variant", {}) or {}).get("url", ""),
+            "target": self.target,
+        })
+
+    def _record_experiment_outcome(self, h, outcome: str) -> None:
+        """The TERMINAL state of one proposal, whatever it was.
+
+        Written at all eleven exits, including the six that refuse before dispatch, so
+        `dispatched`, `resolved` and `judged` stop being inferences. Before this, nothing
+        distinguished "reached a comparator and did not hold" from "never judged" —
+        except `cross_account_resource`, which writes `ownership_match` either way, which
+        is exactly why the cross-account line was the one part of CM5's funnel that WAS
+        derivable from the record."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        from . import hypothesis as _hyp
+        audit.append("experiment_outcome", {
+            "title": getattr(h, "title", ""),
+            "comparator": getattr(h, "comparator", ""),
+            "outcome": outcome,
+            "stage": _hyp.outcome_stage(outcome),
+            "target": self.target,
+        })
+
     def _record_experiment_result(self, role: str, url: str, result) -> None:
         """ONE experiment side's answer, INCLUDING a bounded excerpt of its body.
 
@@ -4279,11 +4329,13 @@ class AssistSession:
             # component built to generalise beyond hand-written detectors was the only
             # one whose behaviour could not be inspected after a run. A mechanism that
             # finds nothing and explains nothing cannot be improved.
+            self._record_experiment_proposed(h)
             self.note(f"[experiment] {h.title} [{h.comparator}] "
                       f"{h.control['method']} {h.control['url']} vs "
                       f"{h.variant['method']} {h.variant['url']}")
             if self._is_destructive_path(h.variant["url"]) \
                     or self._is_destructive_path(h.control["url"]):
+                self._record_experiment_outcome(h, "skipped")
                 self.note(f"[experiment] SKIPPED (destructive path): {h.title}")
                 continue                   # the prompt forbids it; the code enforces it
             try:
@@ -4341,6 +4393,7 @@ class AssistSession:
                 # the two below it are: the experiment never ran, and a transport-shaped
                 # message ("ERRORED before reaching the target") would hide a governance
                 # fact behind a plumbing one.
+                self._record_experiment_outcome(h, "not_authenticated")
                 self.note(f"[experiment] NOT AUTHENTICATED, not run: {h.title} ({exc})")
                 outcomes.append(f"NOT AUTHENTICATED (experiment NOT run, this is not a "
                                 f"result) {h.title}: {exc}")
@@ -4351,6 +4404,7 @@ class AssistSession:
                 # selected was unconstructible, so any verdict it reached would be a
                 # claim about Brukal dressed as a claim about the application. Fed back
                 # so the next round proposes something this target can actually answer.
+                self._record_experiment_outcome(h, "second_unavailable")
                 self.note(f"[experiment] SECOND PRINCIPAL UNAVAILABLE, not run: "
                           f"{h.title} ({exc})")
                 outcomes.append(f"SECOND PRINCIPAL UNAVAILABLE (experiment NOT run, "
@@ -4360,6 +4414,7 @@ class AssistSession:
                 # Ahead of UnresolvedReference (its parent) so the sentence the next round
                 # reasons from names the repair that is actually available. Same shape as
                 # the refusals above it: not dispatched, not judged, not a result.
+                self._record_experiment_outcome(h, "setup_failed")
                 self.note(f"[experiment] SETUP FAILED, not run: {h.title} ({exc})")
                 outcomes.append(f"SETUP FAILED (experiment NOT run, this is not a result) "
                                 f"{h.title}: {exc}")
@@ -4368,12 +4423,14 @@ class AssistSession:
                 # NOT a negative result. The experiment never ran, and saying so keeps a
                 # missing data-flow visible instead of letting it wear a comparator's
                 # verdict. Fed back so the next round can reference a field that exists.
+                self._record_experiment_outcome(h, "unresolved_reference")
                 self.note(f"[experiment] UNRESOLVED REFERENCE, not run: {h.title} "
                           f"({exc})")
                 outcomes.append(f"UNRESOLVED REFERENCE (experiment NOT run, this is not "
                                 f"a result) {h.title}: {exc}")
                 continue
             except Exception as exc:
+                self._record_experiment_outcome(h, "errored")
                 self.note(f"[experiment] ERRORED before reaching the target: {h.title} "
                           f"({type(exc).__name__}: {str(exc)[:80]})")
                 continue
@@ -4388,6 +4445,7 @@ class AssistSession:
             # rate limiter refused that request, and a blocked pair is handled below.
             _as, _bs = getattr(a, "status", None), getattr(b, "status", None)
             if (_as or 0) >= 500 and (_bs or 0) >= 500:
+                self._record_experiment_outcome(h, "both_sides_failed")
                 self.note(f"[experiment] BOTH SIDES FAILED ({_as}/{_bs}), not "
                           f"judged: {h.title} — a difference between two server errors "
                           f"is not evidence about the application")
@@ -4419,8 +4477,10 @@ class AssistSession:
                 # result to reason about. Recording it would buy a second model call to
                 # refine against noise.
                 if getattr(a, "status", None) is None and getattr(b, "status", None) is None:
+                    self._record_experiment_outcome(h, "no_answer")
                     self.note(f"[experiment] NO ANSWER from the target: {h.title}")
                     continue
+                self._record_experiment_outcome(h, "not_confirmed")
                 self.note(f"[experiment] not confirmed [{h.comparator}]: {h.title} — "
                           f"control HTTP {getattr(a, 'status', None)} "
                           f"({len(getattr(a, 'body', '') or '')}B) vs variant HTTP "
@@ -4434,6 +4494,7 @@ class AssistSession:
                     f"({len(getattr(b, 'body', '') or '')}B)")
                 continue
             confirmed += 1
+            self._record_experiment_outcome(h, "confirmed")
             self.note(f"[experiment] CONFIRMED [{h.comparator}]: {h.title}")
             # The CLAIM is derived, not quoted. `title` and `severity` used to come
             # straight off the model's proposal: on 2026-08-22 that published two HIGH
@@ -8276,6 +8337,12 @@ def _write_session_report(session, result, cage, audit, spend=""):
                               else ""),
             "login_status": list(getattr(session, "login_status", ()) or ()),
             "surface": session.surface.summary() if session.surface else "",
+            # THE FUNNEL, computed from the audit log rather than from the notes. Run CM5
+            # rendered `notes[-40:]` and evicted every `[experiment]` line, so a published
+            # count rested on lines no longer in the bundle. One function, one source.
+            "funnel": (__import__("brukal.hypothesis", fromlist=["x"])
+                       .funnel_from_log(getattr(audit, "path", ""))
+                       if audit is not None else {}),
         }
         return write_reports(session.findings, meta, _session_vault(session))
     except Exception:
