@@ -3794,6 +3794,43 @@ class AssistSession:
             "url": url, "target": self.target,
         })
 
+    def _record_experiment_result(self, role: str, url: str, result) -> None:
+        """ONE experiment side's answer, INCLUDING a bounded excerpt of its body.
+
+        Run CM3 dispatched the exact request the capability milestone is about — principal
+        A reading `/rest/basket/8`, whose body said `"UserId":27` — and the ledger kept
+        `{"status":200,"url":...,"note":"","bytes":154}`. **The field that made it a
+        cross-account read was never written down**, so the finding could be derived, felt
+        and argued, and not checked.
+
+        The web plane got body capture in August (`_absorb_web`); the experiment plane,
+        which is the one that produces findings, did not. A comparator's verdict is only
+        as citable as the evidence beside it, and `bytes` is not evidence.
+
+        Recorded for BOTH sides, immediately after each dispatch rather than after the
+        judgement, so a pair that never reaches a comparator still leaves its answers
+        behind — the refusals above this call site all `continue`, and a record written
+        later would be exactly the one missing whenever something went wrong.
+
+        `redact.data` in `audit.append` is the funnel, as everywhere else. That matters
+        more here than anywhere: capturing a body verbatim is precisely how a credential
+        the TARGET discloses reaches an artifact, which is the open P1 recorded below."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None or result is None:
+            return
+        from . import hypothesis as _hyp
+        raw = getattr(result, "body", "") or ""
+        excerpt, cut = _hyp.body_excerpt(raw)
+        audit.append("experiment_result", {
+            "role": role or "unknown",
+            "url": url,
+            "status": getattr(result, "status", None),
+            "bytes": len(raw),
+            "body": excerpt,
+            "truncated": cut,
+            "target": self.target,
+        })
+
     @contextmanager
     def _as_identity(self, who: str, role: str = "", url: str = ""):
         """Issue requests as one of the three principals an experiment may name.
@@ -4193,9 +4230,11 @@ class AssistSession:
                 with self._as_identity(cspec.pop("as", "self"), "control",
                                        cspec.get("url", "")):
                     _d1, a = self.browser.run(WebAction("request", **cspec))
+                self._record_experiment_result("control", cspec.get("url", ""), a)
                 with self._as_identity(vspec.pop("as", "self"), "variant",
                                        vspec.get("url", "")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
+                self._record_experiment_result("variant", vspec.get("url", ""), b)
             except _hyp.PrincipalNotAuthenticated as exc:
                 # NOT a negative result, and ahead of the generic handler for the reason
                 # the two below it are: the experiment never ran, and a transport-shaped

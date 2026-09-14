@@ -371,6 +371,31 @@ _SHAPE_MAX_DEPTH = 4                # `user.addresses.0.id` is four segments, an
 _SHAPE_MAX_PATHS = 40               # APIs rarely bury an id deeper than that
 SETUP_SHAPE_MAX_LINES = 8           # distinct setup responses described per round
 
+# How much of an experiment's response body reaches the ledger. Run CM3 recorded
+# `{"status":200,"url":".../rest/basket/8","note":"","bytes":154}` for the request that IS
+# the capability milestone — principal A reading a basket whose body said `"UserId":27` —
+# and threw the body away, so the one field carrying the claim was never written down.
+#
+# BOUNDED because a response is untrusted target data of unknown size, and a ledger that
+# inlines whole pages stops being readable. 2 KiB holds the JSON object an API returns for
+# one resource — CM3's were 154 and 329 bytes — while refusing to absorb a rendered page.
+EXPERIMENT_BODY_MAX = 2048
+
+
+def body_excerpt(body, limit: int = EXPERIMENT_BODY_MAX) -> tuple[str, bool]:
+    """(excerpt, truncated) for one response body.
+
+    Truncation is RETURNED rather than applied silently, because a reader who cannot tell
+    a short body from a cut one cannot tell a missing field from an absent one — and the
+    whole point of capturing the body is to let a later claim be checked against it."""
+    text = body or ""
+    if not isinstance(text, str):
+        text = str(text)
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
+
 # Keys a RESPONSE itself names as an identifier. Not a guess at what an id might be
 # called: `id`, `<thing>Id`, `<thing>_id`, and `bid`, which is what a login reply calls the
 # basket it just issued. A looser rule would sweep in every scalar and a tighter one would

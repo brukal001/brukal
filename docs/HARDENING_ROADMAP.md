@@ -2999,3 +2999,85 @@ Tests: `tests/test_principal_ownership_ledger.py`, 5 tests, **4 red first**. The
 is the BOUNDARY (a target with no discoverable ids records nothing) and it was green
 **vacuously** — with no record written at all, "records nothing" is trivially true. It protects
 nothing new until this fix exists, and from now on it is what stops the record fabricating an id.
+
+
+---
+
+## FIX 2 (2026-09-14) — an experiment result without its body has no evidence
+
+**CLOSED.**
+
+CM3 dispatched the exact request the capability milestone is about — principal A reading
+`/rest/basket/8`, whose body said `"UserId":27` — and the ledger kept
+`{"status":200,"url":...,"note":"","bytes":154}`. **The field that made it a cross-account
+read was never written down.** The finding could be derived, felt and argued, and not checked.
+
+The web plane got body capture in August (`_absorb_web`); the experiment plane, the one that
+produces findings, did not. `bytes` is not evidence.
+
+**What is recorded.** An `experiment_result` audit record per side:
+`{role, url, status, bytes, body, truncated, target}`, written **immediately after each
+dispatch** rather than after the judgement — every refusal in `_run_one_round` `continue`s, so
+a record written later would be exactly the one missing whenever something went wrong.
+
+**Bounded at `EXPERIMENT_BODY_MAX = 2048`**, in `hypothesis.py` beside the other announced
+bounds. A response is untrusted target data of unknown size and a ledger that inlines whole
+pages stops being readable; 2 KiB holds the JSON object an API returns for one resource
+(CM3's were 154 and 329 bytes) while refusing a rendered page. **`truncated` is recorded, not
+applied silently** — a reader who cannot tell a short body from a cut one cannot tell a
+missing field from an absent one, and `bytes` still states the full size so what was cut is
+visible.
+
+Redaction is the inherited `redact.data` in `audit.append`. The test drives it with a body
+that echoes the live session token and asserts the **positive** form — `[REDACTED:` present in
+the captured body — because absence alone would also be satisfied by capturing nothing.
+
+Tests: `tests/test_experiment_body_capture.py`, 6 tests, **5 red first**. The one born green is
+the BOUNDARY — `experiment_principal` keeps exactly its six existing fields. It protects no new
+behaviour; it pins the record that made CM3 readable at all, so this change cannot disturb it.
+
+---
+
+## ⛔ P1 OPEN — THE DISCOVERED-CREDENTIAL CONTRACT HAS NOW FAILED TWICE FOR NON-JWT VALUES
+
+**Severity: P1. RECORDED, NOT FIXED. The design question is stated here and deliberately left
+open, because answering it wrongly would undo Fix 2.**
+
+**The record.** `2b7e671` closed the discovered-credential class **for self-describing
+credentials only** — values a detector can recognise as what they are, which in practice means
+JWTs and tokens the token detectors already parse. Two consecutive bundles are now unpublishable
+for the same structural reason:
+
+| run | the value | where |
+|---|---|---|
+| 2C4 | a live admin **JWT** for the target | cleartext across eleven surfaces |
+| CM3 | an admin **password hash** (`0192023a…b500`, MD5 of `admin123`) recovered via SQLi | **8× in the ledger, 18× in the vault** |
+
+An MD5 hash is not self-describing. Nothing in `redact` can tell it from any other 32-hex
+string — a request id, a content hash, an ETag — and the module **refuses to guess**, which is
+the property that makes it trustworthy in the first place.
+
+**Post-hoc redaction remains unavailable.** The artifacts are hash-chained; editing a record to
+mask the hash changes its bytes and breaks the chain from that entry onward, destroying the
+tamper-evidence that is the entire reason to publish the bundle. The fix must happen at WRITE
+time, on the run that is to be published.
+
+**The design question, stated plainly and NOT answered here:**
+
+1. **Recognise-at-capture** — detect secrets in captured bodies before they are recorded. This
+   means **guessing what a secret is**, which is exactly what `redact` was built to avoid; its
+   guarantee today is *"the credential set this engagement actually injects"*, a closed set with
+   no false positives. A heuristic that masks 32-hex strings would also mask the resource ids
+   Fix 3 depends on, and one that does not would have missed this hash.
+2. **Never capture bodies verbatim** — record only derived structure (field paths, matched
+   ownership), never raw text. This is safe by construction and **would undo Fix 2**: the
+   milestone needs `"UserId":27` in an artifact, and a path list saying `data.UserId` exists
+   does not carry the value a claim is checked against.
+
+Note the two fixes shipped today move in opposite directions on this axis. Fix 1 records values
+the harness itself derived from responses (small, id-shaped, already bounded); Fix 2 records
+**raw response text**, which is a materially larger surface and the first place in the project
+where target-authored bytes land in the ledger verbatim.
+
+**This must be answered before any bundle is published. It is not answered here, and no bundle
+should be published until it is.**
