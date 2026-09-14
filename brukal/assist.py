@@ -1722,9 +1722,12 @@ class AssistSession:
             # The login reply is already held (`AuthAttempt.body`), so this costs nothing.
             # `_separate_identity` is what makes `who` right: a second-principal login runs
             # inside it, and `self.identity` is that principal for the duration.
-            self._record_principal_ids(
-                "second" if getattr(self, "_establishing_second", False) else "self",
-                "login", getattr(attempt, "body", ""))
+            _who = "second" if getattr(self, "_establishing_second", False) else "self"
+            # The HANDLE we authenticated as, kept per principal. It is what makes a
+            # confirmation checkable: an identity oracle that answers with somebody
+            # else's handle has not proved OUR session, whatever else it proves.
+            self._remember_handle(_who, username)
+            self._record_principal_ids(_who, "login", getattr(attempt, "body", ""))
 
         if ok and not self.identity:
             # Who we are was once set ONLY in the token branch, so a cookie-session
@@ -1815,6 +1818,61 @@ class AssistSession:
                           + (f" at {probe_url}" if probe_url else ""))
         return carriage
 
+    def _remember_handle(self, who: str, handle: str) -> None:
+        """The username/email each principal authenticated as, kept per principal.
+
+        Survives `_separate_identity` because it is keyed by principal rather than being
+        the CURRENT identity — which is the whole point: while the second principal is
+        being established, `self.identity` IS the second principal, so "who are we" is
+        the wrong question to ask of a single attribute."""
+        store = getattr(self, "_principal_handles", None)
+        if store is None:
+            store = self._principal_handles = {}
+        if handle:
+            store[who] = handle
+
+    def _answered_as_another_principal(self, body, who: str) -> str:
+        """The handle of a DIFFERENT principal, found in an answer we asked for `who`.
+
+        Deliberately NOT a pattern match for what "logged in" looks like — that is the
+        guess `confirm_authentication` refuses to make. This looks for one specific
+        string we already know: a handle we ourselves authenticated as, belonging to a
+        principal that is not the one asking. Nothing is inferred; either another
+        principal's own handle is in the answer or it is not.
+
+        Run CM4 needed exactly this. The oracle answered with the SECOND principal's
+        email while the FIRST principal was asking, and every layer above took the answer
+        at face value because nothing compared it to anything."""
+        text = body if isinstance(body, str) else str(body or "")
+        if not text:
+            return ""
+        for other, handle in (getattr(self, "_principal_handles", None) or {}).items():
+            if other == who or not handle:
+                continue
+            if handle in text:
+                return handle
+        return ""
+
+    def _record_identity_mismatch(self, who: str, answered: str, url: str) -> None:
+        """A confirmation that proved the WRONG principal, named and recorded.
+
+        Never filed under the requesting principal: a carriage record is the evidence a
+        cross-account claim rests on, and one that says "A is confirmed" on the strength
+        of an answer naming B is worse than no record at all, because it reads as
+        provenance. CM4 published a HIGH cross-account finding on top of one."""
+        expected = (getattr(self, "_principal_handles", None) or {}).get(who, "") \
+            or self.identity or who
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is not None:
+            audit.append("authentication_mismatch", {
+                "requested_as": expected, "answered_as": answered,
+                "principal_key": who, "probe": url, "target": self.target,
+            })
+        self.notes.append(
+            f"[login] identity oracle MISMATCH at {url}: asked as {expected}, the target "
+            f"answered as {answered} — the session in effect is not this principal's, so "
+            f"nothing is confirmed")
+
     def confirm_authentication(self) -> str:
         """Prove which carriage this target honours — or prove that it honours none.
 
@@ -1863,9 +1921,15 @@ class AssistSession:
             if mine is None:
                 continue
             if self._answers_differ(mine, anon_a):
-                self._record_principal_ids(
-                    "second" if getattr(self, "_establishing_second", False) else "self",
-                    "whoami", getattr(mine, "body", ""))
+                _who = "second" if getattr(self, "_establishing_second", False) else "self"
+                # DIFFERENT FROM ANONYMOUS IS NOT ENOUGH. It establishes that A session is
+                # honoured; the claim every cross-account finding rests on is that THIS
+                # principal's is. See `_answered_as_another_principal`.
+                _other = self._answered_as_another_principal(getattr(mine, "body", ""), _who)
+                if _other:
+                    self._record_identity_mismatch(_who, _other, url)
+                    return self._settle_carriage("", False, url)
+                self._record_principal_ids(_who, "whoami", getattr(mine, "body", ""))
                 return self._settle_carriage(held, True, url)
             # The oracle works and does not know us. Try cookie carriage.
             if not token:
@@ -1875,9 +1939,17 @@ class AssistSession:
                 browser._cookies = dict(saved, **{name: token})
                 got = self._probe_identity(url, with_session=True)
                 if got is not None and self._answers_differ(got, anon_a):
-                    self._record_principal_ids(
-                        "second" if getattr(self, "_establishing_second", False) else "self",
-                        "whoami", getattr(got, "body", ""))
+                    _who = ("second" if getattr(self, "_establishing_second", False)
+                            else "self")
+                    # The branch CM4 actually went down: the token we installed as a
+                    # cookie was another principal's, so the oracle answered as them.
+                    _other = self._answered_as_another_principal(
+                        getattr(got, "body", ""), _who)
+                    if _other:
+                        browser._cookies = saved   # never leave their token in our jar
+                        self._record_identity_mismatch(_who, _other, url)
+                        return self._settle_carriage("", False, url)
+                    self._record_principal_ids(_who, "whoami", getattr(got, "body", ""))
                     # A cookie we SET is a credential we INJECTED, so it is registered
                     # the moment it starts being carried — the same rule, and the same
                     # line, as every other injected credential in this file.
@@ -4785,39 +4857,40 @@ class AssistSession:
         cross-account test on a cookie-session app needs this or it corrupts the session
         it is trying to reason about."""
         browser = self.browser
+        # THE WHOLE PRINCIPAL, not a list of its fields.
+        #
+        # This used to save and restore eight things by name, and the list was a field
+        # behind the object. `login()` sets `last_jwt` on EVERY login, including the
+        # second principal's inside this very context, and `last_jwt` was not on the
+        # list — so it leaked. `confirm_authentication` reads `session_token()`, which
+        # returns `last_jwt` FIRST, so a confirmation run after a second principal
+        # existed installed the SECOND principal's token as a cookie, asked the identity
+        # oracle, was told the second principal, filed that id under `self`, recorded the
+        # FIRST principal's carriage as confirmed on the strength of it, and left the
+        # other token in the jar. Run CM4's only cross-account finding was the second
+        # principal reading its own basket, recorded as `self` reading somebody else's.
+        # `login_url` and `login_type` were missing from that list too.
+        #
+        # `Principal` already IS the structure — every one of these is reached through a
+        # property that delegates to it — so snapshotting the object switches the fields
+        # that exist today and the ones added later, which a by-name list cannot.
+        saved_principal = self._ensure_principal().snapshot()
         saved_cookies = dict(getattr(browser, "_cookies", {}) or {})
         saved_auth = getattr(browser, "auth_header", "")
-        # Identity is part of the session, so it is saved too. login() adopts the first
-        # username it authenticates when `identity` is empty, which meant proving a
-        # takeover could quietly rename US to the VICTIM — and every later check that
-        # asks "whose objects are ours" would then be reasoning about the wrong account.
-        saved_identity = self.identity
-        saved_password = getattr(self, "_login_password", "")
-        saved_authed = self.authenticated
-        # `strategy` is a Principal field this phase introduced (Task 4), so it was
-        # never part of the original five saved/restored here — but it is the same
-        # kind of fact as the other five (how we got in), and leaving it out means a
-        # second-identity login inside this context leaves `strategy` set to
-        # whichever was tried last instead of our own.
-        saved_strategy = self._ensure_principal().strategy
-        # Same kind of fact as `strategy`, and for the same reason: a second-identity
-        # login inside this context proves ITS carriage, and leaving that behind would
-        # attribute the second principal's confirmation to us.
-        saved_carriage = self._ensure_principal().carriage
-        saved_confirmed = self._ensure_principal().confirmed
+        # The carriage memo is keyed by (login_url, identity) and lives on the SESSION
+        # rather than the principal, so it is the one piece of per-principal state the
+        # snapshot above does not reach. Left behind, a confirmation performed as the
+        # second principal memoises against our key.
+        saved_memo = getattr(self, "_carriage_memo", None)
         try:
             browser._cookies = {}
             browser.auth_header = ""
             yield browser
         finally:
+            self._ensure_principal().__dict__.update(saved_principal)
             browser._cookies = saved_cookies
             browser.auth_header = saved_auth
-            self.identity = saved_identity
-            self._login_password = saved_password
-            self.authenticated = saved_authed
-            self._ensure_principal().strategy = saved_strategy
-            self._ensure_principal().carriage = saved_carriage
-            self._ensure_principal().confirmed = saved_confirmed
+            self._carriage_memo = saved_memo
 
     # Field names on a signup form, by role. Ordered: the first match wins, so
     # `cpassword`/`confirm` must be tested before the bare password pattern or a

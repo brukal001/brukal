@@ -3474,3 +3474,71 @@ capture and the addressed-id hardening all did exactly what they were built to d
 a false premise by a credential-state leak three layers below them, and **a deterministic judge
 cannot be more correct than the facts it is given** — which is, precisely, the thesis this project
 is about, arriving as a defect in the project itself.
+
+
+---
+
+## FIX (2026-09-14, before CM5) — a principal switches atomically, and a confirmation proves the right principal
+
+**CLOSED.** Answers CM4's P1, which made that run's only cross-account confirmation false.
+
+### Part 1 — the switch covers the whole principal
+
+**Every field that constitutes a principal's session state, enumerated:**
+
+| Where | Fields |
+|---|---|
+| `Principal` (each reached through a delegating property on `AssistSession`) | `identity`, `authenticated`, **`last_jwt`**, `login_url`, `login_type`, `login_password`, `strategy`, `carriage`, `confirmed` |
+| `GovernedBrowser` (transport) | `auth_header`, `_cookies` |
+| `AssistSession`, outside `Principal` | `_carriage_memo` |
+
+`_separate_identity` saved and restored **eight of these twelve** by name. Missing:
+**`last_jwt`** (the CM4 defect), `login_url`, `login_type`, and `_carriage_memo`.
+
+**`Principal` already WAS the structure** — that is why the smallest secure change is to stop
+listing fields and snapshot the object: `saved = principal.snapshot()` … `__dict__.update(saved)`.
+Fields added to `Principal` later switch automatically, which a by-name list cannot. The browser's
+two transport fields and the session-level `_carriage_memo` are saved beside it.
+
+A test **enumerates `dataclasses.fields(Principal)`**, sets every one to a sentinel inside the
+context, and asserts every one is restored — so a future field-by-field restore that forgets one
+fails by name, which is exactly how `last_jwt` was lost.
+
+### Part 2 — "a session is honoured" is not "THIS principal's session is honoured"
+
+`confirm_authentication` accepted any answer that DIFFERED from the stable anonymous control. That
+establishes a session is honoured; every cross-account claim rests on *whose*.
+
+Each principal's authenticated handle is now kept per principal (`_principal_handles`), recorded
+where its identifiers are. On a differing answer, the body is checked for **a handle belonging to a
+different principal** — one specific known string, not a pattern-match for what "logged in" looks
+like, which is the guess this method has always refused. A hit is a **mismatch**:
+
+- an `authentication_mismatch` ledger record — `requested_as`, `answered_as`, `principal_key`, `probe`;
+- carriage settled **REFUTED**, never confirmed, and **never filed under the requesting principal**;
+- the foreign body's identifiers are **not** recorded as ownership;
+- and in the cookie branch the jar is restored, so another principal's token is not left in it.
+
+Both acceptance points are covered — the header branch and the cookie branch CM4 actually went down.
+
+### ⚠ Where a double cannot reach, stated plainly
+
+`test_principal_identifier_disclosure.py::test_the_ids_are_per_principal_and_never_crossed` was
+**green throughout CM4 while the property failed live**. Its double has no `last_jwt` to leak and
+its oracle reads the Authorization header, so the failing branch does not exist inside it. That test
+now carries a note saying so and is explicitly not the guard for this defect.
+
+The new fixture is built to reach it: full session state, and an identity oracle that reads the
+**cookie only**, as `/rest/user/whoami` did on the live target.
+
+Tests: `tests/test_principal_switch_is_atomic.py`, 8 tests, **5 red first** — confirming A after B
+still probes as A; a probe naming another principal is a recorded failure; every `Principal` field
+is restored; `last_jwt` specifically does not leak; the session in effect is that principal's. The
+3 born green are boundaries protecting existing behaviour: the second principal's own confirmation,
+the single-principal path, and quiet degradation where no oracle exists.
+
+One assertion was corrected while red rather than left to pass for the wrong reason: `as: second`
+against a cookie-only oracle answers anonymously because that principal holds a bearer header and
+an empty jar. That is **CM2's recorded P1** (*"the second principal is anonymous to half the
+application"*), a separate open defect — so `second` is asserted field-by-field on the transport,
+and only `self` is asserted against the oracle, which is where the CM4 regression lives.

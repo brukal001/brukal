@@ -225,6 +225,17 @@ def test_a_cross_account_experiment_needs_no_setup_step(tmp_path):
 
 
 def test_the_ids_are_per_principal_and_never_crossed(tmp_path):
+    # ⚠ THIS TEST WAS GREEN THROUGHOUT RUN CM4, WHILE THE PROPERTY FAILED LIVE.
+    # `_separate_identity` did not restore `last_jwt`, so a confirmation run after the
+    # second principal existed probed as the SECOND principal and filed its id under
+    # `self` — the map was crossed on the real target and not here. The double above
+    # cannot reach it: its login is never asked for a token this code path would reuse,
+    # and its identity oracle reads the Authorization header rather than a cookie, so
+    # `confirm_authentication` never enters the branch that installs `session_token()`.
+    # The reachable version lives in `tests/test_principal_switch_is_atomic.py`, whose
+    # fixture carries the full session state and honours the cookie.
+    # Kept because it still pins the per-principal extraction; it is NOT the guard for
+    # the crossing defect, and should not be read as one.
     """A's ids under A, B's under B. Crossing them would hand the model a false premise
     and make every cross-account proposal built on it meaningless."""
     target = _Target()
