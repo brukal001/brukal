@@ -3797,3 +3797,120 @@ reader would open first.
 **The honest caveat, recorded rather than smoothed:** the reciprocal Finding 2 (`variant_as:
 second`) is **not** independently verified, because this target has no oracle that can name a
 bearer-carried principal. It is not needed for the milestone and is not counted toward it.
+
+
+---
+
+## FIX (2026-09-15) — the funnel comes from the ledger
+
+**CLOSED.** Third instance in this project of a self-report disagreeing with the ledger.
+
+`_write_notebook` renders `notes[-40:]`. CM5 ran 70 steps and evicted every `[experiment]`
+line: `engagement.md` contains the string "experiment" **zero** times where CM4's contains
+it **eight**. The lines were present mid-run and gone by the end.
+
+### ⚠ WHAT THIS MEANS FOR CM5's OWN PUBLISHED NUMBERS
+
+Asked directly, and answered honestly: **CM5's funnel was MIXED, and the `proposed` figures
+came from the notes.**
+
+| figure | source |
+|---|---|
+| D2 `proposed 4` | **NOTES**, observed mid-run before eviction |
+| D2 `dispatched 3` | ledger (`experiment_principal`, 3 variant records) |
+| D2 `resolved 3` | ledger (`experiment_result`, 3 variant records with a status) |
+| D2 `judged 3` | **inferred** — not derivable |
+| D2 `confirmed 3` | `findings.jsonl` (vault artifact, not notes) |
+| D3 cross-account `proposed 3` | **NOTES** |
+| D3 cross-account `dispatched/judged/confirmed 2/2/2` | **ledger** (`ownership_match`) |
+
+**The milestone verdict does NOT rest on the notes** — it rests on `ownership_match`,
+`principal_ownership`, `experiment_principal` and `experiment_result`, all ledger records,
+and it is unaffected. But the `proposed` and `judged` columns did, and that was not stated
+when they were reported. It is stated now.
+
+Re-derived from `runs/audit_juiceshop_cm5.jsonl` alone: **dispatched 3, resolved 3,
+cross-account judged 2, cross-account confirmed 2.** `proposed` was **not derivable at
+all** — a proposal left no audit record until it dispatched or ran a setup, so a zero-setup
+proposal refused at reference resolution was invisible. CM5's stray `setup` record happens
+to corroborate a fourth experiment, but that is an accident of that proposal having had a
+setup step.
+
+### The fix
+
+`experiment_proposed` is written for every proposal before anything can refuse it, and
+`experiment_outcome` at all **eleven** terminal states with the stage each reached.
+`hypothesis.funnel()` computes the five counts and the cross-account line from those
+records alone; `report.md` renders it and says where it came from. A proposal with no
+recorded outcome is counted as proposed and nothing else, so a run killed mid-experiment
+shows the gap rather than absorbing it.
+
+Tests: `tests/test_funnel_from_the_ledger.py`, 6 tests, **5 red first**. The one born green
+is the boundary — the notes are unchanged and a short run still renders them — which now
+guards them against this fix.
+
+---
+
+## ⛔ P1 — THE DISCOVERED-CREDENTIAL BLOCKER IS NARROWED, NOT CLOSED
+
+**PARTIALLY CLOSED. The remaining case is stated precisely and is NOT closable from the
+record alone without recognition by shape.**
+
+### What was closed
+
+A scalar under a **secret-denoting key in a target response** is now registered as a
+discovered credential and masked everywhere by the existing funnel. The attribution reads
+**the key the target chose**, never the value's characters — the same discipline
+`hypothesis._ID_KEY_RE` uses for identifiers. Hooked only where target output enters the
+record (cage stdout/stderr, captured experiment body), never on agent input, because
+registering there would mask the agent's own guess payloads and destroy the record of what
+it tried.
+
+### ⛔ What is NOT closed, and why
+
+**CM3's and CM4's actual leak is not covered.** Read out of the real ledgers:
+
+```
+execution.stdout:
+{"status":"success","data":[{"id":1,"name":"admin@juice-sh.op",
+  "description":"0192023a7bbd73250516f069df18b500","price":"4",...}]}
+```
+
+A UNION SQLi projected the admin password hash into the **`description`** column. That key
+names nothing, so the key-name rule correctly declines it.
+
+**The behavioural rule the brief pointed at was BUILT and REVERTED, with the measurement
+that killed it.** *"A value that came out of the target and then appears in a command the
+agent wrote"* attributes this hash correctly — and attributes every other token a response
+carries. Measured on one ordinary product listing: **24 recovered tokens**, including
+`description`, `createdAt`, `item0.jpg` and `2026-09-14T05`. Masking later commands
+containing those **broke six unrelated test suites**. A control that guts the audit trail
+is a worse outcome than the leak it closes.
+
+Narrowing it requires a test on the VALUE — entropy, length, dictionary-ness — which is
+recognition by shape. A 32-hex rule would also mask the resource identifiers
+`cross_account_resource` matches ownership against, disabling the milestone capability; a
+rule loose enough to spare them would have missed this hash. **So it is recorded, not
+widened.**
+
+### The full residual, each asserted by a test so it cannot drift unnoticed
+
+1. **A secret under a non-descriptive key** — the `description` case above. One record per
+   disclosure, plus every command that reuses it.
+2. **A secret the agent DERIVES** — CM5 cracked the hash to `admin123` and used the
+   plaintext, which never appeared in any response.
+3. **A forged credential the agent BUILDS** — CM5's admin token is **two segments**,
+   header.payload with no signature, so `jwtscan.find_tokens` returns 0 and `observe()`
+   correctly declines. Verified against the real CM5 ledger. It never came from the target.
+4. **A channel whose body is not recorded** — `web_result` stores `{status, url, note,
+   bytes}` and no body.
+
+Two tests assert the residual and say in their failure message to **update this entry
+rather than loosen the assertion**, so a future fix cannot leave this stale.
+
+**The bundle remains unpublishable**, and the reason is now one named case rather than an
+open question. What changed is that the question *"recognise-at-capture versus never
+capture bodies"* is settled on the evidence: **never capturing bodies would have prevented
+none of the three leaks** (CM4 and CM5 both measured zero credential-like values in
+captured bodies), and recognise-at-capture is blocked not by appetite but by the
+identifier collision above.
