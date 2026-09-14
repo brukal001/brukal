@@ -3942,6 +3942,9 @@ class AssistSession:
             return
         from . import hypothesis as _hyp
         raw = getattr(result, "body", "") or ""
+        # The other place target output enters the record. Same rule, same funnel: a
+        # value this response NAMED a secret is registered before the excerpt is written.
+        redact.observe_response(raw)
         excerpt, cut = _hyp.body_excerpt(raw)
         audit.append("experiment_result", {
             "role": role or "unknown",

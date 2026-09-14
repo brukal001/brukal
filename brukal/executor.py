@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from . import redact
 from .audit import AuditLog
 from .gate import Decision, Gate
 from .kali import ExecResult
@@ -69,5 +70,14 @@ class Executor:
             return decision, None
 
         result: ExecResult = self._kali.run(command)
+        # TARGET OUTPUT ENTERS THE RECORD HERE, and this is where three unpublishable
+        # bundles actually leaked. The agent recovered an admin password hash from a SQLi
+        # dump and then typed it into `md5sum` and `hashcat`; runs CM4 and CM5 both
+        # measured ZERO credential-like values in captured response bodies and the
+        # credential present in these execution records. Registering what the RESPONSE
+        # ITSELF named a secret, before the record is written, masks it here and in every
+        # later command that carries it — through the funnel that already exists.
+        for _stream in (getattr(result, "stdout", ""), getattr(result, "stderr", "")):
+            redact.observe_response(_stream)
         self._audit.append("execution", result)
         return decision, result

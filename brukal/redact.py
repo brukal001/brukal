@@ -69,6 +69,7 @@ No LLM is involved (invariant 1) — this is a decode, a dict lookup and a strin
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 # secret value -> stable placeholder. Process-global because the writers that need it
@@ -120,6 +121,82 @@ def register_auth_header(header: str) -> None:
 # echoing a token table should not be able to fill the registry, and the replace loop
 # below is linear in it.
 _MAX_DISCOVERED_PER_VALUE = 8
+
+
+# Keys a TARGET RESPONSE itself uses to name a secret. Deliberately the same discipline
+# as `hypothesis._ID_KEY_RE`, pointed the other way: a value is a credential because the
+# RESPONSE CALLED IT ONE, never because of what its characters look like.
+#
+# WHY THIS EXISTS. `observe()` below closed the discovered-credential class for
+# SELF-DESCRIBING values — a string that actually decodes as a JWT. An MD5 password hash
+# describes nothing, so three consecutive bundles (CM3, CM4, CM5) were unpublishable for
+# the same reason: the agent recovered `0192023a7bbd73250516f069df18b500` from a SQLi
+# dump and then typed it into `md5sum` and `hashcat`. Runs CM4 and CM5 both measured ZERO
+# credential-like values in captured response bodies and the admin credential present in
+# the agent's own command records — the exposure is the COMMAND surface.
+#
+# Recognition by SHAPE was refused: a rule that masked 32-hex strings would also mask the
+# resource identifiers `cross_account_resource` matches ownership against, and a rule that
+# did not would have missed this hash. Reading the target's own key does neither.
+_SECRET_KEY_RE = re.compile(
+    r"^(?:password|passwd|pwd|secret|token|apikey|api_key|access_key|secret_key|"
+    r"private_key|client_secret|refresh_token|access_token|sessionid|session_id|"
+    r"auth|authorization|credential|credentials|hash|salt|otp|pin|seed|passphrase|"
+    r"[A-Za-z][A-Za-z0-9]*(?:Password|Passwd|Secret|Token|Hash|Salt|ApiKey|Key))$",
+    re.IGNORECASE)
+
+# Bounds, announced rather than silent: a response is untrusted data of unknown size, and
+# an unbounded walk over a hostile body is a denial of service on our own recorder.
+_SECRET_SCAN_MAX_DEPTH = 6
+_SECRET_SCAN_MAX_VALUES = 32
+
+
+def observe_response(body) -> None:
+    """Register credentials a TARGET RESPONSE labelled as such, before it is recorded.
+
+    Called ONLY where target output enters the record — the cage's stdout/stderr and a
+    captured experiment body. Deliberately NOT called from `text()`, which also sees the
+    agent's own command text: registering there would mask the values the agent INVENTED
+    (its password guesses), destroying the record of what it tried, and those are not
+    discovered credentials.
+
+    Once registered, the ordinary funnel masks the value on every surface from that
+    moment — the record that disclosed it, every later command that carries it, the vault
+    and the report — with no second redaction implementation and no new boundary.
+
+    WHAT THIS CANNOT COVER, recorded rather than widened into recognition-by-shape:
+      * a secret returned under a NON-DESCRIPTIVE key, or as a bare body;
+      * a secret the agent DERIVES rather than recovers — CM5 cracked the hash to
+        `admin123` and used the plaintext, which never appeared in any response and is
+        therefore not attributable from the record;
+      * a secret arriving through a channel whose body is not recorded — `web_result`
+        stores {status, url, note, bytes} and no body;
+      * a value shorter than `_MIN_SECRET_LEN`, because masking a short common string
+        would corrupt every unrelated record that happens to contain it.
+    """
+    if not isinstance(body, str) or not body:
+        return
+    try:
+        doc = json.loads(body)
+    except Exception:
+        return                       # not JSON: no key to read, and we do not guess
+    found: list = []
+
+    def walk(node, depth: int):
+        if len(found) >= _SECRET_SCAN_MAX_VALUES or depth > _SECRET_SCAN_MAX_DEPTH:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, str) and _SECRET_KEY_RE.match(str(k)):
+                    found.append(v)
+                elif isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node[:_SECRET_SCAN_MAX_VALUES]:
+                walk(v, depth + 1)
+
+    walk(doc, 1)
+    register(*found)
 
 
 def observe(value) -> None:
