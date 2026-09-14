@@ -2939,3 +2939,63 @@ principal A's password 0 hits on every surface, 0 raw JWTs, and the only `"passw
 CM2 printed its summary and stayed alive nearly eight hours. CM3's process **exited on its own**
 after printing the summary. Recorded as a non-recurrence, not as closed: nothing was changed to fix
 it, so one clean exit is one observation, not a property.
+
+
+---
+
+## FIX 1 (2026-09-14) — the ledger records who owns what, and how it knows
+
+**CLOSED.** Answers CM3's *"the run produced the milestone event and no artifact could say so."*
+
+`5e7219a` taught the harness each principal's own identifiers and wrote them **to the prompt
+and to nothing else**. Grepped across the entire CM3 bundle: `Known identifiers, per principal`
+occurs **0 times** and no `bid` occurs anywhere in the ledger. The map existed in memory and in
+a model's context window, so a reader holding the artifacts could not evaluate an ownership
+claim at all — which is the whole of what the restated milestone now asks for.
+
+**What is recorded.** A `principal_ownership` audit record per identifier, written from
+`_record_principal_ids` at the moment the identifier is learned:
+`{principal, name, value, source, path, target}`. `source` is the response that carried it —
+`login`, `whoami` or `signup` — because **an ownership map with no provenance is the 2C2
+external-seeding defect wearing a new hat**: a reader must see which response attributed the
+id rather than take our word for it. Written once per identifier, not per merge.
+
+This is the August principal-provenance defect (`2fdbc7f`) in a new form. That one recorded
+which principal ISSUED a request; this records which principal OWNS a resource, and for the
+same reason — without it a sound finding and a manufactured one are byte-identical.
+
+An audit `kind`, not a new writer, so it inherits `redact.data` like every other record.
+
+### ⛔ P1 FOUND AND CLOSED IN THE SAME EDIT — THE SESSION CREDENTIAL WAS REGISTERED LAZILY
+
+**This was a real hole, it pre-dated this fix, and only the new record exposed it.**
+
+`redact` can mask only material it has been shown. Registration was happening **lazily**: at
+`_inject_auth` when a cage command was built (`assist.py:831`), and in `confirm_authentication`
+when a cookie was SET. **A bearer-carriage session that never built a cage command therefore
+held an UNREGISTERED token.**
+
+That was invisible for as long as no record carried a response value. The ownership record is
+the first thing that does, and a target returning its own token under an **id-shaped key** —
+`{"user":{"sessionId":"<token>"}}`, which `_ID_KEY_RE` matches as `<thing>Id` — put the live
+token on the ledger in cleartext. `own_identifiers` already documents that it relies on the
+funnel (*"the redaction funnel is the real guard"*); the funnel was empty.
+
+Fixed by registering at the point the credential is ACQUIRED (immediately after
+`self.authenticated = ok`), through the same two existing funnels — `register_auth_header` and
+`register` over the cookie jar. **Nothing about redaction is re-implemented here.** The test
+drives it with a token-echoing response and asserts the POSITIVE form: the id-shaped key is
+extracted, reaches the record, and arrives `[REDACTED:<sha256[:8]>]`. Asserting absence alone
+would also have been satisfied by never extracting it, which is a weaker guarantee than the one
+claimed.
+
+⚠ **Note what this means for `5e7219a`'s prompt disclosure:** it passed `redact.text` over an
+empty registry on the same path, so the bearer case was exposed there too. The Fix B test that
+covers it echoes the token under the key `token`, which `_ID_KEY_RE` does not match, so the
+extraction never happened and the hole was never reached. The test was not wrong; it was not
+strong enough, and an id-shaped key is what distinguishes the two.
+
+Tests: `tests/test_principal_ownership_ledger.py`, 5 tests, **4 red first**. The one born green
+is the BOUNDARY (a target with no discoverable ids records nothing) and it was green
+**vacuously** — with no record written at all, "records nothing" is trivially true. It protects
+nothing new until this fix exists, and from now on it is what stops the record fabricating an id.

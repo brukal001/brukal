@@ -1706,6 +1706,19 @@ class AssistSession:
         self.authenticated = ok
         self._ensure_principal().strategy = strategy.name
         if ok:
+            # REGISTER THE CREDENTIAL THE MOMENT THE SESSION EXISTS, before anything can
+            # record a response that echoes it. Registration used to happen lazily — when
+            # a cage command was built (`_inject_auth`) or when a cookie was SET
+            # (`confirm_authentication`) — so a bearer session that never built a command
+            # held an UNREGISTERED token, and `redact` cannot mask material it has never
+            # been shown. That was invisible while response bodies reached no record; the
+            # ownership record below is the first thing to carry a value straight out of a
+            # body, and a target that returns its own token under an id-shaped key
+            # (`sessionId`) put it on the ledger in cleartext. Same two funnels as every
+            # other site, moved to the point the credential is acquired rather than the
+            # point it is first used.
+            redact.register_auth_header(getattr(self.browser, "auth_header", "") or "")
+            redact.register(*(getattr(self.browser, "_cookies", {}) or {}).values())
             # The login reply is already held (`AuthAttempt.body`), so this costs nothing.
             # `_separate_identity` is what makes `who` right: a second-principal login runs
             # inside it, and `self.identity` is that principal for the duration.
@@ -1891,7 +1904,47 @@ class AssistSession:
             store = self._principal_ids = {}
         bucket = store.setdefault(who, {})
         for path, value in found.items():
-            bucket[f"{source}.{path}"] = value
+            key = f"{source}.{path}"
+            if key in bucket:
+                continue                 # already learned and already on the ledger
+            bucket[key] = value
+            self._record_ownership(who, source, path, value)
+
+    def _record_ownership(self, who: str, source: str, path: str, value) -> None:
+        """WHO OWNS WHAT, onto the ledger, with the response that said so.
+
+        `5e7219a` taught the harness each principal's own identifiers and wrote them to
+        the PROMPT and to nothing else. Run CM3 then produced the exact event the
+        capability milestone exists for — principal A read a basket belonging to the
+        second principal — and no artifact could say so: grepped across the whole CM3
+        bundle, the disclosure block occurs zero times and no `bid` occurs anywhere in
+        the ledger. The ownership map lived in memory and in a model's context window,
+        so a reader holding the bundle could not evaluate an ownership claim at all.
+
+        This is the August principal-provenance defect (`2fdbc7f`) in a new form. That
+        one recorded which principal ISSUED a request; this records which principal OWNS
+        a resource, and for the same reason: without it a sound finding and a
+        manufactured one are byte-identical.
+
+        SOURCE is carried, not just the value, because an ownership map with no
+        provenance is the 2C2 external-seeding defect wearing a new hat — a reader must
+        be able to see WHICH response attributed the id, not take our word for it.
+
+        An audit `kind` rather than a new writer, so it inherits `redact.data` exactly
+        like every other record. Nothing here re-implements redaction: a credential that
+        arrives under an id-shaped key is masked by the funnel, not by a rule invented
+        at this call site."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        audit.append("principal_ownership", {
+            "principal": who,
+            "name": path.rsplit(".", 1)[-1],
+            "value": value,
+            "source": source,
+            "path": path,
+            "target": self.target,
+        })
 
     def principal_identifiers(self) -> dict:
         """{principal: {source.path: value}} — what each account is known to own.
