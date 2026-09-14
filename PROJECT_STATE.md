@@ -234,6 +234,10 @@ pre-fix step-counts / finding-counts cited in the paper must be re-run on the fi
 **The paper is DEFERRED by decision. This is what the current phase is for, and it is the
 only thing that counts as finishing it.**
 
+> ⚠ **THE WORDING BELOW WAS SUPERSEDED 2026-09-14, after CM3 satisfied it on a technicality.**
+> It is kept because the clause table under it is still the reasoning. **The binding form is
+> the RESTATED MILESTONE at the end of this section — read that one.**
+
 > **ONE confirmed business-logic finding, on a real target, where the LEDGER ALONE supports
 > the claim: two distinct principals recorded, the comparator earning the title, and no
 > external seeding needed to interpret the result.**
@@ -337,6 +341,59 @@ endpoint, a second principal that is anonymous to half the application, and a cr
 that answers 500 to every shape the model proposed. At some point that is a statement about the
 target, and the honest response is to measure a different one rather than to keep adapting to
 this one.
+
+#### CM3 VERDICT, 2026-09-14: **NOT MET** — and the milestone is restated because of how it passed
+
+CM3 did **not** trip the change-target clause. It judged **2** cross-account experiments and
+confirmed **1**, so the limitation was not the target and the harness was not what failed.
+
+**But the milestone is NOT MET, and the reason is the wording, not the run.** The confirmed
+finding was `a_denied_b_allowed` with **anonymous** as control and **self** as variant:
+
+- **Anonymous is not a registered principal.** It is the absence of one. So *"two distinct
+  principals recorded"* did not hold **for the finding**, even though the harness's own identity
+  set (`self`, `second`, `anonymous`) treats the two as distinct and therefore kept the claim at
+  `high`. The clause was written to foreclose one principal on both sides; it did not foreclose
+  a principal compared against nobody.
+- **The claim the ledger supported was "login is required."** `GET /rest/basket/8` answered 401
+  to anonymous and 200 to a logged-in user. That is the application **behaving correctly**. The
+  derived claim said so exactly — *"one principal was refused and a different principal was
+  accepted for the same request, and no more"* — and the bounding was right. A correctly bounded
+  claim about correct behaviour is not a business-logic finding.
+- **The one experiment carrying two REGISTERED accounts was judged and NOT confirmed.**
+  Experiment #3, `second` vs `self` on `/api/Users/27`, returned **200/329B on both sides**.
+  Nothing in the closed comparator set can ask whether an allowed read was allowed *wrongly*.
+
+**CM3 produced exactly the event the milestone is for, and could not record it.** Principal A
+(user 25) read `/rest/basket/8`, which belongs to user 27 — the second principal, established
+in-harness — and read user 27's profile. The model's own claim was **correct**. The harness
+issued the requests that prove it. The ledger cannot say so, because `web_result` stores no
+response body, no comparator expresses "both allowed and one should not have been", and Fix B's
+ownership map is written to the prompt and to no artifact.
+
+### ★ THE RESTATED MILESTONE — binding from 2026-09-14
+
+> **ONE confirmed finding in which the variant READ OR WROTE a resource that the LEDGER RECORDS
+> as owned by a DIFFERENT REGISTERED PRINCIPAL. Both principals established in-harness, both
+> recorded per side, the ownership recorded with its provenance, the comparator earning the
+> claim, no external seeding.**
+>
+> **Nothing short of that counts. Nothing beyond it is required.**
+
+What each new clause forecloses, beyond the old table which still stands:
+
+| Clause | The failure it forecloses |
+|---|---|
+| **READ OR WROTE a resource** | an access-control *decision* is not a finding; the milestone now needs a resource that crossed a boundary, not a status-code difference |
+| **the LEDGER RECORDS as owned** | CM3's real violation was proven at the HTTP level and unrecordable. Ownership must be **in the artifact**, not in the operator's head or the model's sentence |
+| **a DIFFERENT REGISTERED PRINCIPAL** | anonymous no longer qualifies. Both sides must be accounts the harness created |
+| **ownership recorded with its provenance** | an ownership map with no source is the 2C2 external-seeding defect wearing a new hat — the record must say which response carried the id |
+
+**Three fixes ship against this, and they are exactly the gap CM3 measured:** the ledger records
+who owns what and how it knows (Fix 1), experiment results carry a bounded body excerpt so the
+owning id is in the artifact at all (Fix 2), and a comparator exists that confirms the
+both-sides-allowed BOLA shape against recorded ownership (Fix 3). None of them changes what the
+model is asked; all three change what the record can express.
 
 ---
 
