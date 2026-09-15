@@ -407,6 +407,58 @@ owning id is in the artifact at all (Fix 2), and a comparator exists that confir
 both-sides-allowed BOLA shape against recorded ownership (Fix 3). None of them changes what the
 model is asked; all three change what the record can express.
 
+### ✅ MET by run CM5, 2026-09-14
+
+`cross_account_resource` confirmed that `self` read `/rest/basket/9`, which the ledger records
+as owned by `second` (`source=login`, `path=authentication.bid`, corroborated by
+`data.UserId=28` from that principal's own signup reply). `variant_as: self` was VERIFIED TRUE
+against the target's own identity oracle 0.2 s before dispatch. Both principals established
+in-harness, ownership recorded with provenance, comparator earning the claim, no external
+seeding.
+
+---
+
+## CM6 — THE PUBLISHABLE BUNDLE. Definition of done, written BEFORE the run
+
+**CM6 does not chase the milestone. CM5 met it.** CM6's goal is a different thing entirely:
+**a bundle a stranger can check.**
+
+> **CM6 is done when: a complete artifact bundle exists — audit log, vault, findings, report,
+> SARIF, and the scope exactly as stamped; its chain head is committed to the PUBLIC
+> REPOSITORY **before** the bundle is published, as an external timestamped commitment; the
+> bundle ships with its audit key so a reader can run verification themselves; and it carries
+> a DISCLOSURE naming every credential-like value it contains, why each is not a real secret
+> on this target, and the four residual cases the discovered-credential control does not cover.**
+>
+> **A bundle that looks clean because everything was masked is NOT the goal.**
+
+Each clause answers something specific:
+
+| Clause | Why |
+|---|---|
+| **complete bundle** | a reader who gets only the findings is trusting our selection of them |
+| **chain head committed BEFORE publication** | an HMAC chain verified with a key we also hand over proves only internal consistency. A commit pushed to a public repo at a known time is the one thing in this scheme we cannot retroactively edit, and it is what makes the chain mean anything to someone who does not trust us (`P1 — a published-key HMAC chain does not give third-party integrity`) |
+| **ships with its key** | a guarantee nobody can exercise is a claim, not a property |
+| **a DISCLOSURE, unsoftened** | this is the clause that matters. The temptation is a bundle that greps clean. A bundle that greps clean because the control masked everything has hidden its own boundary |
+
+### The residual we are NOT fixing, and why — decided before the run
+
+The discovered-credential control reads **the key the target chose** (`6797827`). It does not
+cover a secret a SQLi projects into an unnamed column — which is exactly how CM3's and CM4's
+admin hash arrived, in the `description` field of a products listing.
+
+**The behavioural rule was built, measured and reverted.** *"Came out of the target, then
+appeared in a command the agent wrote"* attributes that hash correctly and also attributes
+every other token a response carries: **24 spurious tokens from one product listing**
+(`description`, `createdAt`, `item0.jpg`, `2026-09-14T05`), **six unrelated test suites
+broken**. Narrowing it requires a test on the VALUE — entropy, length, dictionary-ness — which
+is recognition by shape, and a 32-hex rule would mask the **resource identifiers
+`cross_account_resource` matches ownership against**, disabling the capability CM5 just proved.
+
+**So the boundary is real, it is accepted, and it is DISCLOSED rather than papered over.** A
+control that gutted the audit trail would be a worse outcome than the leak it closed. Saying so
+in the bundle is the honest form; masking harder until the grep comes back empty is not.
+
 ---
 
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
