@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from . import redact
 from .audit import AuditLog
 from .gate import Decision, Gate
 from .kali import DockerSession, ExecResult, FakeSession
@@ -62,6 +63,13 @@ class GovernedSession:
             return decision, None
 
         result: ExecResult = self._backend.send(line)
+        # THE PERSISTENT SHELL IS A SECOND DOOR. It audits `session_execution` itself and
+        # never passes through `Executor.run`, so its output was unhooked — found by
+        # mapping the doors rather than from CM6's symptom. Runs CM5 and CM6 both opened
+        # live sessions, and a `curl` typed into one returns target bytes exactly as a
+        # gated command does.
+        for _stream in (getattr(result, "stdout", ""), getattr(result, "stderr", "")):
+            redact.observe_response(_stream)
         self._audit.append("session_execution", result)
         return decision, result
 

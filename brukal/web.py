@@ -519,6 +519,14 @@ class GovernedBrowser:
 
         self._apply_cookies(action)            # carry the session into this request
         result = self._cage.run(action)
+        # THE WEB PLANE'S SINGLE DOOR, and the registration point every plane shares.
+        # `web_result` below records {status, url, note, bytes} and no body, so this
+        # plane's responses never reached the LEDGER — and the audit log was therefore
+        # clean while `_absorb_web` folded the same responses into notes and findings that
+        # DO reach the vault. Bundle CM6 caught the target echoing a password hash under
+        # the key `password` into `vault/findings.jsonl` unmasked for exactly that reason.
+        # A clean ledger beside an unclean vault is a partial result, not a result.
+        redact.observe_response(getattr(result, "body", "") or "")
         # Health is judged on whether bytes came back, NOT on the status code: a 404 or
         # a 500 is the target answering, and several of the flaws Brukal looks for are
         # found precisely by making an application error. Only silence counts against it.

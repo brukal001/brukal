@@ -4069,3 +4069,52 @@ deliberately absent, so **a reader cannot reproduce those searches**. They can c
 named strings are the only credential-shaped ones present; they cannot confirm the
 principals' passwords are absent, because they do not have them to search for. That claim
 rests on our transcript and says so.
+
+
+---
+
+## FIX (2026-09-15) — every plane's responses meet the same registration point
+
+**CLOSED.** Answers the P1 that writing CM6's disclosure found — and a second door that
+the CM6 symptom did not point at.
+
+### The map: how a target response reaches a persisted artifact
+
+| plane | its single door | covered before | now |
+|---|---|---|---|
+| cage command | `Executor.run` — `executor.py:72` | ✅ | ✅ |
+| **governed browser (web)** | `GovernedBrowser.run` — `web.py:521` | ❌ | ✅ |
+| **persistent live shell** | `GovernedSession.send` — `session.py:64` | ❌ | ✅ |
+| experiment body | `_record_experiment_result` — `assist.py:3947` | ✅ | ✅ (now also upstream) |
+| operator source tree | `_sourcemap.scan` | n/a | **deliberately not covered** — see below |
+
+**The web plane** was CM6's gap. `web_result` records `{status, url, note, bytes}` and no
+body, so the LEDGER was clean — 0 JWTs, 0 MD5-shaped, 0 passwords — while `_absorb_web`
+folded the same responses into notes and findings that reach the VAULT. CM6's agent issued
+`GET /rest/user/change-password?...&new=csrfPwn123` and the target echoed the new password's
+MD5 back under the key `password`; it landed in `vault/findings.jsonl` and a strategist
+transcript unmasked. **A clean audit log beside an unclean vault is a partial result.**
+
+**The live shell was found by mapping the doors, not from the symptom.** `GovernedSession.send`
+audits `session_execution` itself and never passes through `Executor.run`, so a `curl` typed
+into a persistent `SESSION:` shell returned target bytes that nothing registered. CM5 and
+CM6 both opened live sessions. Had the fix chased only CM6's case, this would have stayed
+open and looked closed.
+
+Both hooks call the same `redact.observe_response` at that plane's single door, so a fourth
+plane added later inherits the registration instead of silently going unhooked — the same
+argument that put the provenance record in `_as_identity`.
+
+### Recorded, NOT covered
+
+**`_sourcemap.scan(source_dir)`** reads the target's SOURCE TREE from a directory the
+operator supplies. A secret there is one the operator already holds, not one the agent
+RECOVERED from the target, and the control's property is about recovery. Source leads are
+also never evidence on their own. Not covered, deliberately, and stated rather than assumed.
+
+Tests: `tests/test_redaction_hook_covers_every_plane.py`, 6 tests, **3 red first** — CM6's
+case masked in the vault, masked across every vault surface, and the live-shell plane. The
+3 born green are the boundaries that matter most: resource identifiers are still unmasked,
+`cross_account_resource` still confirms end to end, and a response with no secret is
+recorded byte-identical. Suite 1185 → **1191**, no status change in any redaction,
+discovered-credential, cross-account or body-capture suite.
