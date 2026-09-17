@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from . import redact
+from . import redact, signup
 from .audit import AuditLog
 from .auth import AUTH_ERROR_RE
 from .executor import Executor
@@ -80,6 +80,12 @@ _UNSURE_SVC_RE = re.compile(r"\?$|^unknown$|^tcpwrapped$|^ppp$", re.I)
 # fired at every route the crawl mined, because a real surface has dozens of them and
 # some are destructive. A path not on this list is not tried, and adding one is a
 # deliberate act by a maintainer rather than something a target can talk us into.
+# How many times a registration endpoint may name further required fields before we stop
+# asking. Four is one minimal attempt plus three rounds of reading its own refusal: enough
+# for crAPI (one round, two fields at once) and short enough that an endpoint refusing for
+# a reason it will not name cannot turn into a POST loop at somebody's signup.
+_SIGNUP_MAX_ROUNDS = 4
+
 _JSON_SIGNUP_PATHS = (
     "/api/users", "/api/user", "/users",
     "/register", "/api/register", "/auth/register", "/api/auth/register",
@@ -93,9 +99,25 @@ _JSON_SIGNUP_PATHS = (
 #
 # Read-only GETs, tried in order, stopping at the first that tells an authenticated
 # caller apart from an anonymous one.
+# Ordered: the conventional ones first, because they answer on most targets in one
+# request. Target-specific entries go at the END so they never displace a convention.
+#
+# `/identity/api/v2/user/dashboard` is crAPI's, added 2026-09-17 after the CR1 pre-flight
+# found the list had no path that reached it. It earns its place on the property this
+# list exists for: it READS THE AUTHORIZATION HEADER and returns a numeric id (measured —
+# bearer -> {"id":9,...}; the same token as a cookie -> 404; anonymous -> 404), which is
+# exactly what Juice Shop's cookie-only `/rest/user/whoami` could not do for a bearer-
+# carrying second principal. That gap is what CM5 and CM6 had to disclose on every
+# `variant_as: second` claim.
+#
+# The cost of an allowlist is that a new target needs a new entry, and that cost is real.
+# It is still the right mechanism: the alternative is a pattern loose enough to match
+# "anything profile-shaped", which is how a probe starts GETting arbitrary routes on a
+# live target. The cost is paid where it can be counted — the portability tally.
 _IDENTITY_PROBE_PATHS = (
     "/rest/user/whoami", "/api/me", "/me", "/api/user/me", "/rest/user/me",
     "/api/users/me", "/api/account", "/api/profile", "/user/profile", "/whoami",
+    "/identity/api/v2/user/dashboard",
 )
 # Cookie names that conventionally CARRY a session token. Ordered: the first that proves
 # itself wins. `csrf`/`XSRF` are deliberately absent — those are anti-forgery values, not
@@ -1776,9 +1798,18 @@ class AssistSession:
     def _probe_identity(self, url: str, with_session: bool):
         """One gated GET at an identity endpoint, with or without our session.
 
-        Returns the WebResult, or None when the path does not exist here (404) or the
-        target did not answer. Anonymous is issued through `_separate_identity`, which is
-        the tested way to make a request as nobody without destroying our own session."""
+        Returns the WebResult, or None when the target did not answer at all. Anonymous is
+        issued through `_separate_identity`, which is the tested way to make a request as
+        nobody without destroying our own session.
+
+        A 404 IS AN ANSWER. It used to return None here, read as "this path does not
+        exist" — which is true on most targets and false on the one endpoint that made
+        crAPI worth choosing: its `/identity/api/v2/user/dashboard` answers 404 to a
+        caller it does not recognise and 200 {"id":9,…} to a bearer it does (measured
+        2026-09-17). Skipping on 404 meant the session was never tried there, so the
+        oracle that closes the `variant_as: second` gap was unreachable no matter what the
+        allowlist said. A 404 that DISCRIMINATES is an oracle; a 404 everyone gets is an
+        absent path, and the caller still treats it as one."""
         from .web import WebAction
         action = WebAction("request", method="GET", url=url)
         try:
@@ -1789,8 +1820,7 @@ class AssistSession:
                     _d, r = self.browser.run(action)
         except Exception:
             return None
-        status = getattr(r, "status", None)
-        if status is None or status == 404:
+        if getattr(r, "status", None) is None:
             return None
         return r
 
@@ -1919,6 +1949,13 @@ class AssistSession:
                 continue                      # noisy oracle — it cannot prove anything
             mine = self._probe_identity(url, with_session=True)
             if mine is None:
+                continue
+            # A path that answers 404 to EVERYONE is absent, not an oracle. Without this,
+            # letting a 404 through above would start a session-cookie hunt at every
+            # missing route on the target — the regression the 404-means-absent rule was
+            # really protecting against.
+            if (getattr(mine, "status", None) == 404
+                    and not self._answers_differ(mine, anon_a)):
                 continue
             if self._answers_differ(mine, anon_a):
                 _who = "second" if getattr(self, "_establishing_second", False) else "self"
@@ -4079,6 +4116,12 @@ class AssistSession:
             # form at all — an SPA, where this whole class was previously unreachable.
             made = self._register_account() or self._register_account_json()
             if not made:
+                # WHY there is no second principal, on the record. A cross-account claim
+                # that silently never had one is the failure this note prevents.
+                why = getattr(self, "signup_refusal", "")
+                self.note("[experiment] second principal NOT established"
+                          + (f": {why}" if why else
+                             ": no reachable registration endpoint accepted an account"))
                 return ""
             user, password = made
             if not (getattr(self.browser, "_cookies", {}) or {}):
@@ -5137,15 +5180,47 @@ class AssistSession:
         # alone answers 201. Extra keys are ignored by every implementation seen so far,
         # and a required field we do not send shows up as a 4xx, which is a clean refusal
         # rather than a silent half-created account.
-        body = json.dumps({"email": email, "password": password,
-                           "passwordRepeat": password, "username": f"brk{tag}"})
+        base = {"email": email, "password": password,
+                "passwordRepeat": password, "username": f"brk{tag}"}
         for url in candidates:
-            try:
-                _d, r = self.browser.run(WebAction(
-                    "request", url=url, method="POST", body=body,
-                    headers={"Content-Type": "application/json"}))
-            except Exception:
-                continue
+            # ASK, DO NOT GUESS. The minimal body goes first — it is what Juice Shop and
+            # every endpoint like it accepts, so the common case is still one request. A
+            # refusal that NAMES its missing fields (crAPI's does: "on field 'number'")
+            # is read deterministically and the named fields are added. An endpoint that
+            # names nothing gets no guess: fail closed, record why.
+            fields, r = dict(base), None
+            for _round in range(_SIGNUP_MAX_ROUNDS):
+                try:
+                    _d, r = self.browser.run(WebAction(
+                        "request", url=url, method="POST", body=json.dumps(fields),
+                        headers={"Content-Type": "application/json"}))
+                except Exception:
+                    r = None
+                    break
+                if r is None or (r.status or 0) < 400:
+                    break
+                wanted = signup.missing_fields(r.body or "", already=set(fields))
+                if not wanted:
+                    self.signup_refusal = (
+                        f"signup at {url} refused with {r.status} and its error named no "
+                        f"field we could supply: {(r.body or '')[:160]}")
+                    # Noted HERE, where the cause is known. The caller notes the
+                    # consequence; this line is the reason, and without it a run shows a
+                    # missing second principal with no explanation anywhere.
+                    self.note("[experiment] second principal NOT established — "
+                              + self.signup_refusal)
+                    break
+                for name in wanted:
+                    fields[name] = signup.synth_value(name, tag)
+            else:
+                # The loop ran its full length and the endpoint was still naming fields.
+                self.signup_refusal = (
+                    f"signup at {url} kept naming further required fields after "
+                    f"{_SIGNUP_MAX_ROUNDS} attempts (last added: "
+                    f"{sorted(set(fields) - set(base))}) — stopped rather than keep "
+                    f"POSTing at a registration endpoint")
+                self.note("[experiment] second principal NOT established — "
+                          + self.signup_refusal)
             if r is None or (r.status or 0) >= 400 or (r.status or 0) < 200:
                 continue
             # A 2xx that did not create anything is common on SPA catch-alls, which
