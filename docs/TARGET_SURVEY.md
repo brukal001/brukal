@@ -480,3 +480,80 @@ A defensible rule (NOT implemented here): a setup step that fails with 404 on a 
 observed in a successful response is a harness/model limit; a setup step that fails with
 401/403/409/422 is the target refusing. That needs its own test-first change and its own
 run.
+
+---
+
+## ⛔ GAP #4 — CLOSED (`fb69630`) — mined routes are resolved and confirmed
+
+**Measured working in CR1 pre-flight 3.** The surface now reports **17 API routes CONFIRMED
+to exist**, resolved under the prefix aligned from the login URL and each proved by a gated
+request:
+
+```
+API routes CONFIRMED to exist (resolved under this app's own mount prefix, each proved by
+a request): /identity/api/auth/login, /identity/api/auth/unlock,
+/identity/api/v2/user/dashboard, /identity/api/auth/signup,
+/identity/api/v2/user/reset-password, …
+```
+
+Fragments that did not resolve (`/REGISTER`, `/orders/all`, `/v8`, `/V9`) stay listed as
+UNVERIFIED — the label now describes what was established rather than warning about what
+was not.
+
+## CR1 PRE-FLIGHT, ATTEMPT 3 — 2026-09-17, after GAP #4. B3 fails a third time, one layer deeper
+
+Artifacts: `runs/audit_preflight_cr1c.jsonl` (481 entries) · `runs/vault-preflight-cr1c/`.
+Scope `brukal-crapi-cr1preflight3-172.20.0.12`. **18/18 steps, `exhausted`, 11 commands, 12
+model calls, ~$0.41.** The run completed.
+
+| | condition | attempt 2 | attempt 3 | evidence |
+|---|---|---|---|---|
+| **B1** | egress lock | ✅ | ✅ **PASS** | policy drop, one accept; http+https 200 in scope; `.13`, `.8`, `.4`, `.5`, internet BLOCKED |
+| **B2** | first identity in-harness | ✅ | ✅ **PASS** | `POST /identity/api/auth/login` → 200, 549 B, `✓ authenticated` |
+| **B3** | second principal | ⛔ | ⛔ **FAIL** | **GAP #5** — the account was CREATED and thrown away |
+| **B4** | chain keyed | ✅ | ✅ **PASS** | True with the key, False without |
+| **B5** | no cleartext credential | ✅ | ✅ **PASS** | 0 passwords, 0 raw JWTs, 45 redaction markers |
+| **B6** | experiment reaches a comparator | ✅ | ⛔ **NOT DEMONSTRATED** | all 3 proposals were cross-account and died at B3; funnel: proposed 3 · dispatched 0 |
+| **B7** | auth confirmation; the SECOND principal | ⚠️ half | ⛔ **NOT REACHED** | `confirm_authentication` is called from the experiment dispatch path (`_as_identity`), and no experiment dispatched |
+| **B8** | cross-account, two principals | ⛔ | ⛔ **FAIL** | same cause |
+| **B9** | ownership ledger, bounded body | ✅ | ⛔ **NOT REACHED** | no dispatch, so no `experiment_result` |
+| **B10** | principal switch live | ⚠️ half | ⛔ **NOT REACHED** | same |
+
+**Attempt 3 is NARROWER than attempt 2, and that is a finding about the pre-flight itself.**
+With a better surface the model proposed *only* cross-account experiments — all three
+depending on the second principal — so conditions attempt 2 had demonstrated (B6, B9) went
+untested. **B-coverage depends on what the model proposes, which makes the pre-flight's own
+measurement non-deterministic.** A condition that passed once and is untested now has not
+been disproved, and this table says so rather than showing it as a regression.
+
+### ⛔ GAP #5 — the account was created, and the harness threw it away
+
+**Class: JUICE-SHOP-SPECIFIC ASSUMPTION, about EVIDENCE rather than about a payload.
+MEASURED. Not fixed, per the pre-flight rule.**
+
+Everything up to the last step worked. The resolver found the endpoint, the field-discovery
+fix read the refusal and supplied what it named, and **crAPI created the account**:
+
+```
+#152  POST /identity/api/auth/signup  {minimal}            -> 400  (names name, number)
+#154  POST /identity/api/auth/signup  {+name,+number}      -> 200, 70 bytes
+#445/#447  the same pair again, later in the run           -> 400 then 200
+```
+
+crAPI's reply is `{"message":"User registered successfully! Please Login.","status":200}`.
+`_register_account_json` requires the response to **echo the email** as proof the account
+exists — Juice Shop's `POST /api/Users` returns the created user object, so an echo was
+available there and became the definition of proof. crAPI returns a message, so two real
+accounts were created and both were discarded, after which the ledger recorded *"no second
+principal was established (self-registration did not yield an account)"* — **which is false
+in a specific and damaging way: the account exists.**
+
+The guard is not wrong to exist; an SPA catch-all answering 200 to everything is real. It is
+wrong to demand ONE FORM of evidence and treat its absence as failure, when the evidence
+that settles it was one request away: **log in as the new account, or ask the oracle who it
+is** — the same header-reading oracle this target was chosen for.
+
+**Three attempts, three different harness reasons for B3, each one layer deeper:** no
+endpoint (attempt 1/2, GAP #4) → endpoint found, account created, proof rejected (attempt
+3, GAP #5). This is the roadmap's own law — *fixing the reported symptom moves the ceiling
+somewhere else rather than removing it* — for the third time on the same condition.
