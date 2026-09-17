@@ -222,6 +222,24 @@ class HttpWebCage:
     def __init__(self, timeout: int = 20, max_body: int = 20000):
         self.timeout = timeout
         self.max_body = max_body
+        # TLS policy is NOT the cage's to choose. It arrives from the immutable scope
+        # through GovernedBrowser (`set_tls_verify`), and the default is to verify.
+        self.tls_verify = True
+
+    def set_tls_verify(self, verify: bool) -> None:
+        """Install the engagement's disclosed TLS policy. Only GovernedBrowser calls
+        this, and only with what the scope says."""
+        self.tls_verify = bool(verify)
+
+    def _opener(self):
+        if self.tls_verify:
+            return _NO_REDIRECT_OPENER
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return urllib.request.build_opener(_NoAutoRedirect,
+                                           urllib.request.HTTPSHandler(context=ctx))
 
     def _cap_for(self, url: str, content_type: str = "") -> int:
         """How much of this response is worth reading. Scripts get the larger allowance;
@@ -240,8 +258,14 @@ class HttpWebCage:
         data = action.body.encode() if action.body else None
         req = urllib.request.Request(action.url, data=data, method=method,
                                      headers=action.headers or {})
+        # An unverified request carries a note saying so on EVERY response, because a
+        # body fetched without validating who served it is a different kind of evidence
+        # from one fetched with it, and the difference must survive into the record.
+        unverified_note = ("" if self.tls_verify else
+                           "TLS verification DISABLED by scope (tls_verify=false); "
+                           "certificate NOT validated")
         try:
-            with _NO_REDIRECT_OPENER.open(req, timeout=self.timeout) as resp:
+            with self._opener().open(req, timeout=self.timeout) as resp:
                 _ct = ""
                 try:
                     _ct = resp.headers.get("content-type", "") or ""
@@ -249,7 +273,9 @@ class HttpWebCage:
                     _ct = ""
                 body = resp.read(self._cap_for(action.url, _ct)).decode(errors="replace")
                 return WebResult(status=resp.status, url=resp.geturl(), body=body,
-                                 headers=dict(resp.headers))
+                                 headers=dict(resp.headers),
+                                 note=unverified_note if action.url.lower().startswith("https")
+                                 else "")
         except urllib.error.HTTPError as e:
             if e.code in _REDIRECT_CODES:
                 loc = (e.headers.get("Location") if e.headers else "") or ""
@@ -283,17 +309,24 @@ class DockerHttpWebCage:
     # into memory.
     _MAX_BODY = 4_000_000
     _SCRIPT = (
-        "import sys,json,urllib.request,urllib.error\n"
+        "import sys,json,urllib.request,urllib.error,ssl\n"
         f"MAXB={_MAX_BODY}\n"
+        # argv[4] carries the engagement's TLS policy. "0" builds an unverified context;
+        # anything else verifies. The cage never decides this for itself.
+        "VERIFY=sys.argv[4]!='0'\n"
         "class NR(urllib.request.HTTPRedirectHandler):\n"
         " def redirect_request(self,*a):return None\n"
         "op=urllib.request.build_opener(NR)\n"
         "u,m,b=sys.argv[1],sys.argv[2],sys.argv[3]\n"
-        "h=dict(x.split(': ',1) for x in sys.argv[4:] if ': ' in x)\n"
+        "h=dict(x.split(': ',1) for x in sys.argv[5:] if ': ' in x)\n"
+        "if not VERIFY:\n"
+        " c=ssl.create_default_context();c.check_hostname=False;c.verify_mode=ssl.CERT_NONE\n"
+        " op=urllib.request.build_opener(NR,urllib.request.HTTPSHandler(context=c))\n"
+        "UN='' if VERIFY or not u.lower().startswith('https') else 'TLS verification DISABLED by scope (tls_verify=false); certificate NOT validated'\n"
         "rq=urllib.request.Request(u,data=b.encode() if b else None,method=m,headers=h)\n"
         "try:\n"
         " r=op.open(rq,timeout=20)\n"
-        " print(json.dumps({'status':r.status,'url':r.geturl(),'headers':dict(r.headers),'body':r.read(MAXB).decode('utf-8','replace')}))\n"
+        " print(json.dumps({'status':r.status,'url':r.geturl(),'headers':dict(r.headers),'note':UN,'body':r.read(MAXB).decode('utf-8','replace')}))\n"
         "except urllib.error.HTTPError as e:\n"
         " if e.code in (301,302,303,307,308):\n"
         "  loc=(e.headers.get('Location') if e.headers else '') or ''\n"
@@ -309,6 +342,10 @@ class DockerHttpWebCage:
         self.container = container
         self.user = user
         self.timeout = timeout
+        self.tls_verify = True
+
+    def set_tls_verify(self, verify: bool) -> None:
+        self.tls_verify = bool(verify)
 
     def run(self, action: WebAction) -> WebResult:
         import subprocess
@@ -317,7 +354,8 @@ class DockerHttpWebCage:
                 f"'{action.kind}' needs the Chrome backend; this cage does get/request")
         method = "GET" if action.kind == "get" else (action.method or "GET").upper()
         argv = ["docker", "exec", "-u", self.user, self.container,
-                "python3", "-c", self._SCRIPT, action.url, method, action.body or ""]
+                "python3", "-c", self._SCRIPT, action.url, method, action.body or "",
+                "1" if self.tls_verify else "0"]
         argv += [f"{k}: {v}" for k, v in (action.headers or {}).items()]
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout)
@@ -370,6 +408,15 @@ class CompositeWebCage:
     def __init__(self, render_cage, request_cage):
         self._render = render_cage
         self._request = request_cage
+
+    def set_tls_verify(self, verify: bool) -> None:
+        """Delegate the engagement's TLS policy to both halves. A composite that
+        forwarded it to one of them would leave a plane verifying while the other did
+        not, and nothing in the record would say which answered."""
+        for cage in (self._render, self._request):
+            setter = getattr(cage, "set_tls_verify", None)
+            if callable(setter):
+                setter(verify)
 
     def run(self, action: WebAction) -> WebResult:
         k = (action.kind or "").lower()
@@ -447,6 +494,17 @@ class GovernedBrowser:
         # requests leave; nothing was asking whether the target still answers them.
         from .health import TargetHealth
         self.health = TargetHealth()
+        # Certificate observations, kept for the report: "this host's certificate cannot
+        # be validated" is information ABOUT THE TARGET, and an exception swallowed into
+        # a counter threw it away. One per host.
+        self.tls_observations: list = []
+        self._tls_seen: set = set()
+        self._tls_announced = False
+        # THE ONLY PLACE TLS POLICY IS SET. It comes from the immutable scope; a cage
+        # never chooses, and never keeps a default that could diverge from it.
+        setter = getattr(cage, "set_tls_verify", None)
+        if callable(setter):
+            setter(bool(getattr(scope, "tls_verify", True)))
 
     def _apply_cookies(self, action: "WebAction") -> None:
         """Attach the session to an outgoing request so authenticated pages are reachable
@@ -503,6 +561,49 @@ class GovernedBrowser:
         self._hits.append(now)
         return True
 
+    def _announce_tls(self, action: "WebAction") -> None:
+        """Say once, in the ledger, which TLS policy this engagement runs under and where
+        it came from. Announced on first https use rather than at construction so the
+        entry sits next to the requests it governs."""
+        if self._tls_announced or not (action.url or "").lower().startswith("https"):
+            return
+        self._tls_announced = True
+        self._audit.append("tls_policy", {
+            "verify": bool(getattr(self._scope, "tls_verify", True)),
+            "source": "scope",
+            "engagement": getattr(self._scope, "engagement", ""),
+            "note": ("certificates are validated" if getattr(self._scope, "tls_verify", True)
+                     else "certificates are NOT validated — disclosed parameter of this "
+                          "engagement, recorded with its authorisation")})
+
+    def _observe_tls(self, action: "WebAction", result) -> None:
+        """A certificate that does not validate is a finding-class observation about the
+        TARGET's configuration, and it is kept whether or not the engagement proceeds.
+
+        Bounded on purpose: it says the certificate cannot be validated. It does not say
+        anyone got in and it does not say anything went down — this is a transport
+        configuration observation, not an authorization or availability result, and a
+        reader must not be able to mistake it for either."""
+        note = (getattr(result, "note", "") or "")
+        low = note.lower()
+        failed = "certificate verify failed" in low or "certificate_verify_failed" in low
+        proceeded = "certificate not validated" in low
+        if not (failed or proceeded):
+            return
+        host = _host_of(action.url) or (self._scope.engagement or "")
+        if host in self._tls_seen:
+            return
+        self._tls_seen.add(host)
+        obs = {"title": "TLS certificate could not be validated",
+               "severity": "low", "category": "tls", "target": host,
+               "evidence": note[:300],
+               "bounded": ("transport configuration only: the certificate does not chain "
+                           "to a trusted root (self-signed or untrusted issuer). This is "
+                           "not evidence of access and not evidence of downtime."),
+               "verification": "off" if proceeded else "on"}
+        self.tls_observations.append(obs)
+        self._audit.append("tls_observation", obs)
+
     def run(self, action: WebAction, agent: str = "web"):
         """Judge, log, and (only if permitted) perform one web action.
         Returns (Decision, WebResult | None)."""
@@ -518,7 +619,9 @@ class GovernedBrowser:
             return blocked, None
 
         self._apply_cookies(action)            # carry the session into this request
+        self._announce_tls(action)
         result = self._cage.run(action)
+        self._observe_tls(action, result)
         # THE WEB PLANE'S SINGLE DOOR, and the registration point every plane shares.
         # `web_result` below records {status, url, note, bytes} and no body, so this
         # plane's responses never reached the LEDGER — and the audit log was therefore

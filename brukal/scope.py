@@ -40,6 +40,21 @@ class Scope:
     # Both are recorded into the audit chain at run start (see authorization_record).
     authorization: str = ""
     expires: str = ""
+    # TLS verification for this engagement. DEFAULT TRUE (invariant 2, fail-closed):
+    # certificates are validated unless the operator disclosed otherwise here, in the
+    # scope, exactly as `rate_limit_per_min` is a disclosed parameter of a measurement.
+    #
+    # Why the parameter exists at all: crAPI, and nearly every lab appliance and a great
+    # many internal hosts, serve a self-signed certificate. The alternative designs are
+    # both worse. Retrying unverified on failure would be the harness widening its own
+    # policy at runtime in response to what the target did — the shape invariant 5 forbids.
+    # Refusing every such target outright would put most real internal engagements out of
+    # reach. So the operator decides, once, in writing, and the ledger carries it.
+    #
+    # A verification failure is ALSO information about the target and is recorded as a
+    # bounded observation either way — see GovernedBrowser. The parameter governs whether
+    # the engagement proceeds, never whether the observation is kept.
+    tls_verify: bool = True
 
     def is_authorized(self) -> bool:
         """True if the scope file itself asserts authorization (a non-empty statement)."""
@@ -76,6 +91,7 @@ class Scope:
             "hosts": sorted(self.authorized_hosts),
             "tools": sorted(self.allowlisted_tools),
             "rate": self.rate_limit_per_min,
+            "tls_verify": self.tls_verify,
             "authorization": self.authorization,
             "expires": self.expires,
         }, sort_keys=True)
@@ -135,7 +151,8 @@ class Scope:
                      rate_limit_per_min=self.rate_limit_per_min,
                      authorized_hosts=self.authorized_hosts | ({h} if h else set()),
                      authorization=self.authorization,
-                     expires=self.expires)
+                     expires=self.expires,
+                     tls_verify=self.tls_verify)
 
     def tool_allowed(self, tool: str) -> bool:
         """True if the tool passes the ALLOWLIST layer. `"*"` in the allowlist means
@@ -183,6 +200,10 @@ def load_scope(path: str | Path) -> Scope:
                                    for h in data.get("authorized_hosts", []) if h.strip()),
         authorization=str(data.get("authorization", "")).strip(),
         expires=str(data.get("expires", "")).strip(),
+        # Only an explicit `false` disables verification. Anything else — absent,
+        # misspelled, a string, null — verifies, because an unparseable policy is a
+        # policy we refuse to act on (invariant 2).
+        tls_verify=data.get("tls_verify", True) is not False,
     )
 
 
@@ -203,4 +224,7 @@ def authorization_record(scope: Scope, target: str) -> dict:
         "authorized": scope.is_authorized(),
         "expires": scope.expires,
         "expired": scope.is_expired(),
+        # Disclosed with the authorisation, not buried in a note: a run that did not
+        # validate certificates says so in the same entry that says what permitted it.
+        "tls_verify": scope.tls_verify,
     }
