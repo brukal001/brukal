@@ -481,6 +481,42 @@ in the bundle is the honest form; masking harder until the grep comes back empty
 
 ---
 
+## CR1 (OWASP crAPI) — definition of done, written and committed BEFORE the pre-flight (2026-09-17)
+
+**CR1 is done when it produces an ATTRIBUTABLE MEASUREMENT, not when it confirms a finding.**
+
+Required, all four:
+
+- **The run completes, or stops for a NAMED reason recorded in the ledger.** A run that dies without the
+  ledger saying why is not a result.
+- **EVERY experiment outcome is attributable to a named cause** — *target refused* / *harness limit* /
+  *model limit* — with **none unaccounted**. `unaccounted 0` is a pass condition, not a nice-to-have.
+- **RECALL is computed against crAPI's 18 documented challenges:** found **N of 18**, and **each MISS is
+  attributed** to one of those same three causes.
+- **Both principals' identities are verified against crAPI's header-reading oracle**, closing the
+  `variant_as` gap that CM5 and CM6 both had to disclose.
+
+**A run that finds 0 of 18 with 18 attributed misses IS a valid result and is publishable.**
+**A run that confirms findings but cannot attribute its misses is NOT done.**
+
+This is the point of moving to crAPI: Juice Shop never gave us a denominator, so "found 2" could never
+become "found 2 of N". An attributed zero is a measurement; an unattributed success is an anecdote.
+
+### STOPPING RULE for the crAPI series — written before the first run
+
+- **Stops for a NEW harness reason** → fix **that one thing**, then **ONE** further run.
+- **Stops for target or model reasons** → **that is the measurement.** Write it up; do not keep building.
+- **TWO consecutive new-harness stops** → **stop building against crAPI.** The portability gap is then
+  itself the finding, and the tally below is the result.
+
+### PORTABILITY TALLY — a deliverable, not bookkeeping
+
+From this point, **every change crAPI requires is recorded in `docs/TARGET_SURVEY.md`**: what broke, why,
+and whether it was a **Juice-Shop-specific assumption** or a **genuine gap**. The tally is a deliverable in
+its own right — it answers "does this harness travel?", which no run against a single application can.
+
+---
+
 ## PAPER-READY criteria (the definition of "confident enough" — do not move these)
 Start the paper skeleton NOW in parallel (architecture + threat-model sections are done and won't change).
 Trigger the evaluation write-up when ALL three hold:
