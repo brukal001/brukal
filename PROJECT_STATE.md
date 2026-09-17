@@ -7,6 +7,26 @@
 
 ---
 
+## THE AUTHORITATIVE RECORD — what to trust, and what may lag (2026-09-17)
+
+**`git log` plus `docs/HARDENING_ROADMAP.md` are the authoritative record of this project.** Together they
+hold every closed finding, every open P1, every run's evidence, and the commit that carries each. A claim
+about Brukal's state is checkable there or it is not checkable.
+
+**The Obsidian vault note `Desktop/Brukal's Memory/Brukal.md` is a convenience log. It MAY LAG, and it does.**
+As of 2026-09-17 its running log stops at 2026-08-17 while the repo is at CM6 and beyond — a month of work
+(CM4-CM6, the discovered-credential programme, the redaction-plane fix, the crAPI target survey) exists only
+in git and the roadmap. **The gap is not being backfilled**, deliberately: reconstructing a month of session
+prose from commits produces a record that reads as contemporaneous evidence but is not, and this project has
+already been burned once by a record that looked like evidence about the target and was really evidence about
+Brukal.
+
+**No decision rests on the vault note.** Read it for narrative colour if it helps; never derive state, a
+finding, an open blocker, or a next step from it. Where the vault and the repo disagree, the repo is right by
+construction. The same holds, more strongly, for `SESSION_HANDOFF.md` (see the header).
+
+---
+
 ## GOAL — what we are building, and what "beating them" means
 Brukal is a **governed execution platform for autonomous security testing**: LLM agents reason, plan, and
 collaborate to find real vulnerabilities on real targets, while deterministic policy, capability isolation,
