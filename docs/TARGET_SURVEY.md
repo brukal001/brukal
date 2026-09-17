@@ -557,3 +557,86 @@ is** — the same header-reading oracle this target was chosen for.
 endpoint (attempt 1/2, GAP #4) → endpoint found, account created, proof rejected (attempt
 3, GAP #5). This is the roadmap's own law — *fixing the reported symptom moves the ceiling
 somewhere else rather than removing it* — for the third time on the same condition.
+
+---
+
+## ⛔ GAP #5 — CLOSED (`cdf3a52`), and the suite that should have caught it
+
+**Fixed:** proof that an account exists is a ladder — the reply NAMES the account (free), or
+LOGGING IN as it succeeds (one request, decisive, and the caller was about to do it anyway).
+A cheerful 200 that honours no login is still not an account.
+
+**More importantly, `tests/test_portability_profiles.py` now exists.** Every gap in this
+tally lived in ONE layer — *how do I address this application, and who does it think I am* —
+and each cost a live run to find. The suite encodes target SHAPES and one contract they must
+all satisfy:
+
+| shape | route naming | proof of signup | identity carriage |
+|---|---|---|---|
+| `juiceshop-single-service` | real paths | echoes the created object | cookie, body-discriminating |
+| `gateway-prefixed-multi-service` | needs resolution | message only | header, 404 to strangers |
+| `json-login-cookie-session` | real paths | no echo, `{"status":"created"}` | cookie, 401 to strangers |
+| `cheerful-catch-all` | — | says yes to everything | honours nothing |
+
+The contract: routes adopted exist · the second principal is established **or honestly
+refused** · identity is confirmed where an oracle is offered and **nothing is claimed** where
+it is not. **Onboarding a target is now writing a profile**, and a gap is a red test in
+seconds instead of a $0.42 run and a session of forensics.
+
+### ⛔ GAP #6 — found by the suite, before any target needed it. CLOSED (`cdf3a52`)
+
+**Class: GENUINE GAP — GAP #5 one layer over, same defect, different evidence.**
+`SessionOracle.judge` read `ok = bool(a.token)` for a JSON login, so an API whose **session
+is a cookie** was recorded as AUTHENTICATION FAILED while its session sat armed in the jar.
+Every request after it would have run unauthenticated, and the report would have said the
+operator's credentials were refused.
+
+Fixed narrowly and deliberately: a **3xx is not accepted**, because a JSON login that
+redirects is ambiguous (an SSO bounce, or a failure bounced back to the login page) and the
+cookie strategy already judges redirects by destination. `test_login_type_fail_closed_recovery`
+held that line while the fix was being written and was right to — the fix was narrowed, the
+test was not touched.
+
+## CR1 PRE-FLIGHT, ATTEMPT 4 — 2026-09-18. 7 PASS · 2 HALF · 0 FAIL
+
+Artifacts: `runs/audit_preflight_cr1d.jsonl` (443 entries) · `runs/vault-preflight-cr1d/`.
+Scope `brukal-crapi-cr1preflight4-172.20.0.12`, `tls_verify: false` (disclosed).
+**18/18 steps, `exhausted`, 0 blocked, 9 model calls, ~$0.45.**
+
+| | condition | a2 | a3 | a4 | evidence |
+|---|---|---|---|---|---|
+| **B1** | egress lock | ✅ | ✅ | ✅ **PASS** | policy drop, one accept; http+https 200 in scope; `.13`, `.8`, internet BLOCKED |
+| **B2** | first identity in-harness | ✅ | ✅ | ✅ **PASS** | `POST /identity/api/auth/login`, gated and audited |
+| **B3** | second principal, two handles | ⛔ | ⛔ | ✅ **PASS** | **two distinct sessions — `[REDACTED:bb8431ee]` (self) and `[REDACTED:0c786feb]` (second)** across 12 `experiment_principal` rows, 3 of them dispatched `as: second` |
+| **B4** | chain keyed | ✅ | ✅ | ✅ **PASS** | True with the key, False without |
+| **B5** | no cleartext credential | ✅ | ✅ | ✅ **PASS** | 0 passwords, 0 raw JWTs, 43 redaction markers |
+| **B6** | experiment reaches a comparator | ✅ | ⛔ | ✅ **PASS** | funnel: proposed 7 · dispatched 3 · resolved 3 · judged 3 · **confirmed 1** · unaccounted 0 |
+| **B7** | auth confirmation; **the SECOND?** | ⚠️ | ⛔ | ⚠️ **HALF** | first principal `confirmed: true` against `/identity/api/v2/user/dashboard`. **The second is still NOT confirmed** — cause below |
+| **B8** | cross-account, two principals, a comparator | ⛔ | ⛔ | ✅ **PASS** | `ownership_match {variant_as: "second", held: false, addressed: false}` at `/identity/api/v2/vehicle/vehicles`; and a **zero-setup** two-principal experiment on `/identity/api/v2/user/change-email` reached `bodies_differ` and **confirmed** |
+| **B9** | ownership ledger live, bounded body | ✅ | ⛔ | ✅ **PASS** | `principal_ownership` with provenance (`source: whoami`, `path: id`, value 9); 6 `experiment_result` rows, longest 886 chars = a lead line plus the 800-char body cap |
+| **B10** | principal switch live | ⚠️ | ⛔ | ⚠️ **HALF** | 12/12 `requested == resolved`, three of them `second`, each with its own session. Still not **verified by asking the target** for the second — same cause as B7 |
+
+**Attribution, from the ledger alone: TARGET-REFUSED 4 · MEASURED 3 · unaccounted 0.**
+
+### The one remaining blocker, now precisely located
+
+**`confirm_authentication` is never invoked for the second principal.** It is called from the
+experiment dispatch path (`_as_identity`) for the principal *currently* in effect, and
+nothing calls it while the second principal is being established. The machinery it would
+need already exists and is already correct: `confirm_authentication` keys its record as
+`second` when `_establishing_second` is set, the oracle is proven to work (the first
+principal is confirmed against it every run), and the second principal holds a live session.
+
+**Recorded, not fixed, per the pre-flight rule.** This is the last thing standing between
+CR1 and the question crAPI was chosen to answer.
+
+**A second, independent blocker for the measurement itself (predicted by the survey's S3):**
+`ownership_match` shows `addressed: false`, `owner: ""` — a fresh crAPI account owns nothing
+addressable until the vehicle-onboarding flow is run, so a cross-account claim has no
+resource to attach to. That is the *seeding* work the survey sized at half a day, and it is
+separate from the confirmation gap above.
+
+**By-product, not pursued (no hunt this session):** one experiment CONFIRMED on
+`/identity/api/v2/user/change-email` via `bodies_differ`, with two principals and zero setup
+steps. It is recorded in the run's own artifacts and has NOT been validated, escalated, or
+written up.
