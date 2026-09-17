@@ -310,3 +310,173 @@ Scope `brukal-crapi-cr1preflight-172.20.0.12`, fingerprint `9c2aad5a64024e43`. K
 cause is GAP #1. The pre-flight did its job — it found a portability defect that would have
 corrupted the CR1 measurement's attribution, and it found it for $0.013 instead of inside a
 70-step run.
+
+---
+
+# PORTABILITY TALLY — session 2 (2026-09-17): the four fixes
+
+Each row: what broke, why, and its class. **MEASURED** means observed against crAPI;
+**PREDICTED** rows from session 1 are resolved here and say how.
+
+## ⛔ GAP #1 — CLOSED (`80c86d3`) — health could not tell our silence from theirs
+
+**Class: GENUINE GAP.** Recorded in session 1, fixed now. `TargetHealth.record` folded a
+TLS verification failure into `answered=False`; ten of them halted CR1 and the report
+blamed a target that was answering 200s.
+
+The property is **origin**, not TLS. `health.failure_origin()` carries the full inventory
+of every path in this codebase that reaches `record()` with a falsy status —
+`HttpWebCage`'s `URLError`, `DockerHttpWebCage`'s in-cage `except Exception` (the CR1
+shape) and its outer `cage web error`, `SplitWebCage`'s never-wired kinds, and
+`FakeWebCage`'s no-op results. Client-origin failures are counted apart, labelled with a
+cause, and recorded as `harness_limit` in the ledger carrying `attribution:
+HARNESS-LIMIT`.
+
+**Routing is deliberately client-origin** (`network is unreachable`, `no route to host`):
+our own egress lock produces exactly that shape for a host we refused to reach, so
+counting it as the target's silence would let containment halt a run and then blame the
+target for being contained. An unrecognised silence stays target-origin — fail-closed in
+the direction that matters, since the safe default is to stop.
+
+## ⛔ GAP #2 — CLOSED (`f7a8046`) — Brukal had no TLS policy at all
+
+**Class: GENUINE GAP — a design gap crAPI exposed, not a crAPI quirk.** Every lab
+appliance and a great many internal hosts serve a self-signed certificate. Brukal had no
+way to express what to do about one: the failure was swallowed, the observation was
+discarded, and there was no parameter an operator could set.
+
+Now: `scope.tls_verify`, default **TRUE**, in the scope fingerprint and in the
+authorisation record — the same idiom as `rate_limit_per_min`. A verification failure is
+recorded as a **bounded `tls_observation`** (transport configuration only: explicitly not
+evidence of access, not evidence of downtime) whether or not the engagement proceeds.
+Policy has exactly one source — the immutable scope, installed through the browser; a cage
+never chooses.
+
+**Measured on crAPI:** `subject=issuer=C=XX/ST=StateName/O=CompanyName`, valid 2025-07-05
+→ 2035-07-03. CR1 pre-flight 2 runs with `tls_verify: false` as a **disclosed** parameter,
+recorded in `scope.crapi.json` `_tls_note` and announced in the ledger.
+
+## Item 5 — RESOLVED (`b99b8c5`) — the signup payload was a Juice-Shop shape
+
+**Class: JUICE-SHOP-SPECIFIC ASSUMPTION.** Predicted in session 1; **now measured.**
+crAPI's own refusal, captured live:
+
+```
+HTTP 400  {"message":"Validation failed","details":"… Field error in object 'signUpForm'
+on field 'number': … [must not be blank] … on field 'name': … [must not be blank]"}
+```
+
+Fixed by **asking instead of guessing**: post the minimal body, read the refusal, add the
+fields it names, retry — bounded at four attempts. Hardcoding `name` and `number` would
+only have moved the break to the next target. Values are synthesised **by field name** (a
+field named for a phone gets digits, because crAPI validates `number`), never taken from
+the target's response. An endpoint that names nothing gets no guess: fail closed, reason
+recorded.
+
+## Item 6 — RESOLVED, AND IT UNCOVERED GAP #3 (`b99b8c5`)
+
+**Item 6 class: PORTABILITY SMELL, accepted.** crAPI's
+`/identity/api/v2/user/dashboard` is now in `_IDENTITY_PROBE_PATHS`. **The allowlist is
+still the right mechanism** — a pattern loose enough to match "anything profile-shaped" is
+how a probe starts GETting arbitrary routes on a live target — but it is unambiguously a
+smell: every new target needs an entry, and that cost now gets counted here rather than
+discovered in a run.
+
+### ⛔ GAP #3 — a 404 was read as "path absent", and crAPI's oracle answers 404
+
+**Class: GENUINE GAP. Found by the test, not by a run** — adding the allowlist entry alone
+would have left B7 exactly as unanswerable as it was on Juice Shop.
+
+`_probe_identity` returned `None` for a 404. crAPI's oracle **uses 404 as its answer to a
+caller it does not recognise**, so the path was skipped before the session was ever tried.
+Measured on crAPI, 2026-09-17:
+
+```
+Authorization: Bearer <A's token>   -> 200 {"id":9,"name":"brukalA",…}
+the same token as Cookie: token=…   -> 404
+anonymous                           -> 404
+```
+
+A 404 that **discriminates** is an oracle; a 404 everyone gets is still an absent path,
+and the session-cookie hunt still does not fire at one.
+
+## Not a portability row — CR1 measurement infrastructure (`43b06c1`)
+
+**Class: MEASUREMENT INFRASTRUCTURE, recorded here for completeness.** Attribution
+(`TARGET-REFUSED` / `HARNESS-LIMIT` / `MODEL-LIMIT`, plus `MEASURED` for judged outcomes)
+is now derived deterministically from each terminal and carried in every
+`experiment_outcome`; the funnel reports the counts from the ledger alone and they always
+sum to `proposed`. This is not something crAPI required — it is what CR1's definition of
+done requires in order to be measurable at all.
+
+---
+
+## CR1 PRE-FLIGHT, ATTEMPT 2 — 2026-09-17, after the four fixes. Halted at B3/B8
+
+Artifacts: `runs/audit_preflight_cr1b.jsonl` (482 entries) · `runs/vault-preflight-cr1b/`.
+Scope `brukal-crapi-cr1preflight2-172.20.0.12`, fingerprint `5839cdaca28a3f8a`,
+`tls_verify: false` (disclosed). Key `~/.brukal/cr1.key`, outside the repo, mode 600.
+`--no-resume`, fresh vault and audit log. **18 of 18 steps, `exhausted`, 18 commands,
+0 blocked, 13 model calls, ~$0.42.** The run COMPLETED — it was not halted by anything.
+
+| | condition | result | evidence |
+|---|---|---|---|
+| **B1** | egress lock | ✅ **PASS** | `policy drop`, one `ip daddr 172.20.0.12 accept`. http 200 AND https 200 in scope; control `.13`, identity `.8`, mailhog `.4`, postgres `.5`, mongo `.6`, `1.1.1.1` all BLOCKED |
+| **B2** | first identity in-harness | ✅ **PASS** | ledger rows 1–2: `GET`+`POST /identity/api/auth/login`, `web:allow` |
+| **B3** | second principal, two handles | ⛔ **FAIL** | see GAP #4 — signup candidates were `/REGISTER` and `/auth/signup`, both 404 |
+| **B4** | chain keyed | ✅ **PASS** | `intact: True` with the key, `False` without |
+| **B5** | no cleartext credential | ✅ **PASS** | 0 password hits across ledger+vault, 0 raw JWTs, **53 `[REDACTED:…]` markers** |
+| **B6** | an experiment resolves and reaches a comparator | ✅ **PASS** | funnel from the ledger: **proposed 7 · dispatched 4 · resolved 4 · judged 4 · unaccounted 0** |
+| **B7** | auth confirmation; **the SECOND principal?** | ⚠️ **HALF** | **FIRST principal CONFIRMED against crAPI's own oracle** — `authentication_carriage {principal: brk726c8f6e@…, carriage: "header", confirmed: true, probe: "/identity/api/v2/user/dashboard"}`. **SECOND: still unanswered**, because none exists (B3) |
+| **B8** | cross-account, zero setup, two principals | ⛔ **FAIL** | 3 `cross_account_resource` proposals, all `setup_failed`, 0 dispatched |
+| **B9** | ownership ledger live, bounded redacted body | ✅ **PASS** | `principal_ownership` with provenance (`source: whoami`, `path: id`, value 9); 8 `experiment_result` rows, longest body 159 B against the 800 B cap; sessions appear as `[REDACTED:d4dcea04]` |
+| **B10** | principal switch live, verified by asking the target | ⚠️ **HALF** | 11 `experiment_principal` records, `requested == resolved` in all 11, and every `anonymous` row carries NO session. The self↔anonymous switch is correct live; the **second-principal** switch in CM4 order could not run |
+
+**4 PASS · 2 HALF · 2 FAIL · 0 not-attempted.** Attempt 1 reached four conditions and never
+attempted six; this run attempted all ten.
+
+### ⛔ GAP #4 — mined routes lose the service prefix on a multi-service SPA
+
+**Class: GENUINE GAP. MEASURED, and it is the single cause of B3 and B8.**
+
+crAPI's front door proxies by service prefix — `/identity/...`, `/workshop/...`,
+`/community/...`. The crawl mined 40 API routes from the React bundle, and the bundle
+carries the **client-side** paths. So every route derived from it was addressed without its
+prefix, and crAPI answered 404 to all of them:
+
+```
+signup candidates tried:  http://172.20.0.12/REGISTER        -> 404
+                          http://172.20.0.12/auth/signup     -> 404
+the endpoint that works:  http://172.20.0.12/identity/api/auth/signup  -> 200
+experiment targets:       /v2/user/dashboard, /orders/all, /v2/user/pictures -> 404
+```
+
+**Juice Shop never showed this**: one service, and its bundle's `/rest/...` and `/api/...`
+strings WERE the API paths. On any multi-service application they are not.
+
+**Note what this is NOT.** Fix 3a worked exactly as built — it posted the minimal body, read
+the refusal, found nothing nameable in an nginx 404 HTML page, and failed closed with the
+reason recorded, three times. The field-discovery logic never got a chance to matter,
+because it was pointed at a URL that does not exist. Not fixed here, per the pre-flight
+rule: stop, record, report.
+
+### ⚠️ ATTRIBUTION DEFECT — MEASURED by the first run that carried attributions
+
+**Class: MEASUREMENT DEFECT in the attribution table (`43b06c1`). Recorded, not fixed.**
+
+All three cross-account proposals terminated `setup_failed`, which the table attributes to
+**TARGET-REFUSED**. The target did refuse — with a truthful 404 — but it refused a request
+that **should never have been sent**, because GAP #4 addressed a path that does not exist.
+The honest attribution is a harness limit (route mining) or a model limit (the proposal),
+not the target's.
+
+So CR1's headline number would today read *"3 misses, target-refused"* when the truth is
+*"3 misses, ours"*. **This is the CR1 pre-flight's second demonstration of the same class
+of error the TLS fix closed** — a limit of ours written into the ledger as the target's
+behaviour — and it is exactly why the attribution field had to exist before the
+measurement run rather than after it. The pre-flight cost $0.42 to find it.
+
+A defensible rule (NOT implemented here): a setup step that fails with 404 on a path never
+observed in a successful response is a harness/model limit; a setup step that fails with
+401/403/409/422 is the target refusing. That needs its own test-first change and its own
+run.
