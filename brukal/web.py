@@ -529,8 +529,21 @@ class GovernedBrowser:
         redact.observe_response(getattr(result, "body", "") or "")
         # Health is judged on whether bytes came back, NOT on the status code: a 404 or
         # a 500 is the target answering, and several of the flaws Brukal looks for are
-        # found precisely by making an application error. Only silence counts against it.
-        self.health.record(bool(getattr(result, "status", None)))
+        # found precisely by making an application error. Only silence counts against it
+        # — and only silence THE TARGET caused. The note decides which: a TLS
+        # verification failure, a name we could not resolve, a route our own egress lock
+        # refused, or a cage that never made the request are all OUR failures, and the
+        # CR1 pre-flight halted with `target-unhealthy` against a target answering 200s
+        # because they were counted as its silence. `record` returns the cause label for
+        # exactly those, and a harness limit is recorded HERE, at the plane's own door,
+        # so it lands in the ledger as ours instead of as a target refusal.
+        _cause = self.health.record(bool(getattr(result, "status", None)),
+                                    note=getattr(result, "note", "") or "")
+        if _cause:
+            self._audit.append("harness_limit", {
+                "plane": "web", "cause": _cause, "url": getattr(action, "url", ""),
+                "note": (getattr(result, "note", "") or "")[:300],
+                "attribution": "HARNESS-LIMIT"})
         self._absorb_cookies(result)           # remember any Set-Cookie for the next one
         self._audit.append("web_result", {"status": result.status, "url": result.url,
                                            "note": result.note,
