@@ -1068,6 +1068,58 @@ _DISPATCHED_NOT_RESOLVED = (
 _JUDGED = ("not_confirmed", "confirmed")
 
 
+# --------------------------------------------------------------------------- #
+# ATTRIBUTION — why an outcome produced no measurement, or that it produced one.
+# --------------------------------------------------------------------------- #
+#
+# CR1's definition of done requires every experiment outcome attributed to a named cause,
+# with none unaccounted, and every MISS against crAPI's 18 documented challenges carrying
+# one. Nothing in the record carried that field, so the definition was unmeasurable.
+#
+# Derived from the terminal state, in this one table. No model, no post-hoc judgement:
+# the same terminal always attributes the same way, so two runs are comparable and every
+# number is recomputable from audit.jsonl alone.
+#
+# The fourth value is deliberate. A judged negative is EVIDENCE — the comparator read
+# both answers and the claim did not hold — and forcing it into one of the three
+# miss-causes would file the project's most valuable output as a failure of something.
+# The three explain outcomes that produced NO measurement; MEASURED marks the ones that
+# did.
+ATTRIBUTIONS = ("TARGET-REFUSED", "HARNESS-LIMIT", "MODEL-LIMIT", "MEASURED")
+
+_ATTRIBUTION = {
+    # The target answered, and its answer is why there is no measurement.
+    "setup_failed": "TARGET-REFUSED",       # the setup request went out and was refused
+    "both_sides_failed": "TARGET-REFUSED",  # two 5xx: it broke rather than behaved
+    # Ours. The request never went out, or went out and we could not use what came back.
+    "errored": "HARNESS-LIMIT",             # never reached the target
+    "no_answer": "HARNESS-LIMIT",           # our gate or our limiter refused it
+    "not_authenticated": "HARNESS-LIMIT",   # we could not carry a session this target honours
+    "second_unavailable": "HARNESS-LIMIT",  # we could not construct the second principal
+    # The proposal itself was the limit.
+    "skipped": "MODEL-LIMIT",               # proposed against a path the rules forbid
+    "unresolved_reference": "MODEL-LIMIT",  # referenced a field that was not there
+    # A measurement happened.
+    "not_confirmed": "MEASURED",
+    "confirmed": "MEASURED",
+}
+
+# Two of these are arguable, and the argument is recorded rather than hidden:
+#   `not_authenticated` and `second_unavailable` can BOTH have a target-side cause — a
+#   target that refuses our registration or honours no carriage we hold. They are
+#   attributed to the harness anyway, because what the terminal proves is that WE could
+#   not construct the precondition; the target's part is a separate, unproven claim. The
+#   reason string (e.g. `signup_refusal`) carries the detail for a reader who wants it.
+# Erring toward the harness is the same fail-closed direction Fix 1 established: never
+# blame the target for something we cannot account for.
+
+
+def attribution(outcome) -> str:
+    """The attribution for a terminal state. Total by construction: anything unknown,
+    missing, or empty is a HARNESS LIMIT — a terminal we cannot explain is ours."""
+    return _ATTRIBUTION.get(outcome or "", "HARNESS-LIMIT")
+
+
 def outcome_stage(outcome: str) -> str:
     """How far a proposal got: 'refused' | 'unresolved' | 'judged'. Recorded beside the
     outcome so a reader does not have to know this table to read the ledger."""
@@ -1119,6 +1171,19 @@ def funnel(entries, comparator: str | None = None) -> dict:
         "dispatched_not_resolved": unresolved,
         "unaccounted": max(0, len(props) - (refused + unresolved + judged)),
     }
+    # ATTRIBUTION COUNTS, from the ledger alone. A proposal with no recorded outcome is
+    # attributed too — to the harness, because a run that died mid-experiment is our gap
+    # and not the target's refusal — so these ALWAYS sum to `proposed` and "unaccounted"
+    # becomes impossible by construction. `unaccounted` above still reports the same gap
+    # as a count, so nothing is hidden by being attributed.
+    attributions: dict = {}
+    for d in outs:
+        key = d.get("attribution") or attribution(d.get("outcome"))
+        attributions[key] = attributions.get(key, 0) + 1
+    _missing = max(0, len(props) - len(outs))
+    if _missing:
+        attributions["HARNESS-LIMIT"] = attributions.get("HARNESS-LIMIT", 0) + _missing
+    out["attribution"] = attributions
     if comparator is None:
         out["cross_account"] = funnel(entries, comparator="cross_account_resource")
     return out

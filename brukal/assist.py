@@ -3950,6 +3950,10 @@ class AssistSession:
             "comparator": getattr(h, "comparator", ""),
             "outcome": outcome,
             "stage": _hyp.outcome_stage(outcome),
+            # WHY this produced no measurement, or that it produced one. Derived from the
+            # terminal in one deterministic table so a reader recomputes it, and CR1's
+            # "every outcome attributed, none unaccounted" is a number instead of a hope.
+            "attribution": _hyp.attribution(outcome),
             "target": self.target,
         })
 
