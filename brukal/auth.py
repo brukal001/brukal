@@ -79,6 +79,32 @@ class SessionOracle:
         # A token handed back by the app is unambiguous positive evidence.
         ok = bool(a.token)
 
+        # A JSON API whose SESSION IS A COOKIE. `ok = bool(token)` alone made "the body
+        # carried a token" the definition of a successful API login, so a target that
+        # answers {"status":"ok"} with a Set-Cookie was recorded as AUTHENTICATION FAILED
+        # while its session sat armed in the jar — every later request then ran
+        # unauthenticated, and the report said the credentials were refused.
+        #
+        # This is the same defect as the signup ECHO (GAP #5, 2026-09-17): one FORM of
+        # evidence treated as the definition of the thing. The rule is the same — accept
+        # anything that ESTABLISHES a session, nothing that merely looks encouraging. A
+        # cookie the target set IN RESPONSE TO CREDENTIALS is establishment; an explicit
+        # failure in the body or an error status still outranks it below.
+        #
+        # Found by tests/test_portability_profiles.py before any target needed it.
+        # A REDIRECT is deliberately NOT accepted here, and a pre-existing test
+        # (test_login_type_fail_closed_recovery) held this line while the fix was being
+        # written. A JSON login that answers 3xx is ambiguous — an SSO bounce, or a
+        # failure bounced back to the login page — and the cookie/form strategy exists to
+        # judge redirects by their DESTINATION. Fail-closed: only an unambiguous 2xx that
+        # seeds a session counts.
+        if (not ok and a.responded and not a.cookie_login and a.gained_cookie
+                and 200 <= (a.status or 0) < 300):
+            body = a.body or ""
+            failed = bool(self._AUTH_ERROR_RE.search(body[:2000])
+                          or self._FAIL_JSON_RE.search(body[:2000]))
+            ok = not failed
+
         if not ok and a.responded and a.cookie_login:
             hdrs = a.headers or {}
             loc = hdrs.get("Location", "") or hdrs.get("location", "")

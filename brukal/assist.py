@@ -5313,24 +5313,65 @@ class AssistSession:
             if r is None or (r.status or 0) >= 400 or (r.status or 0) < 200:
                 continue
             # A 2xx that did not create anything is common on SPA catch-alls, which
-            # answer 200 with the index page for every unknown path. An account exists
-            # only if the answer is JSON that echoes what we asked for.
+            # answer 200 with the index page for every unknown path. So a 2xx alone is
+            # not proof — but demanding ONE FORM of proof is how crAPI's two real accounts
+            # were thrown away (CR1 pre-flight 3): its reply is
+            # {"message":"User registered successfully! Please Login."}, and the echo that
+            # Juice Shop happened to provide had quietly become the definition of an
+            # account existing.
+            #
+            # EVIDENCE LADDER, cheapest first. Anything that ESTABLISHES the account is
+            # accepted; nothing that merely looks encouraging is.
             text = (r.body or "")
             if "<html" in text[:200].lower():
-                continue
+                continue                       # an index page is not a registration reply
             try:
                 got = json.loads(text)
             except Exception:
-                continue
-            if email not in json.dumps(got):
-                continue
-            self.note(f"[experiment] second principal registered via JSON signup at {url}")
-            # The account the application just created describes itself here, and this is
-            # the ONLY response that does: a second principal whose identity endpoint is
-            # never confirmed would otherwise reach the model with no id at all.
-            self._record_principal_ids("second", "signup", text)
-            return email, password
+                got = None
+            if got is not None and email in json.dumps(got):
+                # RUNG 1 — the application names the account back. No extra request, and
+                # it is the only response that describes the new principal, so its
+                # identifiers are learned here.
+                self.note(f"[experiment] second principal registered via JSON signup at "
+                          f"{url} — existence named by the application")
+                self._record_principal_ids("second", "signup", text)
+                return email, password
+            # RUNG 2 — USE IT. Logging in as the account is stronger evidence than any
+            # echo, and the caller was about to do it anyway; doing it here means a target
+            # that answers a message instead of an object is no longer indistinguishable
+            # from one that refuses to register at all.
+            if self._login_proves_account(email, password):
+                self.note(f"[experiment] second principal registered via JSON signup at "
+                          f"{url} — existence proved by login (the reply named no account)")
+                return email, password
+            self.signup_refusal = (
+                f"signup at {url} answered {r.status} but the account could not be "
+                f"proved: the reply named no account and we could not log in as it")
+            self.note("[experiment] second principal NOT established — " + self.signup_refusal)
         return None
+
+    def _login_proves_account(self, email: str, password: str) -> bool:
+        """Can we actually USE the account the signup claims to have made?
+
+        The decisive rung of the ladder above, and the reason the whole class of "did that
+        registration work" question stops depending on a reply's shape. A JSON signup
+        authenticates by EMAIL and `login`'s default user field is `username`, so the
+        email form is tried first and the default second — the same order, and the same
+        reason, as the caller's own retry.
+
+        Runs inside `_separate_identity` (every caller of `_register_account_json` is), so
+        the session it arms belongs to the SECOND principal and cannot leak into ours."""
+        login_url = self._login_endpoint()
+        if not login_url:
+            return False
+        try:
+            if self.login(login_url, email, password,
+                          user_field="email", login_type="json"):
+                return True
+            return bool(self.login(login_url, email, password))
+        except Exception:
+            return False
 
     def confirm_predictable_reset_token(self, reset_url: str, id_param: str,
                                         token_param: str, known_user: str) -> bool:
