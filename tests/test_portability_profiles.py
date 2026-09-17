@@ -146,8 +146,17 @@ class GatewayPrefixShape:
             return _json(200, {"message": "User registered successfully! Please Login.",
                                "status": 200}, action.url)
         if path == self.LOGIN and method == "POST":
+            # A JSON API refuses a form-encoded body — and NEVER authenticates nobody.
+            # The first draft of this fake compared `accounts.get("") == body.get("pass")`,
+            # which is None == None, so an unparsable login succeeded as an empty user and
+            # armed a token belonging to no one. That is a real auth bug, in a fake built
+            # to catch real auth bugs; it is exactly what an unparsable-credentials path
+            # does on a live target, and it is why this shape now rejects it explicitly.
+            if not (action.body or "").lstrip().startswith("{"):
+                return _json(415, {"message": "Unsupported Media Type"}, action.url)
             email = body.get("email") or body.get("username") or ""
-            if self.accounts.get(email) == body.get("password"):
+            password = body.get("password")
+            if email and password and self.accounts.get(email) == password:
                 tok = f"eyJhbGciOiJSUzI1NiJ9.{len(self.tokens)}.sig"
                 self.tokens[tok] = email
                 return _json(200, {"token": tok}, action.url)

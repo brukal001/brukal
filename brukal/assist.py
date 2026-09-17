@@ -4137,7 +4137,16 @@ class AssistSession:
                              ": no reachable registration endpoint accepted an account"))
                 return ""
             user, password = made
-            if not (getattr(self.browser, "_cookies", {}) or {}):
+            # "No cookies" is not "no session". `_register_account_json` may already have
+            # logged in to PROVE the account exists (rung 2 of its evidence ladder), which
+            # on a token API arms a bearer and seeds no cookie at all — so this test sent
+            # a second, form-encoded login over a session that was already good. Harmless
+            # on a target that refuses it, wasteful always, and on a target that accepts
+            # an unparsable login it replaces a real session with one belonging to nobody.
+            # Either carriage counts as a session, for the same reason either counts
+            # everywhere else in this file.
+            if not ((getattr(self.browser, "_cookies", {}) or {})
+                    or getattr(self.browser, "auth_header", "")):
                 login_url = self._login_endpoint()
                 if not login_url:
                     return ""
@@ -4160,6 +4169,24 @@ class AssistSession:
             # one does — and until now it was never registered at all, on either path.
             redact.register_auth_header(auth)
             redact.register(*cookies.values())
+            # ASK THE TARGET WHO THIS IS, while we are still inside `_separate_identity`
+            # and still holding only this principal's session. Everything needed was
+            # already here and nothing called it: `confirm_authentication` keys its record
+            # as `second` on `_establishing_second`, and this context saves and restores
+            # the carriage memo so a confirmation performed here cannot memoise against
+            # ours. Without this line every `variant_as: second` claim CM5, CM6 and four
+            # CR1 pre-flights produced carried a disclosure that the second principal's
+            # identity was never verified — the exact gap crAPI was chosen to close, and
+            # what CR1's definition of done requires.
+            #
+            # Instrumentation, so it can never end an engagement: a probe that raises
+            # leaves the principal UNTESTED, which is not a refusal, and the second
+            # principal is still returned. A target with no identity oracle simply does
+            # not get the claim made about it.
+            try:
+                self.confirm_authentication()
+            except Exception:
+                pass
             self._second_identity = {
                 "user": user, "password": password,
                 "cookies": cookies, "auth": auth,
