@@ -1551,6 +1551,15 @@ class AssistSession:
         except Exception:
             pass
 
+        # Resolve mined FRAGMENTS to paths this application actually answers. Must run
+        # after the crawl (it needs paths that answered to align against) and before
+        # anything consumes `api_routes` — the signup candidates and the surface the model
+        # plans from both read that list.
+        try:
+            self.resolve_mined_routes()
+        except Exception:
+            pass
+
         # Soft-404 detection: probe one path that certainly does not exist. If the app
         # answers 200 (SPA fallback / catch-all route), a "200" from a path scanner does
         # NOT mean the path exists — flag it so the planner stops trusting path-discovery
@@ -5127,6 +5136,82 @@ class AssistSession:
         if r.status == 200 and re.search(r"type=[\"']?password", (r.body or ""), re.I):
             return None
         return user, password
+
+    def resolve_mined_routes(self, cap: int = 40) -> list:
+        """Resolve mined route FRAGMENTS to paths this target actually answers.
+
+        THE DEFECT (CR1 pre-flight 2, crAPI, 2026-09-17). A bundle yields the paths a
+        single-page app uses on the client; an application behind a gateway mounts them
+        under a service prefix, and mining loses it. Every mined route 404'd: signup was
+        tried at `/REGISTER` and `/auth/signup` while the endpoint that works is
+        `/identity/api/auth/signup`. B3 and B8 failed on that and nothing else.
+
+        `summary()` ALREADY said "UNVERIFIED — the mount prefix may be missing". The model
+        read the sentence and proposed against those paths anyway, and
+        `_json_signup_candidates` consumed them as real URLs. **A caveat in prose that no
+        code enforces is a comment, not a safeguard** — so the caveat is now a step.
+
+        Two halves, and neither guesses:
+          1. the prefix is ALIGNED against a path that already answered (the login URL,
+             or anything the crawl fetched) — see `webmap.align_mount_prefixes`;
+          2. every composed path is CONFIRMED by one gated request before anything uses
+             it. Never act on a derived fact that has not been confirmed against the
+             target once.
+
+        Fail-closed twice over: a target with no learnable prefix resolves nothing and
+        spends no requests (Juice Shop), and a soft-404 target resolves nothing because a
+        confirmation there proves nothing — every composition would "pass".
+        """
+        from . import webmap
+        from .web import WebAction
+        surface = getattr(self, "surface", None)
+        if surface is None or self.browser is None:
+            return []
+        if getattr(surface, "soft_404", False):
+            self.note("[crawl] route resolution SKIPPED: this host answers 200 for paths "
+                      "that do not exist, so a confirmation would prove nothing")
+            return []
+        fragments = list(getattr(surface, "api_routes", []) or [])
+        observed = [p for p in (getattr(surface, "pages", set()) or set())]
+        if getattr(self, "_login_url", ""):
+            observed.append(self._login_url)
+        prefixes = webmap.align_mount_prefixes(observed, fragments)
+        if not prefixes:
+            return []
+        base = getattr(surface, "seed", "") or f"http://{self.target}/"
+        from urllib.parse import urljoin as _urljoin
+        known = set(fragments)
+        resolved, budget = [], cap
+        for frag in fragments:
+            if budget <= 0:
+                break
+            for prefix in prefixes:
+                composed = prefix + ("/" + frag.strip("/"))
+                if composed in known or budget <= 0:
+                    continue
+                budget -= 1
+                try:
+                    _d, r = self.browser.run(WebAction(
+                        "request", method="GET", url=_urljoin(base, composed)))
+                except Exception:
+                    continue
+                status = getattr(r, "status", None)
+                if not status or status == 404:
+                    continue
+                # It answered. Replace the dead fragment rather than keeping both: a
+                # fragment that 404s is a lead the model will keep spending steps on.
+                surface.api_routes = [composed if x == frag else x
+                                      for x in surface.api_routes]
+                if composed not in surface.confirmed_routes:
+                    surface.confirmed_routes.append(composed)
+                known.add(composed)
+                resolved.append((frag, composed))
+                break
+        if resolved:
+            self.note(f"[crawl] resolved {len(resolved)} mined route(s) under this app's "
+                      f"own mount prefix {prefixes[0]} and CONFIRMED each by request: "
+                      + ", ".join(c for _f, c in resolved[:6]))
+        return resolved
 
     def _json_signup_candidates(self) -> list:
         """Registration URLs worth trying, from the CRAWL, filtered by the allowlist.

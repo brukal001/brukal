@@ -470,6 +470,47 @@ def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     return (hot + cold)[:max_routes]
 
 
+def align_mount_prefixes(observed_paths, fragments, cap: int = 3) -> list:
+    """Mount prefixes DERIVED by aligning a path that answered against a mined fragment.
+
+    Mining a JS bundle yields the paths a single-page app uses on the CLIENT. An
+    application behind a gateway mounts those under a service prefix, and that prefix is
+    exactly what mining loses. crAPI (CR1 pre-flight 2, 2026-09-17) is the measured case:
+    every mined fragment 404'd, `/auth/signup` among them, while the endpoint that works
+    is `/identity/api/auth/signup`.
+
+    This does not guess the prefix and does not carry a list of likely ones. It ALIGNS:
+
+        observed (answered 200):  /identity/api/auth/login
+        mined fragment:           /auth/login
+        therefore this app mounts that fragment under  /identity/api
+
+    The LONGEST matching fragment wins, because it is the most specific alignment and the
+    only one that composes correctly — `/login` also aligns here and would yield
+    `/identity/api/auth`, which composes `/identity/api/auth/auth/signup`.
+
+    Returns [] when nothing aligns, which is the Juice Shop case: the observed path IS the
+    fragment, there is no prefix to learn, and the mechanism stays switched off rather
+    than inventing one.
+    """
+    best: dict = {}
+    for url in observed_paths or ():
+        path = urlsplit(url).path if "//" in (url or "") else (url or "")
+        if not path.startswith("/"):
+            continue
+        for frag in fragments or ():
+            f = "/" + (frag or "").strip("/")
+            if len(f) < 2 or not path.endswith(f) or len(path) <= len(f):
+                continue
+            prefix = path[:-len(f)].rstrip("/")
+            if not prefix:
+                continue
+            # keyed by prefix, valued by the longest fragment that produced it
+            if len(f) > best.get(prefix, 0):
+                best[prefix] = len(f)
+    return [p for p, _n in sorted(best.items(), key=lambda kv: -kv[1])][:cap]
+
+
 @dataclass
 class AttackSurface:
     """The accumulated map of a crawl: pages actually fetched, the frontier of
@@ -486,6 +527,7 @@ class AttackSurface:
     write_operations: list = field(default_factory=list)  # (METHOD, templated path) that mutate state
     privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set
     soft_404: bool = False                           # host answers 200 for missing paths
+    confirmed_routes: list = field(default_factory=list)  # mined paths a request PROVED exist
     path_candidates: set = field(default_factory=set)  # path-shaped strings seen in bodies
 
     def add_page(self, url: str, links, forms, params) -> None:
@@ -580,12 +622,20 @@ class AttackSurface:
                     paths.append(path)
             lines.append("  pages fetched (VERIFIED reachable): "
                          + ", ".join(sorted(paths)[:24]))
-        if self.api_routes:
+        if self.confirmed_routes:
+            # Resolved against a learned mount prefix and CONFIRMED by a request. The
+            # label is earned here, not asserted: each of these answered something other
+            # than 404 before it was written down.
+            lines.append("  API routes CONFIRMED to exist (resolved under this app's own "
+                         "mount prefix, each proved by a request): "
+                         + ", ".join(self.confirmed_routes[:24]))
+        _unconfirmed = [r for r in self.api_routes if r not in set(self.confirmed_routes)]
+        if _unconfirmed:
             # Mined from text and JS: useful leads, but the prefix an app mounts them
             # under is exactly what mining loses, so they are labelled as unverified.
             lines.append("  API route fragments mined from page text (UNVERIFIED — the "
                          "mount prefix may be missing; prefer the fetched paths above): "
-                         + ", ".join(self.api_routes[:24]))
+                         + ", ".join(_unconfirmed[:24]))
         for f in self.forms[:max_items]:
             lines.append(f"  form: {f.describe()}")
         shown = 0
