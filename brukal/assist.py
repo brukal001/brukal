@@ -4695,6 +4695,16 @@ class AssistSession:
                         shapes.append(_shape)
                 cspec = _hyp.resolve_setup_refs(h.control, setup_results)
                 vspec = _hyp.resolve_setup_refs(h.variant, setup_results)
+                _oob_token = ""
+                if "{{oob}}" in json.dumps(vspec):
+                    _lis = self._oob()
+                    if _lis is None:
+                        raise ValueError(
+                            "an out-of-band experiment needs the cage listener, and none "
+                            "is available in this environment")
+                    _oob_token = "exp" + str(random.randint(10 ** 8, 10 ** 9))
+                    vspec = json.loads(json.dumps(vspec).replace(
+                        "{{oob}}", _lis.callback_url(_oob_token)))
                 # Read before `as` is popped off the spec by the dispatch below.
                 _c_as = cspec.get("as", "self")
                 _v_as = vspec.get("as", "self")
@@ -4804,7 +4814,11 @@ class AssistSession:
                     "variant_spec": vspec, "profile": getattr(self, "profile", None),
                     # Only a stable baseline and a performed action let `state_changed`
                     # hold; both are facts about what the ENGINE did, not about a body.
-                    "baseline_stable": _stable, "acted": _acted}
+                    "baseline_stable": _stable, "acted": _acted,
+                    # A fact about the LISTENER, not about either response: both sides of
+                    # an SSRF experiment are usually an identical 200.
+                    "oob_hit": bool(_oob_token and self._oob() is not None
+                                    and self._oob().hit(_oob_token))}
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
             # SHOW THE MATCH, not just its verdict — and record it whether or not the
             # comparator held. An ownership claim a reader cannot check is the thing this

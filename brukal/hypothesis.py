@@ -75,6 +75,16 @@ _COMPARATORS = {
             and _norm(a.body) != _norm(b.body)),
         "a state we could read changed after an action we performed, on an endpoint "
         "that was stable when read twice beforehand"),
+    # A THIRD EVIDENCE CLASS: the proof arrives OUT OF BAND. crAPI challenge 11 is "make
+    # the application send an HTTP call to an external host", and both responses in that
+    # experiment are an identical 200 — what proves it is that the TARGET CONTACTED US.
+    # Brukal has had a listener in the cage for months; a model-proposed experiment could
+    # not reach it, so SSRF was a MODEL-LIMIT miss in every CR1 run because thinking of it
+    # led nowhere. `oob_hit` is a fact about the listener, established by the engine.
+    "oob_callback": (
+        lambda a, b, p=None, ctx=None: bool((ctx or {}).get("oob_hit")),
+        "the target fetched a URL we supplied, proving it makes server-side requests to "
+        "a caller-controlled destination"),
     # THE CANONICAL BOLA SHAPE, and the only comparator that reads the LEDGER rather than
     # only the two responses. See `_cross_account_resource`.
     "cross_account_resource": (
@@ -88,7 +98,7 @@ _COMPARATORS = {
 # signature by catching TypeError, which cannot tell "this predicate takes two arguments"
 # from "this predicate raised TypeError on line 3", and a comparator that silently
 # degraded to a two-argument call would be judging on less than it was given.
-_CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed",)
+_CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed", "oob_callback",)
 
 # Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
 # recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
@@ -490,6 +500,14 @@ _SETUP_REF_RE = re.compile(r"\{\{\s*setup\.(\d+)\.([A-Za-z0-9_][A-Za-z0-9_.\-]*)
 
 # Braces are DOUBLED because this is spliced into the two prompt templates below, which
 # are `.format()`-ed for the comparator list — so `{{{{` here is the `{{` the model sees.
+OOB_REF_SYNTAX = (
+    "For an experiment whose proof is that the TARGET CONTACTED SOMETHING, write "
+    "{{{{oob}}}} wherever a URL the application will fetch belongs — a callback field, a "
+    "webhook, an avatar or import URL. Deterministic code replaces it with a listener "
+    "inside the cage carrying a token unique to that experiment, and `oob_callback` "
+    "judges whether the interaction arrived. Both responses are usually identical; the "
+    "interaction is the whole evidence.")
+
 SETUP_REF_SYNTAX = (
     "To USE something a setup response returned, write {{{{setup.<i>.<field>}}}} in a "
     "later url, body, or header — `i` is the 0-based setup index and `<field>` a dotted "
@@ -1246,6 +1264,8 @@ action a stranger should be refused. A control and a variant that differ ONLY in
 is the cleanest experiment you can propose.
 
 """ + SETUP_REF_SYNTAX + """
+
+""" + OOB_REF_SYNTAX + """
 
 Prefer experiments that need setup — a stateless endpoint has usually been checked \
 already by deterministic probes, whereas a rule that only exists partway through a \
