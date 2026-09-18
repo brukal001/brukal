@@ -212,6 +212,41 @@ class GroundedLoop:
         self._confirmed_done = False          # active SQLi/XSS confirmation runs once
         self._domain_enum_queue = None        # proactive AD/cloud enumeration (drains once)
 
+    def _seed_principals(self) -> None:
+        """Run the target's own onboarding for each principal we hold, ONCE.
+
+        `GET /identity/api/v2/vehicle/vehicles?id=1 -> []` across five CR1 runs: a
+        cross-account comparator needs OUR resource and THEIRS, and six of the twelve
+        missed challenges fail on that empty control. It runs after
+        `_establish_principals` because the second principal must exist before it can be
+        seeded, and before the experiment phase because that is what consumes the result.
+
+        Once per engagement per principal: every recipe CREATES real state on a live
+        target, so a repeat is not a cache miss, it is a second vehicle. Capability, not
+        governance — a target that refuses leaves a reason and the run continues."""
+        session = self.session
+        # The memo lives on the SESSION, not on this loop object. What it protects is
+        # state on the TARGET — a second run of the recipe is not a cache miss, it is a
+        # second vehicle — so a fresh loop over the same engagement must not redo it.
+        done = getattr(session, "_seeded_principals", None)
+        if done is None:
+            done = session._seeded_principals = set()
+        from . import seed as _seed
+        principals = ["self"]
+        if getattr(session, "_second_identity", None):
+            principals.append("second")
+        for who in [p for p in principals if p not in done]:
+            done.add(who)
+            try:
+                out = _seed.run_seed(session, who)
+            except Exception:
+                continue
+            if out.get("owned"):
+                continue
+            if out.get("recipe"):
+                # It matched and did not finish: say why, once, where a reader looks.
+                session.note(f"[seed] {who}: {out.get('reason', 'no resource created')}")
+
     def _establish_principals(self) -> None:
         """Acquire the principals the engagement depends on, BEFORE spending on probes.
 
@@ -550,6 +585,7 @@ class GroundedLoop:
                 # FIRST, before anything competes for the same budget. See
                 # _establish_principals: this is an ordering fix, not a budget one.
                 self._establish_principals()
+                self._seed_principals()
                 n = 0
                 try:
                     n = self.session.confirm_surface()

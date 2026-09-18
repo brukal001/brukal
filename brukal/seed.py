@@ -243,6 +243,14 @@ def run_seed(session, who: str = "self", recipe=None) -> dict:
             bound[name] = got
     out["bound"] = dict(bound)
     out["owned"] = str(bound.get(recipe.owns, "")) or "created"
+    # ONTO THE OWNERSHIP LEDGER, which is what the comparator actually reads. A vehicle
+    # created but never recorded is invisible to `ownership_evidence`, so the
+    # cross-account claim would stay exactly as unprovable as it was with an empty
+    # control — the seeding would have changed the target and nothing else.
+    try:
+        session._record_principal_ids(who, "seed", json.dumps({recipe.owns: out["owned"]}))
+    except Exception:
+        pass
     try:
         session.note(f"[seed] {recipe.name}: {who} now owns {recipe.owns}="
                      f"{out['owned']}")

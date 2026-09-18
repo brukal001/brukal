@@ -1045,6 +1045,90 @@ def from_foreign_record(url: str, body: str, our_handles, max_body: int = 200_00
         setup=[])
 
 
+# --------------------------------------------------------------------------- #
+# COVERAGE FORCING — a floor under the model, not a replacement for it
+# --------------------------------------------------------------------------- #
+#
+# Four CR1 runs against the same target with the same configuration and the same model:
+#
+#   run | proposed | foreign records | recall
+#     2 |  7       | 0               | 0 of 14
+#     3 |  4       | 2               | 2 of 14
+#     4 | 15       | 8               | 2 of 14
+#     5 |  4       | 0               | 2 of 14
+#
+# Run 4 went to /workshop/api/shop/orders and found another tenant's order. Run 5 never
+# went near it. Neither run misbehaved: an agent goes deep where it gets traction, so
+# WHICH endpoints get examined is a coin flip and three challenges sit at MODEL-LIMIT
+# because nobody ever asked. Depth is the model's job; a floor under coverage is not.
+_COVERAGE_MAX = 6
+# Read-only sweep. A coverage pass that POSTs at everything it finds is a different kind
+# of tool; these words mark a route whose mere invocation changes or destroys state.
+_SWEEP_SKIP = ("delete", "remove", "reset", "drop", "wipe", "purge", "logout", "signout",
+               "revoke", "deactivate", "close", "cancel", "refund", "createdb", "seed")
+
+
+def route_families(routes) -> dict:
+    """Confirmed routes grouped by the mount point they hang off.
+
+    One question per AREA, not per endpoint: `/identity/api/v2/vehicle/vehicles` and
+    `.../resend_email` are one family, because an application authorises an area, and
+    sweeping every leaf would spend the budget proving the same thing repeatedly."""
+    fams: dict = {}
+    for route in routes or ():
+        path = (route or "").split("?", 1)[0]
+        segs = [s for s in path.split("/") if s]
+        if len(segs) < 2:
+            continue
+        family = "/" + "/".join(segs[:-1])
+        fams.setdefault(family, []).append(path)
+    return fams
+
+
+def coverage_proposals(confirmed_routes, existing, base: str = "",
+                       cap: int = _COVERAGE_MAX) -> list:
+    """One deterministic question per confirmed family nothing has asked about.
+
+    The question is the one that found crAPI's unauthenticated order exposure by accident
+    in run 4: control ANONYMOUS, variant as us, `a_denied_b_allowed` — does this endpoint
+    authenticate at all. Read-only, two requests, no model call.
+
+    Only CONFIRMED routes are swept. A mined-but-unconfirmed path is a phantom (GAP #4)
+    and sweeping it would spend two requests proving nothing.
+    """
+    covered = set()
+    for h in existing or ():
+        for spec in (getattr(h, "control", None) or {}, getattr(h, "variant", None) or {}):
+            url = spec.get("url", "") or ""
+            for fam in route_families([url.split("://")[-1].split("/", 1)[-1]
+                                       if "://" in url else url]):
+                covered.add(fam)
+            path = url.split("://")[-1]
+            path = "/" + path.split("/", 1)[1] if "/" in path else path
+            segs = [s for s in path.split("?")[0].split("/") if s]
+            if len(segs) >= 2:
+                covered.add("/" + "/".join(segs[:-1]))
+    out = []
+    for family, members in sorted(route_families(confirmed_routes).items()):
+        if family in covered or len(out) >= cap:
+            continue
+        target_path = sorted(members)[0]
+        low = target_path.lower()
+        if any(word in low for word in _SWEEP_SKIP):
+            continue
+        url = (base.rstrip("/") + target_path) if base else target_path
+        out.append(Hypothesis(
+            title=f"Endpoint family {family} may not authenticate its callers",
+            severity="high", comparator="a_denied_b_allowed",
+            control={"method": "GET", "url": url, "as": "anonymous"},
+            variant={"method": "GET", "url": url, "as": "self"},
+            rationale=(f"Coverage: no proposal in this run asked anything about {family}, "
+                       f"which the target confirmed exists. Read-only question — is an "
+                       f"anonymous caller refused where we are accepted?"),
+            setup=[]))
+    return out
+
+
 def comparator_names() -> tuple:
     """The closed set, for the prompt. The model must pick from these by name."""
     return tuple(sorted(_COMPARATORS))

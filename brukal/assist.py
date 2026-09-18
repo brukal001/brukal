@@ -4478,6 +4478,23 @@ class AssistSession:
             proposals = _derived + list(proposals)
             self.note(f"[experiment] {len(_derived)} experiment(s) derived from observed "
                       f"records, queued ahead of the model's proposals")
+        # COVERAGE FLOOR. Four CR1 runs on the same target proposed 7, 4, 15 and 4
+        # experiments and examined wildly different parts of the application; run 4 found
+        # another tenant's order at /workshop/api/shop and run 5 never went near it. Depth
+        # is the model's job. Making sure no confirmed area of the application is silently
+        # skipped is not, so every family nothing asked about gets one read-only question.
+        try:
+            _cov = _hyp.coverage_proposals(
+                list(getattr(self.surface, "confirmed_routes", []) or []),
+                proposals,
+                base=(getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/"))
+        except Exception:
+            _cov = []
+        if _cov:
+            proposals = list(proposals) + _cov
+            self.note(f"[experiment] coverage: {len(_cov)} confirmed endpoint "
+                      f"family(ies) had no proposal; asking whether each authenticates "
+                      f"its callers")
         if not proposals:
             return 0
 
