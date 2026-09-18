@@ -124,6 +124,10 @@ def _session(tmp_path, cage, fragments=CRAPI_FRAGMENTS, login=CRAPI_LOGIN, soft4
                       browser=GovernedBrowser(scope, cage, audit),
                       blackboard=Blackboard(tmp_path / "vault", scope))
     s.allow_intrusive = True
+    # These tests are about resolution mechanics, not about the rate budget, so they run
+    # in the phase where the full sweep is allowed: after the principals are in hand.
+    # The narrowed pre-establishment pass has its own file.
+    s._principals_established = True
     surface = Surface(seed=f"{BASE}/")
     surface.add_routes(list(fragments))
     surface.soft_404 = soft404

@@ -5497,12 +5497,50 @@ class AssistSession:
                       "that do not exist, so a confirmation would prove nothing")
             return []
         fragments = list(getattr(surface, "api_routes", []) or [])
+        # YIELD TO THE PRINCIPALS. The full sweep costs a probe per fragment plus a
+        # composition per prefix, and in CR1 runs 7 and 8 it spent the web-rate allowance
+        # that the SECOND PRINCIPAL'S IDENTITY PROBES needed — /me, /api/user/me and
+        # crAPI's own /identity/api/v2/user/dashboard were all denied `hard:web-rate`,
+        # and both runs finished with that principal unconfirmed. `_establish_principals`
+        # already documents this exact failure from the 2C3 pre-flights: "the cheapest and
+        # most load-bearing acquisition in the engagement was queued behind the most
+        # expensive sweep."
+        #
+        # It cannot simply be deferred — establishment READS these routes, and GAP #4 was
+        # that crAPI's signup endpoint was unreachable until its prefix was learned. So
+        # the pre-establishment pass is NARROWED to what establishment actually needs, and
+        # the rest waits until the principals are in hand.
+        if not getattr(self, "_principals_established", False):
+            _login_ish = ("/login", "/signin", "/session", "/auth", "/token")
+            def _rank(frag):
+                low = frag.split("?")[0].rstrip("/").lower()
+                # SIGNUP FIRST. Establishment needs a registration endpoint; the login URL
+                # is supplied by the operator. A budget spent on login shapes is a budget
+                # that did not reach the one route the second principal depends on, which
+                # is how the first version of this narrowing resolved /login and stopped.
+                if any(low.endswith(s) for s in _JSON_SIGNUP_PATHS):
+                    return 0
+                if any(low.endswith(s) for s in _login_ish):
+                    return 1
+                return 2
+            fragments = sorted([f for f in fragments if _rank(f) < 2], key=_rank)
+            cap = min(cap, 12)
         observed = [p for p in (getattr(surface, "pages", set()) or set())]
         if getattr(self, "_login_url", ""):
             observed.append(self._login_url)
         # EVERYTHING THAT ANSWERED, not just the login URL — see `_observe_answer`.
         observed.extend(getattr(self, "_answered_paths", None) or [])
-        prefixes = webmap.align_mount_prefixes(observed, fragments)
+        # ALIGN AGAINST EVERYTHING EVER MINED, not only what survives. Resolution
+        # REPLACES a fragment with its composed form, so after one pass `/auth/login` has
+        # become `/identity/api/auth/login` — identical to the observed path it was
+        # aligned against, and alignment requires the observed path to be LONGER. The
+        # anchor destroys itself, and a second pass learns nothing.
+        anchors = getattr(self, "_mined_fragments", None)
+        if anchors is None:
+            anchors = self._mined_fragments = set()
+        anchors.update(fragments)
+        anchors.update(getattr(surface, "api_routes", []) or [])
+        prefixes = webmap.align_mount_prefixes(observed, sorted(anchors))
         if not prefixes:
             return []
         base = getattr(surface, "seed", "") or f"http://{self.target}/"

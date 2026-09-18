@@ -72,6 +72,10 @@ def _session(tmp_path, cage):
     s = AssistSession(TARGET, ex, StrategistAgent(llm),
                       browser=GovernedBrowser(scope, cage, audit))
     s.allow_intrusive = True
+    # These tests are about resolution mechanics, not about the rate budget, so they run
+    # in the phase where the full sweep is allowed: after the principals are in hand.
+    # The narrowed pre-establishment pass has its own file.
+    s._principals_established = True
     s.identity = "us@brukal.test"
     surface = AttackSurface(seed=f"{BASE}/")
     surface.add_routes(list(FRAGMENTS))
@@ -132,15 +136,22 @@ def test_a_404_teaches_NOTHING(tmp_path):
     assert not any("/nonsense" in r for r in s.surface.confirmed_routes)
 
 
-def test_a_composed_path_is_never_probed_twice(tmp_path):
-    """Re-resolution must not re-spend requests on compositions already disproved."""
+def test_resolution_CONVERGES_and_never_re_probes_disproved_ground(tmp_path):
+    """Re-resolution must not re-spend requests on compositions already disproved.
+
+    The property is convergence rather than "the second call is free": resolving rewrites
+    a fragment into its composed form, which can make a further prefix derivable, so a
+    second pass may legitimately try compositions that did not exist before. What must
+    never happen is unbounded growth, or a path probed twice."""
     cage = _ThreeServices()
     s, _ = _session(tmp_path, cage)
     s.resolve_mined_routes()
-    first = len(cage.asked)
+    s.resolve_mined_routes()
+    settled = len(cage.asked)
     s.resolve_mined_routes()
     s.resolve_mined_routes()
-    assert len(cage.asked) == first, f"{len(cage.asked) - first} wasted re-probes"
+    assert len(cage.asked) == settled, f"{len(cage.asked) - settled} wasted re-probes"
+    assert len(cage.asked) == len(set(cage.asked)), "a path was probed twice"
 
 
 def test_a_single_service_app_is_unchanged(tmp_path):

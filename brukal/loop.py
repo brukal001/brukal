@@ -266,6 +266,13 @@ class GroundedLoop:
         est = getattr(getattr(self, "session", None), "establish_second_identity", None)
         if est is None:
             return
+        # Whatever happens below, the acquisition has had its turn — and route resolution
+        # holds its full sweep until this is set, so it can never again starve the
+        # identity probes of the rate allowance (CR1 runs 7 and 8).
+        try:
+            self.session._principals_established = True
+        except Exception:
+            pass
         try:
             who = est()
         except Exception as exc:
