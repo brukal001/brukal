@@ -505,6 +505,14 @@ class GroundedLoop:
                 if answered > getattr(self, "_answered_seen", 0):
                     self._answered_seen = answered
                     self.session.resolve_mined_routes()
+                    # AND SEED AGAIN. Run 7 confirmed all three of crAPI's services and
+                    # still seeded nothing, because `_seed_principals` runs once in the
+                    # early reflex and the vehicle routes were only confirmed later, as
+                    # the agent explored. Same ordering defect as the derived-experiment
+                    # drain: the consumer runs once, early, and the evidence arrives
+                    # afterwards. The per-principal memo makes this idempotent, so a
+                    # recipe that already ran is not run twice.
+                    self._seed_principals()
             except Exception:
                 pass
             self._checkpoint()

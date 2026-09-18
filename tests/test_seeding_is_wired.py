@@ -110,3 +110,23 @@ def test_a_failed_seeding_is_recorded_and_does_not_stop_the_run(tmp_path):
     result = GroundedLoop(s, max_steps=2).run()
     assert result is not None
     assert any("seed" in n.lower() for n in s.notes), s.notes[-4:]
+
+
+def test_seeding_happens_when_the_recipe_BECOMES_matchable(tmp_path):
+    """RUN 7's DEFECT. Prefix learning confirmed all three of crAPI's services and
+    seeding still produced nothing, because `_seed_principals` fires once in the early
+    reflex and the vehicle routes were only confirmed later, as the agent explored.
+
+    Same ordering defect as the derived-experiment drain, one mechanism over: the
+    consumer runs once and the evidence arrives afterwards."""
+    app = _CrAPI()
+    s, _audit = _session(tmp_path, app)
+    s.surface.confirmed_routes = []                 # nothing confirmed yet
+    s.surface.api_routes = ["/identity/api/v2/user/dashboard"]
+    loop = GroundedLoop(s, max_steps=3)
+    # the agent explores, and the vehicle routes get confirmed mid-run
+    s._answered_paths = ["/identity/api/v2/vehicle/vehicles"]
+    s.surface.confirmed_routes = list(CRAPI_ROUTES)
+    loop.run()
+    assert [c for c in app.seen if c[1].endswith("/add_vehicle")], \
+        "the recipe became matchable mid-run and nothing seeded"
