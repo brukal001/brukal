@@ -57,6 +57,24 @@ _COMPARATORS = {
     "b_errors_a_does_not": (
         lambda a, b: (a.status == 200 and b.status is not None and b.status >= 500),
         "the variant drove the application into a server error the control did not"),
+    # A NEW EVIDENCE CLASS: the proof is a SIDE-EFFECT, not a reply. Every comparator
+    # above reads a response differential, which is why four of crAPI's measurable
+    # challenges — mass assignment (8, 9, 10) and coupon re-redemption (13) — were
+    # unpublishable by construction however well the model played. Here the control and
+    # the variant are the SAME read, with an action performed between them, and what is
+    # judged is whether the world moved.
+    #
+    # `baseline_stable` is load-bearing and comes from the engine, which reads the
+    # baseline TWICE before acting. Endpoints change on their own — timestamps, nonces,
+    # counters — and without that check every one of them would be a finding. Same
+    # discipline as the identity oracle's double anonymous probe.
+    "state_changed": (
+        lambda a, b, p=None, ctx=None: bool(
+            (ctx or {}).get("baseline_stable") and (ctx or {}).get("acted")
+            and a.status == b.status and a.status
+            and _norm(a.body) != _norm(b.body)),
+        "a state we could read changed after an action we performed, on an endpoint "
+        "that was stable when read twice beforehand"),
     # THE CANONICAL BOLA SHAPE, and the only comparator that reads the LEDGER rather than
     # only the two responses. See `_cross_account_resource`.
     "cross_account_resource": (
@@ -70,7 +88,7 @@ _COMPARATORS = {
 # signature by catching TypeError, which cannot tell "this predicate takes two arguments"
 # from "this predicate raised TypeError on line 3", and a comparator that silently
 # degraded to a two-argument call would be judging on less than it was given.
-_CONTEXT_COMPARATORS = ("cross_account_resource",)
+_CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed",)
 
 # Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
 # recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
@@ -747,11 +765,15 @@ class Hypothesis:
     the comparator still decides everything on the control/variant pair alone."""
 
     __slots__ = ("title", "severity", "comparator", "setup", "control", "variant",
-                 "rationale")
+                 "rationale", "act")
 
     def __init__(self, title, severity, comparator, control, variant, rationale="",
-                 setup=None):
+                 setup=None, act=None):
         self.title = title
+        # The request performed BETWEEN the two reads of a `state_changed` experiment.
+        # `setup` cannot express this: it always runs before both sides, so by the time
+        # the control runs the action has already happened and both reads see one world.
+        self.act = act or None
         self.severity = severity
         self.comparator = comparator
         self.setup = list(setup or [])
@@ -869,8 +891,12 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
         variant = _clean_request(item.get("variant"))
         if control is None or variant is None:
             continue
-        if control == variant:
+        act = _clean_request(item.get("act"))
+        if control == variant and act is None:
             continue                       # a differential against itself proves nothing
+        # ...unless something is PERFORMED between them. A `state_changed` experiment is
+        # the same read twice with an action in the middle, so identical sides are the
+        # correct shape there and only there.
         severity = str(item.get("severity", "medium")).lower()
         if severity not in ("critical", "high", "medium", "low", "info"):
             severity = "medium"
@@ -879,7 +905,7 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
         setup = [r for r in (_clean_request(x) for x in (item.get("setup") or [])[:3])
                  if r is not None]
         out.append(Hypothesis(title, severity, comparator, control, variant,
-                              str(item.get("rationale", ""))[:300], setup))
+                              str(item.get("rationale", ""))[:300], setup, act))
         if len(out) >= max_hypotheses:
             break
     return out

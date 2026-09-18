@@ -4702,6 +4702,28 @@ class AssistSession:
                                        cspec.get("url", "")):
                     _d1, a = self.browser.run(WebAction("request", **cspec))
                 self._record_experiment_result("control", cspec.get("url", ""), a)
+                # STATE-CHANGE EVIDENCE: read, read again, act, then read once more. The
+                # second baseline read is what makes the class sound — endpoints move on
+                # their own (timestamps, nonces, counters) and without it every one of
+                # them would look like a finding. Same discipline the identity oracle
+                # uses when it probes anonymously twice before trusting an answer.
+                _stable, _acted = False, False
+                if h.act:
+                    _spec2 = _hyp.resolve_setup_refs(dict(h.control), setup_results)
+                    with self._as_identity(_spec2.pop("as", "self"), "control",
+                                           _spec2.get("url", "")):
+                        _d1b, _a2 = self.browser.run(WebAction("request", **_spec2))
+                    _stable = (a is not None and _a2 is not None
+                               and getattr(a, "status", None) == getattr(_a2, "status", None)
+                               and (a.body or "") == (_a2.body or ""))
+                    aspec = _hyp.resolve_setup_refs(dict(h.act), setup_results)
+                    if self._is_irreversible_path(aspec.get("url", "")):
+                        raise ValueError("irreversible action in a state-change experiment")
+                    with self._as_identity(aspec.pop("as", "self"), "act",
+                                           aspec.get("url", "")):
+                        _da, _ar = self.browser.run(WebAction("request", **aspec))
+                    self._record_experiment_result("act", aspec.get("url", ""), _ar)
+                    _acted = _ar is not None and getattr(_ar, "status", None) is not None
                 with self._as_identity(vspec.pop("as", "self"), "variant",
                                        vspec.get("url", "")):
                     _d2, b = self.browser.run(WebAction("request", **vspec))
@@ -4779,7 +4801,10 @@ class AssistSession:
             # already popped — so the comparator sees what was actually addressed rather
             # than the template the model wrote.
             _ctx = {"ownership": self.principal_identifiers(), "variant_as": _v_as,
-                    "variant_spec": vspec, "profile": getattr(self, "profile", None)}
+                    "variant_spec": vspec, "profile": getattr(self, "profile", None),
+                    # Only a stable baseline and a performed action let `state_changed`
+                    # hold; both are facts about what the ENGINE did, not about a body.
+                    "baseline_stable": _stable, "acted": _acted}
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
             # SHOW THE MATCH, not just its verdict — and record it whether or not the
             # comparator held. An ownership claim a reader cannot check is the thing this
