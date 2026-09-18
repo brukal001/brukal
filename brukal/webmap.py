@@ -528,6 +528,11 @@ class AttackSurface:
     privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set
     soft_404: bool = False                           # host answers 200 for missing paths
     confirmed_routes: list = field(default_factory=list)  # mined paths a request PROVED exist
+    # What the confirming probe learned about HOW to reach each route: "GET" when it
+    # answered, "not-GET" when it answered 405 (the route is there, GET is not the way in).
+    # Discarding this half cost 20-75% of the experiment budget in every CR1 run: the
+    # model proposed GET experiments at upload-only endpoints and collected 405s.
+    route_methods: dict = field(default_factory=dict)
     path_candidates: set = field(default_factory=set)  # path-shaped strings seen in bodies
 
     def add_page(self, url: str, links, forms, params) -> None:
@@ -626,9 +631,16 @@ class AttackSurface:
             # Resolved against a learned mount prefix and CONFIRMED by a request. The
             # label is earned here, not asserted: each of these answered something other
             # than 404 before it was written down.
+            # Each route carries what the probe learned about reaching it, because a path
+            # the application refuses to GET must not look identical to one it serves.
+            _shown = []
+            for r in self.confirmed_routes[:24]:
+                how = (self.route_methods or {}).get(r, "")
+                _shown.append(f"{r} [{how}]" if how else r)
             lines.append("  API routes CONFIRMED to exist (resolved under this app's own "
-                         "mount prefix, each proved by a request): "
-                         + ", ".join(self.confirmed_routes[:24]))
+                         "mount prefix, each proved by a request; [not-GET] means the "
+                         "route is there but answered 405 to GET — use another method): "
+                         + ", ".join(_shown))
         _unconfirmed = [r for r in self.api_routes if r not in set(self.confirmed_routes)]
         if _unconfirmed:
             # Mined from text and JS: useful leads, but the prefix an app mounts them

@@ -236,11 +236,18 @@ class GroundedLoop:
         if getattr(session, "_second_identity", None):
             principals.append("second")
         for who in [p for p in principals if p not in done]:
-            done.add(who)
             try:
                 out = _seed.run_seed(session, who)
             except Exception:
                 continue
+            # MARK IT DONE ONLY IF A RECIPE ACTUALLY RAN. This used to mark first and
+            # attempt second, so the early call — when nothing is confirmed yet and no
+            # recipe can match — permanently consumed the principal's only chance. Run 9's
+            # recipe matches at report time and seeding still never happened, in nine
+            # runs. A no-op is not an attempt.
+            if not out.get("recipe"):
+                continue
+            done.add(who)
             if out.get("owned"):
                 continue
             if out.get("recipe"):

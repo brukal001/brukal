@@ -4368,6 +4368,22 @@ class AssistSession:
         if llm is None:
             return 0
 
+        # SETTLE THE SURFACE FIRST. Run 9 proposed its first experiment at ledger entry
+        # 270 and 57 of the 60 resolution probes happened AFTER it, so the model planned
+        # against the unverified, unprefixed fragment list — /v2/user/dashboard,
+        # /orders/all — and eight of sixteen experiment requests were 404s while the
+        # confirmed /identity/api/... equivalents existed by the end of the run. By report
+        # time the surface looked perfect, which is why it stayed invisible for nine runs.
+        #
+        # This is the moment the surface matters most: it is the model's entire picture of
+        # the application. Resolution still yields to the principals (it no-ops until they
+        # are established), so the rate budget that the second principal's identity probes
+        # depend on is untouched.
+        try:
+            if getattr(self, "_principals_established", False):
+                self.resolve_mined_routes()
+        except Exception:
+            pass
         grounding = self.surface.summary() if hasattr(self.surface, "summary") else ""
         source_note = ""
         if self.source_leads:
@@ -5576,6 +5592,8 @@ class AssistSession:
                 if _bs and _bs != 404:
                     if bare not in surface.confirmed_routes:
                         surface.confirmed_routes.append(bare)
+                    # KEEP THE OTHER HALF of what the probe just learned.
+                    surface.route_methods[bare] = "not-GET" if _bs == 405 else "GET"
                     continue
             for prefix in prefixes:
                 composed = prefix + ("/" + frag.strip("/"))
@@ -5597,6 +5615,7 @@ class AssistSession:
                                       for x in surface.api_routes]
                 if composed not in surface.confirmed_routes:
                     surface.confirmed_routes.append(composed)
+                surface.route_methods[composed] = "not-GET" if status == 405 else "GET"
                 known.add(composed)
                 resolved.append((frag, composed))
                 break
