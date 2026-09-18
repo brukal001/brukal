@@ -48,15 +48,49 @@ class SeedStep:
     RECIPE defined, never into a URL path or a header name.
     """
 
-    __slots__ = ("method", "path", "body", "binds", "expect", "note")
+    __slots__ = ("method", "path", "body", "binds", "expect", "note", "pick")
 
-    def __init__(self, method, path, body=None, binds=None, expect=(200, 201), note=""):
+    def __init__(self, method, path, body=None, binds=None, expect=(200, 201), note="",
+                 pick=""):
         self.method = method
         self.path = path
         self.body = body or {}
         self.binds = binds or {}
         self.expect = tuple(expect)
         self.note = note
+        # `pick="mail_to_principal"` narrows a mailbox listing to THIS principal's newest
+        # message before binding. It exists so the principal's address never has to be
+        # substituted into a URL query — the engine filters, the recipe does not
+        # interpolate, and the rule that bound values reach bodies only stays intact.
+        self.pick = pick
+
+
+def pick_mail_to(payload: str, principal: str) -> str:
+    """The newest message addressed to `principal` — its RAW MESSAGE TEXT, or "".
+
+    Returns the message rather than the JSON wrapper, and that distinction is load-
+    bearing. Inside a JSON document an email's soft line breaks are ESCAPED (`\\r\\n`,
+    two characters), so a quoted-printable decoder run over the JSON does not see a soft
+    break at all and a value split across one stays split. Measured on crAPI: matching the
+    wrapper yields the VIN "XG" instead of "XGR94Y8HA47N6NF9N".
+
+    MailHog's shape, and deliberately tolerant of it: messages are matched on the whole
+    envelope so a listing, a search result and a single message all work."""
+    try:
+        data = json.loads(payload or "")
+    except Exception:
+        return ""
+    items = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return ""
+    who = (principal or "").strip().lower()
+    for item in items:                       # newest first, as MailHog returns them
+        blob = json.dumps(item).lower()
+        if who and who in blob:
+            raw = item.get("Raw") if isinstance(item, dict) else None
+            data = raw.get("Data") if isinstance(raw, dict) else None
+            return data if isinstance(data, str) and data else json.dumps(item)
+    return ""
 
 
 class SeedRecipe:
@@ -88,13 +122,28 @@ def _dotted(obj, path: str):
 
 
 def extract(body: str, spec: str):
-    """A bound value from a response: a dotted JSON path, or `re:<pattern>` with one group.
+    """A bound value from a response: a dotted JSON path, `re:<pattern>`, or `qp:<pattern>`.
 
-    Both forms are needed by real onboarding flows: crAPI's vehicle details arrive as
-    PROSE in an email body, not as JSON fields, so a path expression alone cannot reach
-    them."""
+    Three forms because real onboarding needs three. crAPI's vehicle details arrive as
+    PROSE inside an HTML email, so a path expression cannot reach them — and the mail is
+    QUOTED-PRINTABLE, which breaks a value across a soft line break mid-token:
+
+        <b>VIN: </font><font color=3D'#0000ff'>XG=\r\nR94Y8HA47N6NF9N</font></b>
+
+    The VIN there is XGR94Y8HA47N6NF9N. A regex written from crAPI's documentation would
+    have captured "XG" and seeded a vehicle that does not exist. `qp:` decodes the
+    transfer encoding first, which is measured behaviour, not a guess about it."""
     if not body or not spec:
         return None
+    if spec.startswith("qp:"):
+        import quopri
+        try:
+            text = quopri.decodestring(body.encode("utf-8", "replace")).decode(
+                "utf-8", "replace")
+        except Exception:
+            text = body
+        m = re.search(spec[3:], text, re.I | re.S)
+        return m.group(1).strip() if m else None
     if spec.startswith("re:"):
         m = re.search(spec[3:], body, re.I | re.S)
         return m.group(1).strip() if m else None
@@ -157,7 +206,9 @@ def run_seed(session, who: str = "self", recipe=None) -> dict:
         return out
     out["recipe"] = recipe.name
     base = (getattr(surface, "seed", "") or f"http://{session.target}/").rstrip("/")
-    bound: dict = {}
+    # The principal's own handle is available to a recipe from the start — it is ours, not
+    # the target's, and a flow that reads a mailbox needs to know whose mail to read.
+    bound: dict = {"principal": getattr(session, "identity", "") or ""}
     for i, step in enumerate(recipe.steps):
         body = _substitute(step.body, bound)
         action = WebAction("request", method=step.method, url=base + step.path,
@@ -176,8 +227,15 @@ def run_seed(session, who: str = "self", recipe=None) -> dict:
             out["reason"] = (f"step {i} ({step.note or step.path}) answered {status}, "
                              f"expected {step.expect}")
             return out
+        payload = getattr(r, "body", "") or ""
+        if step.pick == "mail_to_principal":
+            payload = pick_mail_to(payload, bound.get("principal", ""))
+            if not payload:
+                out["reason"] = (f"step {i} ({step.note or step.path}) returned no message "
+                                 f"addressed to this principal")
+                return out
         for name, spec in step.binds.items():
-            got = extract(getattr(r, "body", "") or "", spec)
+            got = extract(payload, spec)
             if got is None:
                 out["reason"] = (f"step {i} ({step.note or step.path}) answered {status} "
                                  f"but carried no '{name}'")
@@ -202,4 +260,37 @@ def run_seed(session, who: str = "self", recipe=None) -> dict:
 # Recipes. DATA, and each one is added only after the flow was measured live against
 # the application — never from its documentation.
 # --------------------------------------------------------------------------- #
-RECIPES: tuple = ()
+CRAPI_VEHICLE = SeedRecipe(
+    name="crapi-vehicle-onboarding",
+    # Every one of these must be CONFIRMED on the target before a single request goes out.
+    # The mailbox is reached through the application's OWN front door — crAPI proxies
+    # MailHog at /mailhog — so seeding needs no widening of the scope, and the mail
+    # server's direct address stays blocked by the cage's egress lock.
+    requires=("/identity/api/v2/vehicle/resend_email",
+              "/identity/api/v2/vehicle/add_vehicle"),
+    steps=(
+        SeedStep("POST", "/identity/api/v2/vehicle/resend_email",
+                 note="ask crAPI to send this account's vehicle details"),
+        SeedStep("GET", "/mailhog/api/v2/messages?limit=50",
+                 pick="mail_to_principal",
+                 binds={
+                     # MEASURED on the live application 2026-09-18, not read from the
+                     # documentation. The mail is quoted-printable HTML and the VIN is
+                     # broken across a soft line break mid-token:
+                     #   <b>VIN: </font><font color=3D'#0000ff'>XG=\r\nR94Y8HA47N6NF9N</font>
+                     # so the transfer encoding is decoded BEFORE matching. Matching the
+                     # raw body captures "XG" and seeds a vehicle that does not exist.
+                     "vin": "qp:VIN:\s*</font>.*?>([A-Z0-9]{8,32})<",
+                     "pin": "qp:Pincode:\s*<font[^>]*>(\d{3,8})<",
+                 },
+                 note="read this principal's vehicle mail"),
+        SeedStep("POST", "/identity/api/v2/vehicle/add_vehicle",
+                 body={"vin": "{vin}", "pincode": "{pin}"},
+                 binds={"id": "id"}, expect=(200, 201),
+                 note="redeem the details into an owned vehicle"),
+    ),
+    owns="id",
+    describe="Runs crAPI's own vehicle onboarding so a principal owns a resource a "
+             "cross-account comparator can use as its control.")
+
+RECIPES: tuple = (CRAPI_VEHICLE,)

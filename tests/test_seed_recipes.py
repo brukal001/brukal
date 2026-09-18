@@ -163,3 +163,88 @@ def test_a_target_with_no_recipe_seeds_nothing_and_says_so(tmp_path):
     out = run_seed(s, "self")
     assert out["owned"] == "" and "no seed recipe" in out["reason"]
     assert app.seen == []
+
+
+# --------------------------------------------------------------------------- #
+# crAPI's recipe, against the mail the live application actually sends
+# --------------------------------------------------------------------------- #
+
+# CAPTURED from crAPI at 172.20.0.12 on 2026-09-18 — quoted-printable HTML, and note the
+# VIN broken across a soft line break mid-token. This fixture is the measurement.
+CRAPI_MAIL_BODY = (
+    "<html><body><font face=3D'calibri' style =3D 'font-size:15px; color:#000;'>=\r\n"
+    "Hi seeder<font>,<br><font face=3D'calibri'><p style =3D 'font-size:15px; co=\r\n"
+    "lor:#000;'>We are glad to have you on-board. Your newly purchased vehiche d=\r\n"
+    "etails are provided below.</p><p><fo=\r\n"
+    "nt face=3D'calibri' style =3D 'font-size:15px;color:#000;'>Your vehicle inf=\r\n"
+    "ormation is <b>VIN: </font><font face=3D'calibri' font color=3D'#0000ff'>XG=\r\n"
+    "R94Y8HA47N6NF9N</font></b> and <b>Pincode: <font face=3D'calibri' font colo=\r\n"
+    "r=3D'#0000ff'>1717</font></b></p></body></html>")
+CRAPI_MAILBOX = json.dumps({"total": 22, "items": [
+    {"Raw": {"From": "no-reply@example.com", "To": ["someone-else@brukal.test"],
+             "Data": "Subject: Welcome\r\n\r\nnothing here"}},
+    {"Raw": {"From": "no-reply@example.com", "To": ["us@brukal.test"],
+             "Data": "Subject: Welcome to crAPI\r\n\r\n" + CRAPI_MAIL_BODY}},
+]})
+
+
+class _CrAPI:
+    def __init__(self):
+        self.seen: list = []
+
+    def run(self, action):
+        self.seen.append((action.method, action.url, action.body))
+        if action.url.endswith("/resend_email"):
+            return WebResult(status=200, url=action.url, body='{"message":"sent"}')
+        if "/mailhog/" in action.url:
+            return WebResult(status=200, url=action.url, body=CRAPI_MAILBOX)
+        if action.url.endswith("/add_vehicle"):
+            body = json.loads(action.body or "{}")
+            if body.get("vin") != "XGR94Y8HA47N6NF9N" or body.get("pincode") != "1717":
+                return WebResult(status=400, url=action.url,
+                                 body='{"message":"Invalid VIN or pincode"}')
+            return WebResult(status=200, url=action.url, body='{"id": 31, "vin": "XGR94Y8HA47N6NF9N"}')
+        return WebResult(status=404, url=action.url, body="{}")
+
+
+CRAPI_ROUTES = ["/identity/api/v2/vehicle/resend_email",
+                "/identity/api/v2/vehicle/add_vehicle", "/mailhog/api/v2/messages"]
+
+
+def test_the_VIN_survives_the_quoted_printable_line_break(tmp_path):
+    """THE MEASUREMENT THAT MATTERS. The live mail breaks the VIN mid-token across a soft
+    line break; a regex written from crAPI's documentation captures "XG" and seeds a
+    vehicle that does not exist."""
+    from brukal.seed import CRAPI_VEHICLE, extract, pick_mail_to
+    item = pick_mail_to(CRAPI_MAILBOX, "us@brukal.test")
+    assert extract(item, CRAPI_VEHICLE.steps[1].binds["vin"]) == "XGR94Y8HA47N6NF9N"
+    assert extract(item, CRAPI_VEHICLE.steps[1].binds["pin"]) == "1717"
+
+
+def test_the_mailbox_is_narrowed_to_THIS_principal():
+    """Somebody else's mail is somebody else's. The first item in the listing belongs to
+    another account; selection happens on the ENVELOPE and what comes back is that
+    message's own text, so the assertion is about which content was returned."""
+    from brukal.seed import pick_mail_to
+    picked = pick_mail_to(CRAPI_MAILBOX, "us@brukal.test")
+    assert "VIN" in picked, picked
+    assert "nothing here" not in picked, "it read the other account's mail"
+    assert pick_mail_to(CRAPI_MAILBOX, "nobody@brukal.test") == ""
+
+
+def test_crAPIs_recipe_seeds_a_real_vehicle(tmp_path):
+    """END TO END against the application's measured behaviour, including its rejection
+    of a wrong VIN — so a truncated extraction fails the test rather than passing it."""
+    from brukal.seed import CRAPI_VEHICLE
+    app = _CrAPI()
+    s, audit = _session(tmp_path, app, confirmed=CRAPI_ROUTES)
+    s.identity = "us@brukal.test"
+    out = run_seed(s, "self", CRAPI_VEHICLE)
+    assert out["owned"] == "31", out
+    assert out["bound"]["vin"] == "XGR94Y8HA47N6NF9N"
+
+
+def test_the_recipe_activates_on_crAPI_and_on_nothing_else(tmp_path):
+    from brukal.seed import CRAPI_VEHICLE, recipe_for
+    assert recipe_for(CRAPI_ROUTES) is CRAPI_VEHICLE
+    assert recipe_for(["/rest/user/whoami", "/api/Users"]) is None
