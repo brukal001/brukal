@@ -69,9 +69,11 @@ def _session(tmp_path):
 
 
 def _queue_one(s):
-    h = from_foreign_record(ORDERS_2, FOREIGN, {"us@brukal.test"})
-    s._derived_hypotheses = [h]
-    return h
+    """An observation now yields TWO questions — BOLA and unauthenticated exposure —
+    because it is compatible with two truths and the target decides which."""
+    made = from_foreign_record(ORDERS_2, FOREIGN, {"us@brukal.test"})
+    s._derived_hypotheses = list(made)
+    return made[0]
 
 
 def test_a_pending_derived_experiment_is_ASKED(tmp_path):
@@ -81,7 +83,8 @@ def test_a_pending_derived_experiment_is_ASKED(tmp_path):
     seen = []
     s._run_one_round = lambda proposals, outcomes, shapes=None: (seen.extend(proposals) or 0)
     s.run_hypotheses(derived_only=True)
-    assert seen and seen[0].comparator == "a_denied_b_allowed"
+    assert seen and [h.comparator for h in seen] == ["a_denied_b_allowed",
+                                                     "unauthenticated_exposure"]
     assert s.derived_hypotheses() == [], "asked but not drained — it will be asked again"
 
 

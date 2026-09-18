@@ -4307,19 +4307,20 @@ class AssistSession:
         handles |= {v for v in (getattr(self, "_principal_handles", None) or {}).values() if v}
         handles |= {(getattr(self, "_second_identity", None) or {}).get("user", "")}
         try:
-            h = _hyp.from_foreign_record(url, body, handles)
+            made = _hyp.from_foreign_record(url, body, handles) or []
         except Exception:
             return                            # instrumentation never derails a run
-        if h is None:
+        if not made:
             return
         queue = getattr(self, "_derived_hypotheses", None)
         if queue is None:
             queue = self._derived_hypotheses = []
-        if any(x.control.get("url") == h.control.get("url") for x in queue):
+        if any(x.control.get("url") == made[0].control.get("url") for x in queue):
             return                            # the same record, observed again
         if len(queue) >= self._DERIVED_MAX:
             return
-        queue.append(h)
+        queue.extend(made)
+        h = made[0]
         # ON THE LEDGER at the moment of observation, so the lead exists even if the run
         # ends before the experiment is dispatched — which is exactly what happened to
         # CR1's only real finding. The party is MASKED here; the full value is in this
@@ -4579,6 +4580,28 @@ class AssistSession:
                               note="refined round, informed by the first round's results")
         return confirmed
 
+    def _unauth_foreign(self, control_as: str, control_result) -> bool:
+        """True when the ANONYMOUS side of an experiment came back with somebody else's
+        record — the case `a_denied_b_allowed` correctly refuses and nothing could publish.
+
+        Deterministic and narrow: the request must actually have been issued as
+        `anonymous`, it must have answered 2xx, and the body must name a party none of our
+        principals authenticated as. Anything less is not this finding."""
+        from . import hypothesis as _hyp
+        if (control_as or "") != "anonymous":
+            return False
+        status = getattr(control_result, "status", None)
+        if not status or not (200 <= int(status) < 300):
+            return False
+        handles = {self.identity or ""}
+        handles |= {v for v in (getattr(self, "_principal_handles", None) or {}).values() if v}
+        handles |= {(getattr(self, "_second_identity", None) or {}).get("user", "")}
+        try:
+            return bool(_hyp.foreign_parties(getattr(control_result, "body", "") or "",
+                                             handles))
+        except Exception:
+            return False
+
     def _approve_destructive_experiment(self, h) -> bool:
         """Put a destructive experiment to the operator, through the SAME approver the
         command path uses. Returns True only if a human (or a pre-authorised auto
@@ -4818,7 +4841,11 @@ class AssistSession:
                     # A fact about the LISTENER, not about either response: both sides of
                     # an SSRF experiment are usually an identical 200.
                     "oob_hit": bool(_oob_token and self._oob() is not None
-                                    and self._oob().hit(_oob_token))}
+                                    and self._oob().hit(_oob_token)),
+                    # Did a caller with NO credentials retrieve somebody else's record?
+                    # Established from the side actually dispatched as `anonymous`, not
+                    # from what the proposal said it would do.
+                    "unauth_foreign": self._unauth_foreign(_c_as, a)}
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
             # SHOW THE MATCH, not just its verdict — and record it whether or not the
             # comparator held. An ownership claim a reader cannot check is the thing this

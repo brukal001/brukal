@@ -75,6 +75,19 @@ _COMPARATORS = {
             and _norm(a.body) != _norm(b.body)),
         "a state we could read changed after an action we performed, on an endpoint "
         "that was stable when read twice beforehand"),
+    # THE CASE FOUR CONSECUTIVE RUNS COULD NOT PUBLISH. crAPI's
+    # /workshop/api/shop/orders/{id} hands another tenant's order — email, phone, the lot
+    # — to a caller with NO CREDENTIALS. `a_denied_b_allowed` correctly refuses it,
+    # because the claim it carries ("authentication is enforced, authorization is not")
+    # is FALSE there: nothing was enforced. The truth is strictly worse, and there was no
+    # comparator for it, so a real vulnerability went unpublished in runs 4, 5, 6 and 7.
+    #
+    # Judged on the ANONYMOUS side alone: a 2xx whose body names a party none of our
+    # principals authenticated as. `unauth_foreign` is established by the engine from the
+    # control it actually dispatched as `anonymous`.
+    "unauthenticated_exposure": (
+        lambda a, b, p=None, ctx=None: bool((ctx or {}).get("unauth_foreign")),
+        "a caller with NO credentials retrieved a record naming a party who is not us"),
     # A THIRD EVIDENCE CLASS: the proof arrives OUT OF BAND. crAPI challenge 11 is "make
     # the application send an HTTP call to an external host", and both responses in that
     # experiment are an identical 200 — what proves it is that the TARGET CONTACTED US.
@@ -98,7 +111,8 @@ _COMPARATORS = {
 # signature by catching TypeError, which cannot tell "this predicate takes two arguments"
 # from "this predicate raised TypeError on line 3", and a comparator that silently
 # degraded to a two-argument call would be judging on less than it was given.
-_CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed", "oob_callback",)
+_CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed", "oob_callback",
+                        "unauthenticated_exposure",)
 
 # Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
 # recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
@@ -282,6 +296,28 @@ _EVIDENCE_CLASS = {
         "one principal was refused and a different principal was accepted for the same "
         "request",
         "high", True),
+    # HIGH, and it is earned rather than assumed: the record was retrieved with NO
+    # credentials and names a party none of our principals authenticated as, both
+    # established deterministically — the anonymous side really was anonymous (the engine
+    # dispatched it through `_as_identity`) and the party test is the same one that
+    # refuses our own data. Without an explicit entry this inherited the generic `low`
+    # cap, which would have published crAPI's unauthenticated PII exposure as a LOW.
+    "unauthenticated_exposure": (
+        "a caller holding no credentials retrieved a record naming a party that is not "
+        "any principal this engagement authenticated as",
+        "high", True),
+    # The world moved after an action we performed, on an endpoint that was stable when
+    # read twice beforehand. MEDIUM: it establishes that the action has an effect we can
+    # observe, not who was entitled to cause it.
+    "state_changed": (
+        "a state we could read changed after an action we performed",
+        "medium", False),
+    # The target fetched a URL we supplied. HIGH: server-side request forgery is what it
+    # is, and the interaction is unambiguous — our listener recorded a token unique to
+    # that experiment.
+    "oob_callback": (
+        "the target made a server-side request to a destination we controlled",
+        "high", False),
     # EARNS the cross-account claim, and at full severity, because it is grounded in
     # RECORDED ownership rather than in a model's sentence. That is the exact distinction
     # `1940f09` was written for: the 2026-08-22 findings were published as HIGH
@@ -307,6 +343,8 @@ _HEADLINE = {
     "bodies_differ":       "Different response bodies for {c} vs {v}",
     "b_reveals_more":      "Larger response from {v} than {c}",
     "b_errors_a_does_not": "Server error from {v}, not from {c}",
+    "unauthenticated_exposure":
+        "Unauthenticated retrieval of another party's record at {v}",
 }
 
 
@@ -1075,7 +1113,23 @@ def from_foreign_record(url: str, body: str, our_handles, max_body: int = 200_00
         return None
     masked = mask_party(parties[0])
     endpoint = path.rsplit("/", 2)[-2] if path.count("/") > 2 else path
-    return Hypothesis(
+    # TWO QUESTIONS, and exactly one of them can hold. The observation is compatible with
+    # two different truths and we do not know which until the target answers: either
+    # authentication is enforced and authorization is not (BOLA), or nothing is enforced
+    # at all (unauthenticated exposure, strictly worse). Asking only the first is what
+    # left crAPI's order exposure unpublished in four consecutive runs.
+    unauth = Hypothesis(
+        title=f"Addressed record at {endpoint} is readable with NO credentials ({masked})",
+        severity="high",
+        comparator="unauthenticated_exposure",
+        control={"method": "GET", "url": url, "as": "anonymous"},
+        variant={"method": "GET", "url": url, "as": "self"},
+        rationale=(f"A gate-executed request to this addressed resource returned a record "
+                   f"naming {masked}, who is not a principal this engagement holds. This "
+                   f"experiment asks whether a caller with no credentials at all can "
+                   f"retrieve it."),
+        setup=[])
+    return [Hypothesis(
         title=(f"Addressed record at {endpoint} returned another party's data "
                f"({masked})"),
         severity="high",
@@ -1086,7 +1140,7 @@ def from_foreign_record(url: str, body: str, our_handles, max_body: int = 200_00
                    f"naming {masked}, who is not a principal this engagement holds. The "
                    f"experiment asks whether the endpoint refuses an anonymous caller and "
                    f"accepts ours — authentication enforced, authorization not."),
-        setup=[])
+        setup=[]), unauth]
 
 
 # --------------------------------------------------------------------------- #

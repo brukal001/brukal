@@ -74,7 +74,7 @@ def test_OUR_OWN_record_is_not_a_foreign_party():
     """THE BOUNDARY THAT MATTERS. Reading our own data must never propose an experiment,
     or every authenticated request becomes a false cross-account lead."""
     assert foreign_parties(OUR_BODY, {OURS}) == []
-    assert from_foreign_record(f"{BASE}/workshop/api/shop/orders/1", OUR_BODY, {OURS}) is None
+    assert not from_foreign_record(f"{BASE}/workshop/api/shop/orders/1", OUR_BODY, {OURS})
 
 
 @pytest.mark.parametrize("addr", ["noreply@crapi.io", "support@example.com",
@@ -89,10 +89,16 @@ def test_role_addresses_are_not_parties(addr):
 # The experiment it becomes
 # --------------------------------------------------------------------------- #
 
-def test_the_observation_becomes_a_governed_experiment():
-    h = from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS})
-    assert h is not None, "CR1's finding would be lost again"
-    assert h.comparator == "a_denied_b_allowed"
+def test_the_observation_becomes_TWO_governed_experiments():
+    """The observation is compatible with two different truths and we do not know which
+    until the target answers: authentication enforced but not authorization, or nothing
+    enforced at all. Asking only the first left crAPI's order exposure unpublished in four
+    consecutive runs."""
+    made = from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS})
+    assert made, "CR1's finding would be lost again"
+    assert [x.comparator for x in made] == ["a_denied_b_allowed",
+                                            "unauthenticated_exposure"], made
+    h = made[0]
     assert h.control["url"] == ORDERS_2 and h.variant["url"] == ORDERS_2
     assert h.control.get("as") == "anonymous", h.control
     assert h.variant.get("as") == "self", h.variant
@@ -102,24 +108,24 @@ def test_the_observation_becomes_a_governed_experiment():
 def test_a_listing_is_not_an_addressed_record():
     """`/orders` returns our own list; only a resource addressed BY ID can be somebody
     else's. Without this every collection endpoint proposes an experiment."""
-    assert from_foreign_record(f"{BASE}/workshop/api/shop/orders", FOREIGN_BODY, {OURS}) is None
+    assert not from_foreign_record(f"{BASE}/workshop/api/shop/orders", FOREIGN_BODY, {OURS})
 
 
 def test_the_party_is_MASKED_in_the_proposal():
     """Evidence hygiene: the finding is about the exposure, and the proposal travels into
     notes, prompts and the report. The full value stays in the ledger's execution row."""
-    h = from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS})
-    blob = json.dumps([h.title, h.rationale])
+    blob = json.dumps([[h.title, h.rationale]
+                       for h in from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS})])
     assert "pogba006@example.com" not in blob, blob
     assert "pog" in blob or "@example.com" in blob, "it masked the evidence out of existence"
 
 
 def test_the_title_says_what_was_observed_not_what_is_hoped():
-    h = from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS})
-    low = h.title.lower()
-    assert "orders" in low or "record" in low
-    for overclaim in ("takeover", "critical", "rce", "all users", "database"):
-        assert overclaim not in low, h.title
+    for h in from_foreign_record(ORDERS_2, FOREIGN_BODY, {OURS}):
+        low = h.title.lower()
+        assert "orders" in low or "record" in low
+        for overclaim in ("takeover", "critical", "rce", "all users", "database"):
+            assert overclaim not in low, h.title
 
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +188,7 @@ def test_the_queue_is_bounded_and_deduplicated(tmp_path):
     for i in range(40):
         cmd = f"curl -s {BASE}/workshop/api/shop/orders/2"
         s._absorb_shell(cmd, _allow(cmd), ExecResult(cmd, 0, FOREIGN_BODY, ""))
-    assert len(s.derived_hypotheses()) == 1, "the same observation queued repeatedly"
+    assert len(s.derived_hypotheses()) == 2, "the same observation queued repeatedly"
 
 
 def test_derived_proposals_are_DISPATCHED_not_merely_queued(tmp_path):
