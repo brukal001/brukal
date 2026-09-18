@@ -451,6 +451,16 @@ class GroundedLoop:
             unwell = self._target_unwell()
             if unwell:
                 return self._finish("target-unhealthy", unwell)
+            # A DERIVED EXPERIMENT IS THE BEST-EVIDENCED QUESTION AVAILABLE — it exists
+            # because the target already answered one of our requests with somebody
+            # else's record. The reflex that consumes model proposals fires once, early,
+            # and the agent explores afterwards, so CR1 run 3 ended with two of these
+            # queued and unasked. Drained here, every turn, at no model cost.
+            try:
+                if self.session.derived_hypotheses():
+                    self.session.run_hypotheses(derived_only=True)
+            except Exception as exc:
+                self._record_swallowed_experiment_error(exc)
             self._checkpoint()
 
             # REFLEX 0a: FIND the web surface ourselves before anything else. Everything

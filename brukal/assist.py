@@ -4300,9 +4300,15 @@ class AssistSession:
                 pass
         self.note(f"[experiment] derived from an observation: {h.title}")
 
-    def run_hypotheses(self, max_run: int = 4) -> int:
+    def run_hypotheses(self, max_run: int = 4, derived_only: bool = False) -> int:
         """Ask the model for experiments, execute them through the gate, keep only the
         ones the evidence supports. Returns how many became findings.
+
+        `derived_only` runs the experiments DERIVED FROM OBSERVATIONS and asks the model
+        for nothing. Those proposals came out of the target's own responses, so paying for
+        imagination we did not need would make the bridge cost a model call per record.
+        CR1 run 3 is why it exists: two derived experiments sat unasked because the reflex
+        that consumes them fires once, early, and the agent explores afterwards.
 
         This is the answer to Brukal's narrowest limitation — that it finds only what a
         detector was written for, and so scored fifteen findings on the target its
@@ -4314,6 +4320,14 @@ class AssistSession:
         from . import hypothesis as _hyp
         if self.browser is None or self.surface is None:
             return 0
+        if derived_only:
+            _pending = self.derived_hypotheses()
+            if not _pending:
+                return 0
+            self._derived_hypotheses = []
+            self.note(f"[experiment] asking {len(_pending)} experiment(s) derived from "
+                      f"observed records (no model call)")
+            return self._run_one_round(_pending[:max_run], [], [])
         llm = getattr(getattr(self, "strategist", None), "_llm", None)
         if llm is None:
             return 0
