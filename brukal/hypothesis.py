@@ -402,7 +402,15 @@ def derive_claim(comparator: str, control_as: str, variant_as: str,
     who = (f"{control_as} vs {variant_as}" if distinct
            else f"same principal ({control_as or 'self'})")
     cp, vp = _path_of(control.get("url")), _path_of(variant.get("url"))
-    if authz:
+    if comparator == "unauthenticated_exposure":
+        # NOT the authz headline, even though this IS an access-control finding. The
+        # generic template reads "<control> refused, <variant> accepted", and here the
+        # anonymous control was NOT refused — both sides answered 200, which is the entire
+        # point. Run 9 published this finding with that template and the headline
+        # contradicted its own evidence, which is precisely what derived claims exist to
+        # prevent.
+        head = (f"Unauthenticated caller retrieved another party's record at {vp}")
+    elif authz:
         head = f"{control_as} refused, {variant_as} accepted at {vp}"
     elif comparator == "a_denied_b_allowed":
         head = f"One request refused, another accepted for {cp} vs {vp}"

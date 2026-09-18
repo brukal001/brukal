@@ -44,10 +44,16 @@ CHALLENGES = [
      "the target. Testing it would also be the DoS the rules forbid."),
     (7,  "Delete a video of another user", "BFLA",
      ("/identity/api/v2/user/videos",), None),
+    # MASS ASSIGNMENT IS NOT "TOUCHED THE ORDERS ENDPOINT". Run 9 confirmed an
+    # unauthenticated READ at /workshop/api/shop/orders/2 and this table credited it to
+    # both mass-assignment challenges, because their signature was the same path —
+    # inflating recall from 2 to 4 on evidence that never tested a price or a balance.
+    # Third time this tool has misreported, so the signature now names the state-changing
+    # routes those challenges are actually about.
     (8,  "Get an item for free", "Mass assignment",
-     ("/workshop/api/shop/orders", "/workshop/api/shop/products"), None),
+     ("/workshop/api/shop/orders/return_order", "/workshop/api/shop/products/",), None),
     (9,  "Increase your balance by $1,000 or more", "Mass assignment",
-     ("/workshop/api/shop/orders/return_order", "/workshop/api/shop/orders"), None),
+     ("/workshop/api/shop/orders/return_order",), None),
     (10, "Update internal video properties", "Mass assignment",
      ("/identity/api/v2/user/videos",), None),
     (11, "Make crAPI send an HTTP call to an external host", "SSRF",

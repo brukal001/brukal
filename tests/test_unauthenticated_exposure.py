@@ -145,3 +145,23 @@ def test_the_published_claim_says_what_was_shown(tmp_path):
     # this published crAPI's unauthenticated PII exposure as a LOW.
     assert any(f.severity in ("high", "critical") for f in s.findings.all()), \
         [(f.severity, f.title) for f in s.findings.all()]
+
+
+def test_the_headline_does_not_contradict_its_own_evidence(tmp_path):
+    """RUN 9's DEFECT. The finding published as:
+
+        "anonymous refused, self accepted at /workshop/api/shop/orders/2 —
+         anonymous vs self, 200/548B vs 200/548B"
+
+    The anonymous caller was NOT refused. Both sides answered 200 — that IS the finding.
+    The generic authorization headline was applied because this class is flagged as an
+    access-control finding, and it stated the opposite of the evidence printed beside it.
+    """
+    from brukal.hypothesis import derive_claim
+    got = derive_claim("unauthenticated_exposure", "anonymous", "self",
+                       control={"url": ORDER, "status": 200, "size": 548},
+                       variant={"url": ORDER, "status": 200, "size": 548})
+    head = got["title"].lower()
+    assert "refused" not in head, got["title"]
+    assert "unauthenticated" in head, got["title"]
+    assert got["severity_cap"] == "high", got
