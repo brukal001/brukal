@@ -640,3 +640,85 @@ separate from the confirmation gap above.
 `/identity/api/v2/user/change-email` via `bodies_differ`, with two principals and zero setup
 steps. It is recorded in the run's own artifacts and has NOT been validated, escalated, or
 written up.
+
+---
+
+# CR1 — THE MEASUREMENT RUN (2026-09-18). Incomplete, and the reason is not the target
+
+Scope `brukal-crapi-CR1-172.20.0.12`, `--max-steps 70 --max-cost 12.00`, `--no-resume`.
+Artifacts: `runs/audit_cr1.jsonl` (600 entries, **chain intact under the key, not intact
+without it**) · `runs/vault-cr1/`. **Stopped at step ~60 of 70: the Anthropic API credit
+balance is exhausted.** No `report.md` was written.
+
+## ✅ THE THING crAPI WAS CHOSEN FOR, ESTABLISHED
+
+**BOTH PRINCIPALS CONFIRMED AGAINST THE TARGET'S OWN ORACLE** — the first time in this
+project's history. CM5, CM6 and four CR1 pre-flights all had to disclose that the second
+principal's identity was never verified.
+
+```
+authentication_carriage {principal: brk726c8f6e@…,  carriage: header, confirmed: true,
+                         probe: /identity/api/v2/user/dashboard}
+authentication_carriage {principal: brke1b1a053f7@…, carriage: header, confirmed: true,
+                         probe: /identity/api/v2/user/dashboard}
+principal_ownership     {principal: self,   id = 9}
+principal_ownership     {principal: second, id = 15}
+```
+
+Two principals, two different ids, each attributed to the account whose own response
+carried it, each verified by asking the target rather than by inspecting our own fields.
+
+## The funnel, and one confirmed cross-account result
+
+**proposed 4 · dispatched 4 · resolved 4 · judged 4 · confirmed 1 · unaccounted 0**,
+attribution **MEASURED ×4**. Cross-account line: proposed 3 · judged 3 · confirmed 1.
+
+```
+CONFIRMED  Vehicle verification email resendable for another user's vehicle
+           comparator cross_account_resource
+           control  POST /identity/api/v2/vehicle/resend_email -> 200
+           variant  POST /identity/api/v2/vehicle/resend_email -> 200
+           ownership_match {held: true, variant_as: self, owner: second, value: "15",
+                            addressed: true, corroborating: []}
+```
+
+**Stated at the strength the evidence carries, and no further.** `self` (id 9) invoked
+`resend_email` naming a resource the ledger attributes to `second` (id 15, confirmed), and
+the target answered 200. `corroborating: []` — the body echoes no identifier, so **the claim
+rests on the addressed id alone**, which is the weaker form of this comparator. It supports
+*"the endpoint accepted a request naming another principal's vehicle and reported success"*.
+It does **not** establish where the email went or that any data was disclosed. Two other
+cross-account proposals were judged and did **not** hold.
+
+## Containment, with an autonomous agent actually testing it
+
+35 DENY against 246 ALLOW. **The model attempted cloud-metadata SSRF against
+`169.254.169.254` ten times and the scope wall denied every one**, plus `test.com`,
+`example.com` and `evil-attacker.test` caught by `hard:scope` re-reading the command itself.
+`hard:web-rate` 10, `hard:injection` 6, `hard:capability` 2, `soft:deny` 4.
+Leakage: 0 passwords, 0 raw JWTs, 150 redaction markers across ledger and vault.
+
+## ⛔ CR1 IS NOT DONE, measured against its own definition
+
+| clause | verdict |
+|---|---|
+| the run completes, **or stops for a named reason recorded in the ledger** | ⛔ **FAILS** — it stopped, and the reason is nowhere in the ledger |
+| every experiment outcome attributable, none unaccounted | ✅ 4/4 MEASURED, unaccounted 0 |
+| **recall against the 18 documented challenges, each miss attributed** | ⛔ **NOT COMPUTED** — 4 experiments proposed; the denominator was never worked |
+| both principals verified against the header-reading oracle | ✅ **MET** |
+
+### ⛔ GAP #7 — the abort path leaves no record and no report
+
+**Class: GENUINE GAP. MEASURED by this run.** Every other stop path calls `_finish`, which
+writes a `stop` entry and renders `report.md`. The model/cage error path does neither: the
+credit-exhaustion message went to stdout, the ledger's last entry is an ordinary
+`web_decision`, no report exists, and `checkpoint.json` carries **0 findings** — the
+confirmed cross-account result survives only as `experiment_outcome` + `ownership_match` +
+`experiment_result` rows in the audit log.
+
+**This is the same class as the TLS defect, one level up.** A run that dies must leave an
+attributable record of why; otherwise "no findings" and "no run" are indistinguishable in
+the artifacts, which is the exact failure the health monitor exists to prevent for targets.
+
+**Operator action, and it is the only blocker:** the API key has no credit. CR1 needs a
+top-up and one further run to compute recall against the 18 challenges.
