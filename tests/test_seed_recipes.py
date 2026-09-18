@@ -203,12 +203,22 @@ class _CrAPI:
             if body.get("vin") != "XGR94Y8HA47N6NF9N" or body.get("pincode") != "1717":
                 return WebResult(status=400, url=action.url,
                                  body='{"message":"Invalid VIN or pincode"}')
-            return WebResult(status=200, url=action.url, body='{"id": 31, "vin": "XGR94Y8HA47N6NF9N"}')
+            # MEASURED: crAPI answers 200 with a message and NO identifier.
+            self.added = True
+            return WebResult(status=200, url=action.url,
+                             body='{"message":"Vehicle added successfully"}')
+        if action.url.endswith("/vehicle/vehicles"):
+            if not getattr(self, "added", False):
+                return WebResult(status=200, url=action.url, body='[]')
+            return WebResult(status=200, url=action.url, body=json.dumps(
+                [{"id": 31, "uuid": "a3c3d6ac-972f-4bf0-9903-4e40fde85272",
+                  "vin": "XGR94Y8HA47N6NF9N"}]))
         return WebResult(status=404, url=action.url, body="{}")
 
 
 CRAPI_ROUTES = ["/identity/api/v2/vehicle/resend_email",
-                "/identity/api/v2/vehicle/add_vehicle", "/mailhog/api/v2/messages"]
+                "/identity/api/v2/vehicle/add_vehicle", "/mailhog/api/v2/messages",
+                "/identity/api/v2/vehicle/vehicles"]
 
 
 def test_the_VIN_survives_the_quoted_printable_line_break(tmp_path):
@@ -240,8 +250,11 @@ def test_crAPIs_recipe_seeds_a_real_vehicle(tmp_path):
     s, audit = _session(tmp_path, app, confirmed=CRAPI_ROUTES)
     s.identity = "us@brukal.test"
     out = run_seed(s, "self", CRAPI_VEHICLE)
-    assert out["owned"] == "31", out
+    # The vehicle is identified by the UUID crAPI's own endpoints address it with, read
+    # back from the collection because the creation reply carries no identifier at all.
+    assert out["owned"] == "a3c3d6ac-972f-4bf0-9903-4e40fde85272", out
     assert out["bound"]["vin"] == "XGR94Y8HA47N6NF9N"
+    assert out["bound"]["id"] == 31
 
 
 def test_the_recipe_activates_on_crAPI_and_on_nothing_else(tmp_path):

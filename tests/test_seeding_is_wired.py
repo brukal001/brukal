@@ -62,6 +62,9 @@ def test_what_seeding_CREATES_reaches_the_ownership_ledger(tmp_path):
     owners = [json.loads(l)["data"] for l in open(audit.path)
               if json.loads(l)["kind"] == "principal_ownership"]
     assert owners, "nothing was recorded — the comparator cannot see the new resource"
+    # The UUID is what crAPI addresses the vehicle by, but the ledger's extractor only
+    # understands numeric identifiers — so what must land here is the id, from the whole
+    # bound set rather than the recipe's headline value.
     assert any(o["principal"] == "self" and str(o["value"]) == "31" for o in owners), owners
     assert any(o["source"] == "seed" for o in owners), owners
     assert "31" in json.dumps(s.principal_identifiers()), s.principal_identifiers()

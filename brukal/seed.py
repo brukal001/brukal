@@ -248,7 +248,12 @@ def run_seed(session, who: str = "self", recipe=None) -> dict:
     # cross-account claim would stay exactly as unprovable as it was with an empty
     # control — the seeding would have changed the target and nothing else.
     try:
-        session._record_principal_ids(who, "seed", json.dumps({recipe.owns: out["owned"]}))
+        # THE WHOLE BOUND SET, not just the recipe's headline identifier. crAPI addresses
+        # a vehicle by UUID, so `owns` is the uuid — but the ownership ledger's extractor
+        # only understands NUMERIC identifiers, so recording {uuid: ...} alone recorded
+        # nothing at all and the comparator still had no owner to match. Measured live:
+        # own_identifiers({"uuid": "a3c3..."}) -> {} while {"id": 6, "uuid": ...} -> {id: 6}.
+        session._record_principal_ids(who, "seed", json.dumps(bound))
     except Exception:
         pass
     try:
@@ -294,10 +299,18 @@ CRAPI_VEHICLE = SeedRecipe(
                  note="read this principal's vehicle mail"),
         SeedStep("POST", "/identity/api/v2/vehicle/add_vehicle",
                  body={"vin": "{vin}", "pincode": "{pin}"},
-                 binds={"id": "id"}, expect=(200, 201),
+                 expect=(200, 201),
                  note="redeem the details into an owned vehicle"),
+        # THE IDENTIFIER IS NOT IN THE CREATION REPLY. Measured live: add_vehicle answers
+        # 200 with no id, and the vehicle is only nameable by reading the collection
+        # afterwards — which is also where the UUID lives, and crAPI's vehicle endpoints
+        # address vehicles by UUID. Binding `id` off the creation reply failed closed with
+        # "answered 200 but carried no 'id'" while the vehicle had in fact been created.
+        SeedStep("GET", "/identity/api/v2/vehicle/vehicles",
+                 binds={"id": "0.id", "uuid": "0.uuid"},
+                 note="read back what this principal now owns"),
     ),
-    owns="id",
+    owns="uuid",
     describe="Runs crAPI's own vehicle onboarding so a principal owns a resource a "
              "cross-account comparator can use as its control.")
 
