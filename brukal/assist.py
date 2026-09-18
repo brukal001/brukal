@@ -286,6 +286,14 @@ def record_engagement_stop(audit, reason: str, detail: str, steps: int = 0,
         pass
 
 
+def _url_in(command: str) -> str:
+    """The http(s) URL a command addressed, or "". Deterministic and quoted-safe — the
+    command is the agent's own text, so nothing here may execute or interpret it."""
+    import re as _re
+    m = _re.search(r"https?://[^\s'\"<>|]+", command or "")
+    return m.group(0).rstrip("'\"") if m else ""
+
+
 def _explain_run_error(e: BaseException) -> tuple[str, str]:
     """(headline, advice) for an exception that ended a run. Distinguishes OUR bug from
     an environment problem, because the two need opposite responses from the operator."""
@@ -1036,6 +1044,13 @@ class AssistSession:
         if result is not None:
             self.executed_cmds.append(command)   # fed back as ALREADY TRIED next turn
             raw = (result.stdout or "").strip()
+            # THE COMMAND PLANE'S OBSERVATION POINT. This is where CR1's finding was
+            # seen and lost: the agent's curl returned another tenant's order and the
+            # output became a note nobody could publish from.
+            try:
+                self._observe_record(_url_in(command), raw)
+            except Exception:
+                pass
             new_hl = highlight_findings(raw)
             # Flag vulnerability signals in the output (sqlmap 'is vulnerable',
             # nuclei [critical], nikto findings, CVE ids) so a real bug surfaces as a
@@ -4231,6 +4246,60 @@ class AssistSession:
         self.note(f"[experiment] second principal available: {user}")
         return user
 
+    # How many derived proposals may wait at once. Bounded because they are generated
+    # from output, and output is unbounded.
+    _DERIVED_MAX = 8
+
+    def derived_hypotheses(self) -> list:
+        """Experiments derived from OBSERVATIONS rather than proposed by the model.
+
+        CR1 run 2 fetched another tenant's complete order through the gate and published
+        nothing, because a finding must be comparator-derived and no comparator judged it.
+        These are that observation, turned into a question the comparator CAN judge."""
+        return list(getattr(self, "_derived_hypotheses", []) or [])
+
+    def _observe_record(self, url: str, body: str) -> None:
+        """One plane's output, examined for a record that is not ours. Deterministic and
+        cheap; no model, no extra request.
+
+        Called at each plane's own absorption point — the same discipline the redaction
+        hook uses, so a third plane added later inherits it instead of silently going
+        unhooked."""
+        from . import hypothesis as _hyp
+        if not url or not body:
+            return
+        handles = {self.identity or ""}
+        handles |= {v for v in (getattr(self, "_principal_handles", None) or {}).values() if v}
+        handles |= {(getattr(self, "_second_identity", None) or {}).get("user", "")}
+        try:
+            h = _hyp.from_foreign_record(url, body, handles)
+        except Exception:
+            return                            # instrumentation never derails a run
+        if h is None:
+            return
+        queue = getattr(self, "_derived_hypotheses", None)
+        if queue is None:
+            queue = self._derived_hypotheses = []
+        if any(x.control.get("url") == h.control.get("url") for x in queue):
+            return                            # the same record, observed again
+        if len(queue) >= self._DERIVED_MAX:
+            return
+        queue.append(h)
+        # ON THE LEDGER at the moment of observation, so the lead exists even if the run
+        # ends before the experiment is dispatched — which is exactly what happened to
+        # CR1's only real finding. The party is MASKED here; the full value is in this
+        # plane's own execution/result row, which is the evidence.
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is not None:
+            try:
+                audit.append("foreign_record", {
+                    "url": url, "title": h.title, "comparator": h.comparator,
+                    "party": _hyp.mask_party(_hyp.foreign_parties(body, handles)[0]),
+                    "target": self.target})
+            except Exception:
+                pass
+        self.note(f"[experiment] derived from an observation: {h.title}")
+
     def run_hypotheses(self, max_run: int = 4) -> int:
         """Ask the model for experiments, execute them through the gate, keep only the
         ones the evidence supports. Returns how many became findings.
@@ -4384,6 +4453,17 @@ class AssistSession:
                     f"stop_reason={_stop}; blocks={_kinds})")
             self.note(f"[experiment] no usable proposal — {_why}")
         self._covered("Model-proposed experiments", probes=len(proposals), note=_why)
+        # DERIVED PROPOSALS GO FIRST. They come from something the target already did —
+        # an addressed record that came back naming somebody who is not us — so they are
+        # the best-evidenced questions in the batch, and CR1 proved they are the ones
+        # that get lost. Drained, so an experiment is proposed once; whatever the
+        # comparator then says is the published answer.
+        _derived = self.derived_hypotheses()
+        if _derived:
+            self._derived_hypotheses = []
+            proposals = _derived + list(proposals)
+            self.note(f"[experiment] {len(_derived)} experiment(s) derived from observed "
+                      f"records, queued ahead of the model's proposals")
         if not proposals:
             return 0
 
@@ -6980,6 +7060,14 @@ class AssistSession:
         return self._absorb_web(action, decision, result)
 
     def _absorb_web(self, action, decision, result):
+        # THE WEB PLANE'S observation point — same door, same rule. A plane that receives
+        # target output and does not pass it here is a plane whose findings cannot be
+        # published, which is the defect this whole mechanism exists for.
+        try:
+            self._observe_record(getattr(action, "url", ""),
+                                 getattr(result, "body", "") or "")
+        except Exception:
+            pass
         """Fold one WEB outcome into session state (main-thread counterpart to the
         thread-safe browser.run, used by the parallel runner)."""
         if action is not None and action.kind in ("navigate", "get") and action.url:

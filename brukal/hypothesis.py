@@ -955,6 +955,96 @@ def _strip(text: str, values) -> str:
     return _norm(out)
 
 
+# --------------------------------------------------------------------------- #
+# FROM AN OBSERVATION TO AN EXPERIMENT — closing the seam CR1 measured
+# --------------------------------------------------------------------------- #
+#
+# CR1 run 2's exploit agent fetched /workshop/api/shop/orders/2 with our own bearer and
+# got another tenant's complete order, email and phone included. The evidence went into
+# the ledger, the model recognised it, and NO FINDING WAS PUBLISHED — a finding must be
+# derived from a comparator, and no comparator ever judged it. Recall scored the run 0.
+#
+# Brukal has two paths to a finding: the comparator path publishes and is rigorous, the
+# command path is where the agent actually finds things and publishes nothing. This is
+# the bridge, and it is deliberately narrow: an observation becomes a PROPOSAL, judged by
+# the same comparator as everything else. Nothing about how a finding is established
+# changes — only what gets asked.
+_PARTY_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")
+# Addresses that are a template's sender, not a tenant whose record we just read.
+# LOCAL PARTS ONLY. An earlier draft also tested the domain, and "example" in this list
+# then filtered out every address at example.com — which is the domain crAPI seeds its
+# tenants on, so the one observation this mechanism exists for was silently discarded.
+_ROLE_LOCALPARTS = ("noreply", "no-reply", "donotreply", "do-not-reply", "support",
+                    "admin", "postmaster", "mailer-daemon", "info", "help", "contact",
+                    "security", "abuse", "notifications")
+# A record is somebody's only if it was ADDRESSED — /orders/2, not /orders. A collection
+# returns our own list, and without this every listing endpoint proposes an experiment.
+_ADDRESSED_RE = re.compile(r"/(\d{1,12})(?:/|\?|$)")
+
+
+def foreign_parties(body: str, our_handles) -> list:
+    """Party identifiers in a response that belong to NONE of our principals.
+
+    Deterministic: an address is ours if it matches a handle we authenticated as, and a
+    role address (noreply@, support@) is nobody's record. Everything else in a response
+    we received is a party whose data we just read."""
+    ours = {(h or "").strip().lower() for h in (our_handles or set()) if h}
+    seen, out = set(), []
+    for m in _PARTY_RE.finditer(body or ""):
+        addr = m.group(0).lower()
+        local, _, domain = addr.partition("@")
+        if addr in ours or addr in seen:
+            continue
+        if any(local.startswith(r) for r in _ROLE_LOCALPARTS):
+            continue
+        seen.add(addr)
+        out.append(addr)
+    return out
+
+
+def mask_party(addr: str) -> str:
+    """Enough to recognise the finding, not enough to republish somebody's address. The
+    full value stays in the ledger's own execution row, which is the evidence."""
+    local, _, domain = (addr or "").partition("@")
+    return f"{local[:3]}***@{domain}" if domain else "***"
+
+
+def from_foreign_record(url: str, body: str, our_handles, max_body: int = 200_000):
+    """A governed experiment derived from "we addressed a record and it was not ours".
+
+    `a_denied_b_allowed`: the control is ANONYMOUS and must be refused, the variant is US
+    and returns the record. That is the honest claim the comparator can carry here —
+    authentication is enforced, authorization is not. WHOSE record it is was established
+    at observation time and travels as evidence; the comparator does not re-derive it.
+
+    Returns None whenever the observation does not support the question: an unaddressed
+    collection, our own data, or a body naming nobody. Fail-closed, because a proposal
+    manufactured from a weak observation would spend a step and could only mislead.
+    """
+    if not url or not body or len(body) > max_body:
+        return None
+    path = url.split("?", 1)[0]
+    if not _ADDRESSED_RE.search(path[path.find("//") + 2:] if "//" in path else path):
+        return None
+    parties = foreign_parties(body, our_handles)
+    if not parties:
+        return None
+    masked = mask_party(parties[0])
+    endpoint = path.rsplit("/", 2)[-2] if path.count("/") > 2 else path
+    return Hypothesis(
+        title=(f"Addressed record at {endpoint} returned another party's data "
+               f"({masked})"),
+        severity="high",
+        comparator="a_denied_b_allowed",
+        control={"method": "GET", "url": url, "as": "anonymous"},
+        variant={"method": "GET", "url": url, "as": "self"},
+        rationale=(f"A gate-executed request to this addressed resource returned a record "
+                   f"naming {masked}, who is not a principal this engagement holds. The "
+                   f"experiment asks whether the endpoint refuses an anonymous caller and "
+                   f"accepts ours — authentication enforced, authorization not."),
+        setup=[])
+
+
 def comparator_names() -> tuple:
     """The closed set, for the prompt. The model must pick from these by name."""
     return tuple(sorted(_COMPARATORS))
