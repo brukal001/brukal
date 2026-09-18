@@ -43,9 +43,12 @@ from brukal.hypothesis import (_DISPATCHED_NOT_RESOLVED, _JUDGED,
 ALL_TERMINALS = tuple(_REFUSED_BEFORE_DISPATCH) + tuple(_DISPATCHED_NOT_RESOLVED) + tuple(_JUDGED)
 
 
-def test_there_are_ten_recorded_terminals_and_this_test_notices_a_new_one():
-    """A terminal added without an attribution is the failure mode this guards."""
-    assert len(ALL_TERMINALS) == 10, ALL_TERMINALS
+def test_the_recorded_terminals_are_all_attributed_and_this_test_notices_a_new_one():
+    """A terminal added without an attribution is the failure mode this guards — and it
+    has already caught one: `refused_by_operator` was added on 2026-09-18 when destructive
+    experiments started escalating to the operator instead of being silently skipped, and
+    this test failed until the attribution table was updated with it."""
+    assert len(ALL_TERMINALS) == 11, ALL_TERMINALS
 
 
 @pytest.mark.parametrize("outcome", ALL_TERMINALS)
@@ -63,6 +66,8 @@ def test_every_terminal_maps_to_exactly_one_attribution(outcome):
     ("no_answer", "HARNESS-LIMIT"),
     ("not_authenticated", "HARNESS-LIMIT"),
     ("second_unavailable", "HARNESS-LIMIT"),
+    # A human declined a destructive experiment: ours, and the target never saw it.
+    ("refused_by_operator", "HARNESS-LIMIT"),
     # The proposal itself was the limit.
     ("skipped", "MODEL-LIMIT"),
     ("unresolved_reference", "MODEL-LIMIT"),

@@ -4527,6 +4527,42 @@ class AssistSession:
                               note="refined round, informed by the first round's results")
         return confirmed
 
+    def _approve_destructive_experiment(self, h) -> bool:
+        """Put a destructive experiment to the operator, through the SAME approver the
+        command path uses. Returns True only if a human (or a pre-authorised auto
+        approver) said yes.
+
+        Fail-closed twice over: the scope must have opted in (`destructive_allowed`),
+        and the approver must then agree. An engagement that never opted in does not
+        consult anyone and does not act — but it now RECORDS an operator refusal instead
+        of a silent skip, so a missing result is never mistaken for a clean one."""
+        from .gate import Decision
+        scope = getattr(getattr(self, "executor", None), "_gate", None)
+        allowed = bool(getattr(getattr(scope, "scope", None), "destructive_allowed", False))
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        decision = Decision(
+            verdict="ESCALATE",
+            action=f"destructive experiment: {h.comparator} {h.variant.get('method','')} "
+                   f"{h.variant.get('url','')}",
+            target=self.target, agent="experiment",
+            reason=(f"the proposal addresses a state-changing path; "
+                    f"scope.destructive_allowed={allowed}"),
+            layer="soft:destructive-experiment")
+        if audit is not None:
+            try:
+                audit.append("web_decision", decision)
+            except Exception:
+                pass
+        if not allowed:
+            return False
+        approver = getattr(getattr(self, "executor", None), "_approver", None)
+        if approver is None:
+            return False
+        try:
+            return bool(approver(decision))
+        except Exception:
+            return False                     # an approver that breaks is a refusal
+
     def _run_one_round(self, proposals, outcomes, shapes=None) -> int:
         """Execute one batch of experiments; returns how many became findings.
 
@@ -4552,9 +4588,22 @@ class AssistSession:
                       f"{h.variant['method']} {h.variant['url']}")
             if self._is_destructive_path(h.variant["url"]) \
                     or self._is_destructive_path(h.control["url"]):
-                self._record_experiment_outcome(h, "skipped")
-                self.note(f"[experiment] SKIPPED (destructive path): {h.title}")
-                continue                   # the prompt forbids it; the code enforces it
+                # ASK. This used to be an unconditional skip, and crAPI challenge 3 —
+                # "reset the password of a different user" — was proposed by the model and
+                # dropped here with nobody consulted, while the COMMAND path escalated
+                # eleven destructive actions to the operator in the same engagement. The
+                # same action got two different answers depending on which code path
+                # reached it. Where Brukal needs authorisation it asks for it; the human
+                # decides, and the record shows who answered.
+                if not self._approve_destructive_experiment(h):
+                    self._record_experiment_outcome(h, "refused_by_operator")
+                    self.note(f"[experiment] REFUSED by the operator (destructive): "
+                              f"{h.title}")
+                    outcomes.append(f"REFUSED BY THE OPERATOR (destructive; experiment NOT "
+                                    f"run, this is not a result about the target) {h.title}")
+                    continue
+                self.note(f"[experiment] destructive experiment AUTHORISED by the "
+                          f"operator: {h.title}")
             try:
                 # Setup first: it establishes the state the experiment is about, and is
                 # never judged. A flaw that only exists partway through a workflow is

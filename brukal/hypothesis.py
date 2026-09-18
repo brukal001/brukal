@@ -1150,6 +1150,7 @@ _REFUSED_BEFORE_DISPATCH = (
     "setup_failed",             # a setup request the experiment depends on did not succeed
     "unresolved_reference",     # {{setup.N.field}} addressed something that was not there
     "errored",                  # never reached the target
+    "refused_by_operator",      # destructive, escalated, and the human said no
 )
 _DISPATCHED_NOT_RESOLVED = (
     "both_sides_failed",        # two 5xx — the application broke, it did not behave
@@ -1186,6 +1187,9 @@ _ATTRIBUTION = {
     "no_answer": "HARNESS-LIMIT",           # our gate or our limiter refused it
     "not_authenticated": "HARNESS-LIMIT",   # we could not carry a session this target honours
     "second_unavailable": "HARNESS-LIMIT",  # we could not construct the second principal
+    # A human declined a destructive experiment. Ours, not the target's: the application
+    # never saw the request, and nothing was learned about it.
+    "refused_by_operator": "HARNESS-LIMIT",
     # The proposal itself was the limit.
     "skipped": "MODEL-LIMIT",               # proposed against a path the rules forbid
     "unresolved_reference": "MODEL-LIMIT",  # referenced a field that was not there

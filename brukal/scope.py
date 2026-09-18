@@ -55,6 +55,18 @@ class Scope:
     # bounded observation either way — see GovernedBrowser. The parameter governs whether
     # the engagement proceeds, never whether the observation is kept.
     tls_verify: bool = True
+    # May this engagement perform STATE-CHANGING / destructive work when the operator
+    # approves it? DEFAULT FALSE (invariant 2). This does not authorise anything by
+    # itself: with it true, a destructive experiment ESCALATES to the human approver
+    # instead of being dropped, and the human still decides. With it false the approver
+    # is never consulted and the proposal is recorded as refused.
+    #
+    # It exists because the two paths disagreed. A destructive COMMAND has always
+    # escalated to the operator; a destructive EXPERIMENT was silently skipped, so crAPI
+    # challenge 3 (reset another user's password) was proposed by the model and dropped
+    # by the code with nobody asked. Capability is not traded for tidiness: where Brukal
+    # needs authorisation it asks for it, and the record shows who answered.
+    destructive_allowed: bool = False
 
     def is_authorized(self) -> bool:
         """True if the scope file itself asserts authorization (a non-empty statement)."""
@@ -92,6 +104,7 @@ class Scope:
             "tools": sorted(self.allowlisted_tools),
             "rate": self.rate_limit_per_min,
             "tls_verify": self.tls_verify,
+            "destructive_allowed": self.destructive_allowed,
             "authorization": self.authorization,
             "expires": self.expires,
         }, sort_keys=True)
@@ -152,7 +165,8 @@ class Scope:
                      authorized_hosts=self.authorized_hosts | ({h} if h else set()),
                      authorization=self.authorization,
                      expires=self.expires,
-                     tls_verify=self.tls_verify)
+                     tls_verify=self.tls_verify,
+                     destructive_allowed=self.destructive_allowed)
 
     def tool_allowed(self, tool: str) -> bool:
         """True if the tool passes the ALLOWLIST layer. `"*"` in the allowlist means
@@ -204,6 +218,9 @@ def load_scope(path: str | Path) -> Scope:
         # misspelled, a string, null — verifies, because an unparseable policy is a
         # policy we refuse to act on (invariant 2).
         tls_verify=data.get("tls_verify", True) is not False,
+        # Only an explicit `true` opts in. Anything else — absent, misspelled, a string —
+        # leaves it off, because an unparseable authorisation is not an authorisation.
+        destructive_allowed=data.get("destructive_allowed", False) is True,
     )
 
 
@@ -227,4 +244,5 @@ def authorization_record(scope: Scope, target: str) -> dict:
         # Disclosed with the authorisation, not buried in a note: a run that did not
         # validate certificates says so in the same entry that says what permitted it.
         "tls_verify": scope.tls_verify,
+        "destructive_allowed": scope.destructive_allowed,
     }
