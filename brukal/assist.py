@@ -15,6 +15,8 @@ rich menu UI (falling back to a plain prompt if `rich` is unavailable).
 """
 from __future__ import annotations
 
+import uuid
+
 import getpass
 import json
 import os
@@ -5478,6 +5480,67 @@ class AssistSession:
             return None
         return user, password
 
+    def _absent_signature(self, prefix: str):
+        """What THIS mount point answers for a path that certainly does not exist.
+
+        Measured on crAPI, 2026-09-18:
+
+            prefix            an ABSENT path answers      a REAL path answers
+            /identity/api     401                         405
+            /workshop/api     404                         500
+            /community/api    404                         401
+
+        The identity service answers 401 to everything under its prefix, including
+        `/identity/api/total/nonsense/xyz`. Route confirmation treated any non-404 as
+        "this route exists", so every phantom under that prefix was confirmed — a direct
+        probe produced `/identity/api/identity/api/auth/login [GET]` — while the real
+        dashboard, which answers 404 to a stranger because it reads the Authorization
+        header, looked absent. Exactly inverted, and everything downstream consumed it.
+
+        No global rule can work: 401 means "absent" under /identity/api and "real" under
+        /community/api. Existence is only meaningful against a control taken under the
+        SAME prefix. One probe per prefix, cached.
+
+        Returns the status of an absent path, or None when it could not be taken — and a
+        control that cannot be taken means existence cannot be judged, which is the one
+        case that must confirm nothing.
+        """
+        from .web import WebAction
+        from urllib.parse import urljoin as _urljoin
+        cache = getattr(self, "_absent_sigs", None)
+        if cache is None:
+            cache = self._absent_sigs = {}
+        if prefix in cache:
+            return cache[prefix]
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/")
+        probe = f"{prefix.rstrip('/')}/brukal-absent-{uuid.uuid4().hex[:10]}"
+        try:
+            _d, r = self.browser.run(WebAction("request", method="GET",
+                                               url=_urljoin(base, probe)))
+        except Exception:
+            r = None
+        sig = getattr(r, "status", None)
+        cache[prefix] = sig
+        if sig is not None and sig != 404:
+            self.note(f"[crawl] {prefix} answers {sig} for paths that do not exist — "
+                      f"route existence there is judged against that, not against 404")
+        return sig
+
+    def _route_exists(self, path: str, status) -> bool:
+        """Does this answer differ from what an absent path under the same prefix gets?"""
+        if not status:
+            return False
+        segs = [s for s in path.split("?")[0].split("/") if s]
+        # The MOUNT, not the route. Two segments for a deep path (/identity/api/... ->
+        # /identity/api), one for a shallow one (/auth/login -> /auth) — otherwise a
+        # two-segment route becomes its own prefix and every route pays for its own
+        # control probe instead of sharing the mount's.
+        prefix = ("/" + "/".join(segs[:2])) if len(segs) >= 3 else ("/" + (segs[0] if segs else ""))
+        sig = self._absent_signature(prefix)
+        if sig is None:
+            return False                      # no control, no judgement (fail-closed)
+        return int(status) != int(sig)
+
     def resolve_mined_routes(self, cap: int = 40) -> list:
         """Resolve mined route FRAGMENTS to paths this target actually answers.
 
@@ -5568,6 +5631,9 @@ class AssistSession:
         if tried is None:
             tried = self._composed_tried = set()
         resolved, budget = [], cap
+        # A control probe is a request like any other and is billed against the same
+        # budget, or the documented cap quietly becomes cap + one per mount point.
+        _sigs_before = len(getattr(self, "_absent_sigs", None) or {})
         for frag in fragments:
             if budget <= 0:
                 break
@@ -5579,6 +5645,10 @@ class AssistSession:
             # So the assumption is measured instead: one gated probe. If the fragment
             # answers, it IS the route, it is confirmed as-is, and nothing is composed —
             # which also saves every composition that would have followed.
+            budget -= (len(getattr(self, "_absent_sigs", None) or {}) - _sigs_before)
+            _sigs_before = len(getattr(self, "_absent_sigs", None) or {})
+            if budget <= 0:
+                break
             bare = "/" + frag.strip("/")
             if bare not in tried:
                 tried.add(bare)
@@ -5589,7 +5659,7 @@ class AssistSession:
                 except Exception:
                     br = None
                 _bs = getattr(br, "status", None)
-                if _bs and _bs != 404:
+                if self._route_exists(bare, _bs):
                     if bare not in surface.confirmed_routes:
                         surface.confirmed_routes.append(bare)
                     # KEEP THE OTHER HALF of what the probe just learned.
@@ -5607,7 +5677,7 @@ class AssistSession:
                 except Exception:
                     continue
                 status = getattr(r, "status", None)
-                if not status or status == 404:
+                if not self._route_exists(composed, status):
                     continue
                 # It answered. Replace the dead fragment rather than keeping both: a
                 # fragment that 404s is a lead the model will keep spending steps on.

@@ -44,7 +44,13 @@ BASE = f"http://{TARGET}"
 
 
 class _App:
-    """Only prefixed paths exist — crAPI's shape."""
+    """crAPI's shape: specific prefixed paths exist, and an absent path under the same
+    prefix answers differently from a real one — otherwise the prefix is a catch-all and
+    route existence is genuinely unknowable there."""
+
+    REAL = {"/identity/api/auth/login", "/identity/api/v2/user/dashboard",
+            "/identity/api/v2/user/pictures"}
+
     def __init__(self):
         self.asked: list = []
 
@@ -52,7 +58,7 @@ class _App:
         from urllib.parse import urlsplit
         p = urlsplit(action.url).path
         self.asked.append(p)
-        if p.startswith("/identity/api/"):
+        if p in self.REAL:
             return WebResult(status=200, url=action.url, body='{"ok":1}')
         return WebResult(status=404, url=action.url, body="{}")
 
