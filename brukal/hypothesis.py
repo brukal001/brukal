@@ -1180,6 +1180,14 @@ Reply with ONLY a JSON array, using EXACTLY these keys — the same ones as befo
   control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...,
                "as": "self" | "second" | "anonymous"}}
   variant     same shape, one thing changed
+  act         OPTIONAL single request performed BETWEEN the two reads, for the
+              `state_changed` comparator ONLY. Use it when the proof of a flaw is
+              a SIDE-EFFECT rather than a different reply -- a balance that moves,
+              a coupon that redeems a second time, a stored field that changes.
+              There the control and the variant are the SAME read of that state
+              and `act` is the thing under test. The engine reads the baseline
+              twice and refuses to judge an endpoint that moves on its own, so
+              choose a read that is stable.
   rationale   one sentence on what the difference would prove
 
 """ + SETUP_REF_SYNTAX + """
@@ -1220,6 +1228,14 @@ Reply with ONLY a JSON array. Each element:
   control     {{"url": "...", "method": "GET", "headers": {{}}, "body": ...,
                "as": "self" | "second" | "anonymous"}}
   variant     same shape, one thing changed
+  act         OPTIONAL single request performed BETWEEN the two reads, for the
+              `state_changed` comparator ONLY. Use it when the proof of a flaw is
+              a SIDE-EFFECT rather than a different reply -- a balance that moves,
+              a coupon that redeems a second time, a stored field that changes.
+              There the control and the variant are the SAME read of that state
+              and `act` is the thing under test. The engine reads the baseline
+              twice and refuses to judge an endpoint that moves on its own, so
+              choose a read that is stable.
   rationale   one sentence on what the difference would prove
 
 `as` chooses WHICH PRINCIPAL issues the request, and it is the most valuable field \
