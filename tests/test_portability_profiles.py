@@ -241,6 +241,67 @@ class JsonLoginCookieSessionShape:
         return _json(404, {"error": "not found"}, action.url)
 
 
+class CatchAll401Shape:
+    """A service that answers 401 to EVERY unknown path under its prefix.
+
+    crAPI's identity service, and the root fault behind ten CR1 runs: confirmation read
+    "not a 404" as "this route exists", so every phantom under the prefix was confirmed
+    while the real header-reading endpoint — which 404s a stranger — looked absent.
+    Exactly inverted. Measured 2026-09-18: /identity/api/total/nonsense/xyz -> 401.
+    """
+
+    PREFIX = "/svc/api"
+    LOGIN = PREFIX + "/auth/login"
+    SIGNUP = PREFIX + "/auth/signup"
+    ME = PREFIX + "/v2/user/me"
+
+    def __init__(self):
+        self.accounts = {"first@brukal.test": "First-1!"}
+        self.tokens = {}
+
+    def run(self, action):
+        path = urlsplit(action.url).path
+        method = (action.method or "GET").upper()
+        body = {}
+        try:
+            body = json.loads(action.body or "{}")
+        except Exception:
+            pass
+        bearer = (action.headers or {}).get("Authorization", "")
+        if path == self.SIGNUP and method == "POST":
+            if not body.get("email"):
+                return _json(400, {"error": "email is required"}, action.url)
+            self.accounts[body["email"]] = body.get("password", "")
+            # No echo, and no identifier — the crAPI creation shape.
+            return _json(200, {"message": "User registered successfully! Please Login."},
+                         action.url)
+        if path == self.LOGIN and method == "POST":
+            email = body.get("email") or body.get("username") or ""
+            if email and self.accounts.get(email) == body.get("password"):
+                tok = f"eyJhbGciOiJIUzI1NiJ9.catchall{len(self.tokens)}.sig-{'y'*20}"
+                self.tokens[tok] = email
+                return _json(200, {"token": tok}, action.url)
+            return _json(401, {"message": "invalid"}, action.url)
+        if path == self.ME:
+            who = self.tokens.get(bearer.replace("Bearer ", "")) if bearer else None
+            if not who:
+                return _json(404, {"message": "not registered"}, action.url)
+            return _json(200, {"id": 11, "email": who}, action.url)
+        if path in (self.PREFIX + "/v2/user/pictures", self.LOGIN, self.SIGNUP):
+            # A route that EXISTS but is POST-only answers 405 to a GET — measured on
+            # crAPI, and the reason its real routes stay distinguishable from the
+            # prefix's 401 catch-all. An earlier draft of this shape let them fall
+            # through to the 401 and NOTHING could be confirmed, which is a fixture
+            # that makes the target unknowable rather than a target that is.
+            return _json(405, {"detail": 'Method "GET" not allowed.'}, action.url)
+        if path.startswith(self.PREFIX):
+            # THE TRAP: anything else under the prefix answers 401, not 404.
+            return _json(401, {"message": "unauthorized"}, action.url)
+        if path == "/":
+            return WebResult(status=200, url=action.url, body="<html>spa</html>")
+        return _json(404, {"message": "nope"}, action.url)
+
+
 @dataclass
 class Profile:
     name: str
@@ -267,6 +328,12 @@ PROFILES = [
             JsonLoginCookieSessionShape,
             ["/api/session", "/api/register", "/api/me"],
             JsonLoginCookieSessionShape.LOGIN),
+    Profile("catch-all-401-prefix",
+            CatchAll401Shape,
+            ["/auth/login", "/auth/signup", "/v2/user/me", "/v2/user/pictures",
+             "/orders/all", "/v8"],
+            CatchAll401Shape.LOGIN,
+            expect_resolution=True),
     Profile("cheerful-catch-all",
             CheerfulCatchAllShape,
             ["/api/login", "/api/register"],
@@ -389,3 +456,56 @@ def test_nothing_is_ever_claimed_about_a_principal_we_cannot_use(profile, tmp_pa
             if json.loads(l)["kind"] == "principal_ownership"]
     if not profile.expect_second_principal:
         assert not rows, f"{profile.name}: recorded ownership for a principal it never had"
+
+
+# --------------------------------------------------------------------------- #
+# The faults crAPI taught, as contract — so target #3 meets them offline
+# --------------------------------------------------------------------------- #
+
+def test_no_PHANTOM_route_is_ever_confirmed(tmp_path):
+    """Against a prefix that answers 401 to everything, confirmation must confirm only
+    what is really there. This is the root fault of ten CR1 runs, as a standing contract:
+    a new target with a catch-all prefix cannot silently fill the map with fiction."""
+    profile = [p for p in PROFILES if p.name == "catch-all-401-prefix"][0]
+    s, cage, _a = _session(profile, tmp_path)
+    _sign_in_first(s, profile)
+    s._principals_established = True
+    s.resolve_mined_routes()
+    for route in s.surface.confirmed_routes:
+        assert route in (CatchAll401Shape.LOGIN, CatchAll401Shape.SIGNUP,
+                         CatchAll401Shape.ME,
+                         CatchAll401Shape.PREFIX + "/v2/user/pictures"), route
+    assert not any("orders/all" in r or "/v8" in r for r in s.surface.confirmed_routes)
+
+
+def test_method_evidence_survives_on_every_shape(tmp_path):
+    """A route that answers 405 to GET must be labelled, or the model spends the
+    experiment budget proposing GETs at upload-only endpoints."""
+    profile = [p for p in PROFILES if p.name == "catch-all-401-prefix"][0]
+    s, _cage, _a = _session(profile, tmp_path)
+    _sign_in_first(s, profile)
+    s._principals_established = True
+    s.resolve_mined_routes()
+    pics = CatchAll401Shape.PREFIX + "/v2/user/pictures"
+    if pics in s.surface.confirmed_routes:
+        assert s.surface.route_methods.get(pics) == "not-GET", s.surface.route_methods
+
+
+def test_a_proposal_using_a_mined_fragment_is_repaired_on_every_shape(tmp_path):
+    """Whatever the target, a proposal naming a fragment resolution proved elsewhere must
+    be corrected rather than spent on a 404."""
+    from brukal.hypothesis import Hypothesis
+    profile = [p for p in PROFILES if p.name == "catch-all-401-prefix"][0]
+    s, _cage, _a = _session(profile, tmp_path)
+    _sign_in_first(s, profile)
+    s._principals_established = True
+    s.resolve_mined_routes()
+    if not getattr(s, "_resolved_map", None):
+        return
+    frag = sorted(s._resolved_map, key=len, reverse=True)[0]
+    h = Hypothesis(title="t", severity="high", comparator="cross_account_resource",
+                   control={"method": "GET", "url": f"{BASE}{frag}", "as": "self"},
+                   variant={"method": "GET", "url": f"{BASE}{frag}", "as": "second"},
+                   setup=[])
+    s.repair_proposals([h])
+    assert h.control["url"] == f"{BASE}{s._resolved_map[frag]}", h.control

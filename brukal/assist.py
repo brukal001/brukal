@@ -2007,7 +2007,19 @@ class AssistSession:
             "cookie:" + next(iter(getattr(browser, "_cookies", {}) or {}), "") 
             if (getattr(browser, "_cookies", {}) or {}) else "")
         token = self.session_token()
-        for path in _IDENTITY_PROBE_PATHS:
+        # CONFIRMED ROUTES THAT LOOK LIKE AN IDENTITY ORACLE, tried before the bare
+        # conventional paths. The allowlist is matched by SUFFIX against routes this run
+        # already proved exist, so a prefixed oracle — /svc/api/v2/user/me, crAPI's
+        # /identity/api/v2/user/dashboard — is reachable without a per-target entry.
+        #
+        # That per-target entry is the portability smell recorded when crAPI's path was
+        # added by hand, and a profile shape with its oracle at a different mount is what
+        # turned the smell into a failing test. Costs nothing: these are paths already
+        # confirmed, not new guesses.
+        _confirmed = list(getattr(getattr(self, "surface", None), "confirmed_routes", []) or [])
+        _prefixed = [r for r in _confirmed
+                     if any(r.endswith(p) for p in _IDENTITY_PROBE_PATHS)]
+        for path in list(dict.fromkeys(_prefixed + list(_IDENTITY_PROBE_PATHS))):
             url = urljoin(base, path)
             anon_a = self._probe_identity(url, with_session=False)
             if anon_a is None:
@@ -4338,6 +4350,57 @@ class AssistSession:
                 pass
         self.note(f"[experiment] derived from an observation: {h.title}")
 
+    def repair_proposals(self, proposals):
+        """Rewrite a proposal that names a mined fragment we RESOLVED to the path we proved.
+
+        Run 12's surface was correct — the dashboard confirmed at
+        /identity/api/v2/user/dashboard, phantoms gone, methods annotated — and the model
+        still proposed `/v2/user/dashboard`, `/v2/user/videos/0`, `/v2/user/pictures/29`.
+        Nine of eleven experiment 404s came from the UNVERIFIED fragment list sitting
+        beside the confirmed one, whose own label says "prefer the fetched paths above".
+
+        That label has been there since GAP #4 and has never worked once, which is this
+        session's most-repeated lesson: a caveat in prose that no code enforces is a
+        comment, not a safeguard.
+
+        Repair rather than refusal, because the proposal is not wrong about WHAT to test.
+        Deterministic: the mapping is the one resolution recorded by request, no model is
+        consulted, the query string and any suffix are preserved, a path we never resolved
+        is left exactly as proposed, and every rewrite is recorded — a request that is not
+        the one the model wrote must be visible as such.
+        """
+        rmap = getattr(self, "_resolved_map", None) or {}
+        if not rmap:
+            return proposals
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        # Longest fragment first: /v2/user/videos must not be rewritten by a shorter
+        # fragment that happens to be a prefix of it.
+        frags = sorted(rmap, key=len, reverse=True)
+
+        def _fix(spec):
+            url = (spec or {}).get("url", "") or ""
+            for frag in frags:
+                target = rmap[frag]
+                if frag in url and target not in url:
+                    new_url = url.replace(frag, target, 1)
+                    if audit is not None:
+                        try:
+                            audit.append("proposal_repaired", {
+                                "from": url, "to": new_url, "fragment": frag,
+                                "target": self.target,
+                                "why": "resolution proved this fragment lives here"})
+                        except Exception:
+                            pass
+                    spec["url"] = new_url
+                    return
+        for h in proposals or ():
+            _fix(getattr(h, "control", None))
+            _fix(getattr(h, "variant", None))
+            _fix(getattr(h, "act", None))
+            for step in (getattr(h, "setup", None) or ()):
+                _fix(step)
+        return proposals
+
     def run_hypotheses(self, max_run: int = 4, derived_only: bool = False) -> int:
         """Ask the model for experiments, execute them through the gate, keep only the
         ones the evidence supports. Returns how many became findings.
@@ -4526,6 +4589,7 @@ class AssistSession:
         # the best-evidenced questions in the batch, and CR1 proved they are the ones
         # that get lost. Drained, so an experiment is proposed once; whatever the
         # comparator then says is the published answer.
+        proposals = self.repair_proposals(proposals)
         _derived = self.derived_hypotheses()
         if _derived:
             self._derived_hypotheses = []
@@ -5591,6 +5655,13 @@ class AssistSession:
         # the rest waits until the principals are in hand.
         if not getattr(self, "_principals_established", False):
             _login_ish = ("/login", "/signin", "/session", "/auth", "/token")
+            # ESTABLISHMENT ALSO NEEDS THE ORACLE. Confirming a principal's identity is
+            # part of acquiring it, and on a target whose oracle sits under a mount — the
+            # common case — it is unreachable until its fragment is resolved. Leaving it
+            # out made the identity of every principal unconfirmable on any target whose
+            # oracle is not hard-coded in the allowlist, which is the portability smell
+            # this narrowing would otherwise have made permanent.
+            _oracle_ish = tuple(_IDENTITY_PROBE_PATHS)
             def _rank(frag):
                 low = frag.split("?")[0].rstrip("/").lower()
                 # SIGNUP FIRST. Establishment needs a registration endpoint; the login URL
@@ -5601,9 +5672,11 @@ class AssistSession:
                     return 0
                 if any(low.endswith(s) for s in _login_ish):
                     return 1
-                return 2
-            fragments = sorted([f for f in fragments if _rank(f) < 2], key=_rank)
-            cap = min(cap, 12)
+                if any(low.endswith(s) for s in _oracle_ish):
+                    return 2
+                return 3
+            fragments = sorted([f for f in fragments if _rank(f) < 3], key=_rank)
+            cap = min(cap, 16)
         observed = [p for p in (getattr(surface, "pages", set()) or set())]
         if getattr(self, "_login_url", ""):
             observed.append(self._login_url)
@@ -5688,6 +5761,13 @@ class AssistSession:
                 surface.route_methods[composed] = "not-GET" if status == 405 else "GET"
                 known.add(composed)
                 resolved.append((frag, composed))
+                # THE MAP, kept for proposal repair. Resolution PROVED this fragment lives
+                # at this path; a later proposal naming the fragment is not wrong about
+                # what to test, only about where it is.
+                rmap = getattr(self, "_resolved_map", None)
+                if rmap is None:
+                    rmap = self._resolved_map = {}
+                rmap[frag] = composed
                 break
         if resolved:
             self.note(f"[crawl] resolved {len(resolved)} mined route(s) under this app's "
