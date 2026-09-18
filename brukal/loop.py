@@ -272,6 +272,14 @@ class GroundedLoop:
     def _finish(self, reason: str, detail: str) -> LoopResult:
         result = LoopResult(steps=self.steps, stop_reason=reason, stop_detail=detail)
         self._checkpoint(stop_reason=reason)      # persist the final progress too
+        # THE LEDGER, not only the display. `_emit` reaches the observer that draws the
+        # terminal; it never reached the audit log, so how a run ended was readable
+        # everywhere except the one artifact a third party verifies.
+        audit = getattr(getattr(self.session, "executor", None), "_audit", None)
+        if audit is not None:
+            from .assist import record_engagement_stop
+            record_engagement_stop(audit, reason, detail, steps=len(self.steps),
+                                   executed=result.executed, blocked=result.blocked)
         self._emit("stop", reason=reason, detail=detail, result=result)
         return result
 

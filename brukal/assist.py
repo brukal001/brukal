@@ -249,6 +249,43 @@ _INTERNAL_ERRORS = (NameError, AttributeError, TypeError, ImportError, IndexErro
                     KeyError, UnboundLocalError, AssertionError)
 
 
+def record_engagement_stop(audit, reason: str, detail: str, steps: int = 0,
+                           executed: int = 0, blocked: int = 0) -> None:
+    """Write HOW THIS RUN ENDED into the ledger.
+
+    The CR1 measurement run (2026-09-18) stopped at step ~60 of 70 because the model
+    provider refused — and nothing in the artifacts said so. The message went to stdout,
+    no report was written, and the ledger's last entry was an ordinary `web_decision`.
+
+    Looking for the fix showed the hole was wider than the crash: `GroundedLoop._finish`
+    emits `stop` to the DISPLAY, never to the audit log, so no run of any kind recorded
+    its ending there. CR1's definition of done requires a run to complete "or stop for a
+    named reason RECORDED IN THE LEDGER", which made that clause unmeetable by
+    construction — and without it "found nothing" and "died before it could look" read
+    identically in a bundle.
+
+    Carries an attribution on the same taxonomy as every experiment outcome: a run killed
+    by our own model access or plumbing is a HARNESS-LIMIT, not the target refusing.
+
+    Instrumentation, so it can never end an engagement: a broken audit sink is swallowed.
+    """
+    from . import hypothesis as _hyp
+    try:
+        audit.append("engagement_stop", {
+            "reason": reason,
+            "detail": (detail or "")[:400],
+            "steps": steps,
+            "executed": executed,
+            "blocked": blocked,
+            # `aborted` is ours by definition — the run did not choose to end. Every other
+            # ending is a measurement that completed on its own terms.
+            "attribution": ("HARNESS-LIMIT" if reason == "aborted"
+                            else _hyp.attribution("confirmed")),
+        })
+    except Exception:
+        pass
+
+
 def _explain_run_error(e: BaseException) -> tuple[str, str]:
     """(headline, advice) for an exception that ended a run. Distinguishes OUR bug from
     an environment problem, because the two need opposite responses from the operator."""
@@ -8808,6 +8845,23 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         if os.environ.get("BRUKAL_DEBUG"):
             raise
         _head, _advice = _explain_run_error(e)
+        # THE LEDGER FIRST, then the deliverable. A run that dies mid-engagement still
+        # holds everything it proved up to that point — CR1's abort left a confirmed
+        # cross-account result reachable only as raw audit rows — so the ending is
+        # recorded and the report is written from what the session has.
+        _steps = len(getattr(loop, "steps", []) or [])
+        record_engagement_stop(audit, "aborted", _head, steps=_steps)
+        try:
+            from .loop import LoopResult
+            _partial = LoopResult(steps=getattr(loop, "steps", []) or [],
+                                  stop_reason="aborted", stop_detail=_head)
+            _reports = _write_session_report(session, _partial, cage, audit,
+                                             _spend_line(session))
+            if _reports.get("md"):
+                print(f"\n  📄 partial report ({len(session.findings)} finding(s)): "
+                      f"{_reports['md']}")
+        except Exception:
+            pass
         print(f"\n  ⚠ {_head}")
         print(f"  {_advice}")
         return 1
