@@ -496,6 +496,17 @@ class GroundedLoop:
                     self.session.run_hypotheses(derived_only=True)
             except Exception as exc:
                 self._record_swallowed_experiment_error(exc)
+            # RE-RESOLVE when the agent's exploration has taught us new ground. A path
+            # that answered is evidence about where this application mounts things, and
+            # run 6 saw a third of crAPI because the only such evidence was the login URL.
+            # Cheap: compositions already disproved are never re-probed.
+            try:
+                answered = len(getattr(self.session, "_answered_paths", None) or [])
+                if answered > getattr(self, "_answered_seen", 0):
+                    self._answered_seen = answered
+                    self.session.resolve_mined_routes()
+            except Exception:
+                pass
             self._checkpoint()
 
             # REFLEX 0a: FIND the web surface ourselves before anything else. Everything

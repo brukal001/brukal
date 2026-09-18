@@ -1048,7 +1048,12 @@ class AssistSession:
             # seen and lost: the agent's curl returned another tenant's order and the
             # output became a note nobody could publish from.
             try:
-                self._observe_record(_url_in(command), raw)
+                _u = _url_in(command)
+                self._observe_record(_u, raw)
+                # An HTTP status line in a raw fetch is the answer; without -i there is
+                # none, and a body that came back at all is itself the evidence.
+                _m = re.search(r"HTTP/[\d.]+\s+(\d{3})", raw or "")
+                self._observe_answer(_u, int(_m.group(1)) if _m else (200 if raw else 0))
             except Exception:
                 pass
             new_hl = highlight_findings(raw)
@@ -4258,6 +4263,36 @@ class AssistSession:
         These are that observation, turned into a question the comparator CAN judge."""
         return list(getattr(self, "_derived_hypotheses", []) or [])
 
+    def _observe_answer(self, url: str, status) -> None:
+        """A path that ANSWERED is evidence about where this application mounts things.
+
+        Run 6 confirmed sixteen routes and every one was under `/identity/api`, because
+        mount-prefix alignment had exactly one answered path to work from: the login URL
+        the operator supplied. crAPI runs three services, so two thirds of the application
+        stayed invisible, seeding found no vehicle routes, coverage found no unvisited
+        family, and every experiment was asked about a third of the target.
+
+        The agent's own exploration is the missing evidence. The moment anything touches
+        `/workshop/api/shop/orders` and gets a reply, `/workshop/api/shop` becomes an
+        alignment candidate and the fragments that failed under the old prefix get another
+        chance — so a lucky probe stops evaporating and becomes the surface's knowledge.
+
+        Only an ANSWER counts. A 404 means the path is not there, and learning a prefix
+        from one would poison every later composition."""
+        try:
+            if not url or not status or int(status) == 404:
+                return
+        except Exception:
+            return
+        seen = getattr(self, "_answered_paths", None)
+        if seen is None:
+            seen = self._answered_paths = []
+        path = url.split("://")[-1]
+        path = "/" + path.split("/", 1)[1] if "/" in path else ""
+        path = path.split("?", 1)[0]
+        if path and path not in seen and len(seen) < 200:
+            seen.append(path)
+
     def _observe_record(self, url: str, body: str) -> None:
         """One plane's output, examined for a record that is not ours. Deterministic and
         cheap; no model, no extra request.
@@ -5399,20 +5434,50 @@ class AssistSession:
         observed = [p for p in (getattr(surface, "pages", set()) or set())]
         if getattr(self, "_login_url", ""):
             observed.append(self._login_url)
+        # EVERYTHING THAT ANSWERED, not just the login URL — see `_observe_answer`.
+        observed.extend(getattr(self, "_answered_paths", None) or [])
         prefixes = webmap.align_mount_prefixes(observed, fragments)
         if not prefixes:
             return []
         base = getattr(surface, "seed", "") or f"http://{self.target}/"
         from urllib.parse import urljoin as _urljoin
         known = set(fragments)
+        # Compositions already disproved. Re-resolution runs whenever new evidence
+        # arrives, and must not re-spend a request on a path the target already denied.
+        tried = getattr(self, "_composed_tried", None)
+        if tried is None:
+            tried = self._composed_tried = set()
         resolved, budget = [], cap
         for frag in fragments:
             if budget <= 0:
                 break
+            # IS THE BARE FRAGMENT ALREADY A ROUTE? Composing assumed it was not, and
+            # replaced it with the composed form — which on an application that answers
+            # broadly rewrote CORRECT routes into wrong ones (caught by test_loop_e2e,
+            # where /users/v1/{username} became /books/users/v1/{username}).
+            #
+            # So the assumption is measured instead: one gated probe. If the fragment
+            # answers, it IS the route, it is confirmed as-is, and nothing is composed —
+            # which also saves every composition that would have followed.
+            bare = "/" + frag.strip("/")
+            if bare not in tried:
+                tried.add(bare)
+                budget -= 1
+                try:
+                    _d, br = self.browser.run(WebAction(
+                        "request", method="GET", url=_urljoin(base, bare)))
+                except Exception:
+                    br = None
+                _bs = getattr(br, "status", None)
+                if _bs and _bs != 404:
+                    if bare not in surface.confirmed_routes:
+                        surface.confirmed_routes.append(bare)
+                    continue
             for prefix in prefixes:
                 composed = prefix + ("/" + frag.strip("/"))
-                if composed in known or budget <= 0:
+                if composed in known or composed in tried or budget <= 0:
                     continue
+                tried.add(composed)
                 budget -= 1
                 try:
                     _d, r = self.browser.run(WebAction(
@@ -7146,6 +7211,8 @@ class AssistSession:
         try:
             self._observe_record(getattr(action, "url", ""),
                                  getattr(result, "body", "") or "")
+            self._observe_answer(getattr(action, "url", ""),
+                                 getattr(result, "status", None))
         except Exception:
             pass
         """Fold one WEB outcome into session state (main-thread counterpart to the
