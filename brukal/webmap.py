@@ -645,8 +645,23 @@ class AttackSurface:
         if _unconfirmed:
             # Mined from text and JS: useful leads, but the prefix an app mounts them
             # under is exactly what mining loses, so they are labelled as unverified.
-            lines.append("  API route fragments mined from page text (UNVERIFIED — the "
-                         "mount prefix may be missing; prefer the fetched paths above): "
+            # NOT "API routes". These are path-SHAPED strings, and on a single-page app
+            # the commonest source of them is the CLIENT-SIDE ROUTER, not the API.
+            # crAPI's bundle yields "/orders", "/change-phone-number", "/dashboard" —
+            # every one a React route — while its order API is /workshop/api/shop/orders,
+            # a prefix that appears NOWHERE in the bundle. `_API_ROUTE_RE` matches
+            # "/orders" on its keyword allowlist, so the label was asserted by a regex
+            # and the model reasonably aimed an experiment at it: CR1 run 19's only
+            # correctly-shaped state_changed experiment 404'd on both sides for this
+            # reason. Saying merely "UNVERIFIED" was not enough — it reads as "this
+            # endpoint might 404", not "this might not be an endpoint at all".
+            lines.append("  path-shaped strings mined from page text and JS (UNVERIFIED, "
+                         "and NOT known to be API endpoints at all — on a single-page app "
+                         "these are usually "
+                         "CLIENT-SIDE ROUTER paths, and the API may live under a mount "
+                         "prefix that appears nowhere in the bundle; an experiment aimed "
+                         "at one of these will most likely 404 on BOTH sides and measure "
+                         "nothing — prefer the CONFIRMED routes above): "
                          + ", ".join(_unconfirmed[:24]))
         for f in self.forms[:max_items]:
             lines.append(f"  form: {f.describe()}")

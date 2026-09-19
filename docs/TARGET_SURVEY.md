@@ -1612,3 +1612,79 @@ ONE-sided 404 is often the whole finding and must survive the floor).
 **Same lesson, third time in this file:** GAP #11's boundary test passed through a
 short-circuit, GAP #12's fixture could not express the defect, and this one asserted a
 default. *A test must be seen to fail for the reason it names.*
+
+---
+
+# ★★★ GAP #13 RE-DIAGNOSED — THE MINER CALLS A ROUTER PATH AN "API ROUTE", AND NOTHING WAS EVER STRIPPED
+
+**Class: GENUINE GAP. The two-session assumption behind it was WRONG. Diagnosed and
+mitigated 2026-09-19 at $0.00 — no model, no paid run.**
+
+GAP #13 said coverage proposes *"raw fragments before resolution can prove them"*, and
+GAP #10/#11 built prefix repair on the premise that **mining strips a mount prefix which
+resolution can restore**. crAPI's bundle was fetched directly and settles it:
+
+```
+$ curl -s http://172.20.0.12/static/js/main.8c78208c.js | grep -oE '"/[a-z/-]{6,60}"' | sort -u
+"/change-email" "/change-phone-number" "/contact-mechanic" "/dashboard"
+"/forgot-password" "/orders" "/past-orders" "/reset-password" "/signup" ...
+```
+
+**No `/workshop/api/shop` anywhere in the bundle.** Every one of those is a React
+**client-side router path**. `/orders` is a UI route; crAPI's order API is
+`/workshop/api/shop/orders`. **Nothing was stripped — the prefix was never there**, and no
+amount of repair or resolution could have restored it, because there is nothing to restore
+it *from*.
+
+`_API_ROUTE_RE` matches `/orders` because `orders?` is in its keyword allowlist. So a
+router path is mined and rendered to the model under the heading **"API route fragments
+mined from page text"**. The label is asserted by a regex and earned by nothing, and run
+19's only correctly-shaped `state_changed` experiment was aimed at `/orders/40` because
+that is what the grounding called an API route.
+
+## The mitigation, and its honest limit
+
+The heading no longer makes a claim the evidence does not support:
+
+> path-shaped strings mined from page text and JS (UNVERIFIED, and NOT known to be API
+> endpoints at all — on a single-page app these are usually CLIENT-SIDE ROUTER paths, and
+> the API may live under a mount prefix that appears nowhere in the bundle; an experiment
+> aimed at one of these will most likely 404 on BOTH sides and measure nothing — prefer
+> the CONFIRMED routes above)
+
+Saying merely "UNVERIFIED" was not enough: it reads as *"this endpoint might 404"*, not
+*"this might not be an endpoint at all"*. The literal token `UNVERIFIED` is kept because
+`test_crawl_budget.py` guarantees it.
+
+**This is a mitigation, not a cure, and must not be recorded as one.** It tells the model
+the truth about what it is being shown; it does not give it the real API paths. Those can
+only come from somewhere that actually knows them — observed XHR traffic through the
+governed browser, an OpenAPI document, or probing. **That is the next real piece of work,
+and it is free.** Until then, `both_sides_absent` (GAP #19) at least stops the resulting
+404/404 from being filed as evidence about the target.
+
+---
+
+# THE FREE HARNESS LOOP — six paid runs found plumbing bugs at Sonnet prices
+
+`runs/audit_local1.jsonl`, `scope.crapi.local.json`, **qwen2.5 via ollama, `~$0.0000`**:
+
+```
+14 steps, 887 ledger rows, chain intact, 6 findings
+brain spend — qwen2.5: 7 call(s) · 8,766 in / 2,516 out tokens · ~$0.0000
+model rounds: 2 · proposals: 9 · outcomes: 9 · proposal drops recorded: 2
+crapi_recall: found 0 of 14 · model experiment rounds: 2 ⚠ FEWER THAN 3 · CONFOUNDED
+```
+
+Every piece of this session's instrumentation verified against the **live target** for
+nothing: the GAP #18 cadence (2 rounds in 14 steps, as the cadence predicts), GAP #17 drop
+recording, the GAP #16 confound banner, and an intact hash chain.
+
+A 7B local model proposes worse experiments than Sonnet — that is not what this is for.
+**Recall from a local run is meaningless and may never be compared with runs 1–19.** What
+it exercises is every path where six paid runs actually died: ordering, resolution,
+repair, dispatch, comparator, attribution, ledger. None of that needed a frontier model,
+and all of it was bought at ~$4 a time.
+
+**Standing rule from here: no paid run until a free run shows experiments landing on paths
+that exist.**
