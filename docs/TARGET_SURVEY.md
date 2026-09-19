@@ -959,3 +959,69 @@ fixture that cannot express the defect is not a test of it.**
 resolved and reached `findings.jsonl`. The residual defect was waste, not blindness.
 
 **Suite: 1478 passed, 1 skipped.**
+
+---
+
+# CR1 RUN 17 (`audit_cr1q.jsonl`, 2026-09-19) — the plumbing fixes worked; recall did not move
+
+70 steps, 100 model calls, **$4.17**, 55 commands (15 blocked), chain intact, 9 findings.
+Runs 15 and 16 were aborted before the paid loop at **$0.00 each**, so this measurement
+cost one run, not three.
+
+| | run 14 | run 17 | prediction |
+|---|---|---|---|
+| funnel | 21/21/21/21 | 18/18/18/18 | — |
+| confirmed | 7 | 5 | — |
+| unaccounted | 0 | 0 | — |
+| attribution | MEASURED ×21 | MEASURED ×18 | — |
+| **rate-limit denials** | **43** | **2** | ✅ **MET** |
+| **double-prefixed paths on the wire** | **22** | **0** | ✅ **MET** |
+| experiment-level 404s | 12/42 (29%) | 13/36 (36%) | ⛔ **FAILED — worse** |
+| `proposal_repaired` | 0 | 0 | not predicted |
+| **recall** | **1 of 14** | **1 of 14** | unchanged |
+| misses | HARNESS-LIMIT 8 · MODEL-LIMIT 2 · MEASURED-NOT-CONFIRMED 3 | HARNESS-LIMIT 6 · MODEL-LIMIT 4 · MEASURED-NOT-CONFIRMED 3 | — |
+
+`/identity/api/v2/user/dashboard` is confirmed and appears 7× in `findings.jsonl`.
+
+## The failed prediction, and why the metric was also wrong
+
+404 waste went **up**, 29% → 36%. Two things are true and both should be said:
+
+1. **The fixes were never going to move it.** They removed wasted *resolution* probes
+   (43 denials, 22 impossible paths), which are not experiment requests at all.
+2. **The metric conflates two different things.** `/identity/api/v2/user/dashboard`
+   appears among the 404 experiment URLs — because crAPI's oracle 404s a stranger, and
+   that request was the *anonymous control half*. **A control being refused is the
+   expected answer, not waste.** Counting it as waste makes the number meaningless in
+   both directions, and I set the prediction against it anyway.
+
+The honest sub-measurement: **unprefixed 404 experiment URLs = 8 in run 14 and 8 in run
+17** — identical. That is unambiguous waste (a wrong URL), and it did not move.
+
+## ⛔ GAP #13 — coverage proposes raw fragments BEFORE resolution can prove them
+
+**Class: GENUINE GAP. MEASURED by run 17. NOT FIXED.**
+
+The same four URLs waste requests in both runs:
+
+```
+/v2/user/dashboard   /v2/user/videos   /v2/user/pictures   /orders/all
+```
+
+These are deterministic *coverage* proposals, emitted off the mined fragment list before
+resolution has composed anything — so `_resolved_map` is **empty** when they are built,
+and repair (GAP #10, #11) has nothing to work from. `proposal_repaired` is 0 in both
+runs, and that is not repair failing: **repair is downstream of the wrong thing.**
+`test_surface_is_settled_before_proposing.py` covers the MODEL's proposals and not the
+coverage path.
+
+**This is an ordering defect, not a repair defect**, and it is now the largest single
+identified source of wasted experiments.
+
+## What this run actually establishes
+
+The four fixes did exactly what they claimed, measured: our own limiter no longer
+records absence (43 → 2), and no impossible path reaches the wire (22 → 0). **Recall is
+unchanged at 1 of 14**, and nothing here predicted otherwise — the miss attribution says
+why: HARNESS-LIMIT 6 and MODEL-LIMIT 4 are not addressed by any of it. The plumbing was
+real and is fixed; **it was not what was capping recall.**
