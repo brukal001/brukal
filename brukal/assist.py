@@ -1528,6 +1528,15 @@ class AssistSession:
             # and promoted only under a mount prefix the crawl has proved real — the one
             # honest way to reach an endpoint that nothing links to.
             surface.path_candidates |= webmap.extract_path_candidates(body)
+            # THE TWO HALVES OF THE JOIN (GAPs #20, #21). A single-page app keeps its
+            # service mounts and its endpoint suffixes in SEPARATE constants and
+            # concatenates them at runtime — crAPI ships `ig="workshop/"` and
+            # `"api/shop/orders"` — so a miner looking for path-SHAPED strings sees
+            # neither. Collected here from every body, confirmed later by request in
+            # `discover_mounts` / `resolve_mounted_endpoints`. Nothing is composed until
+            # the target has answered for it.
+            surface.mount_candidates |= set(webmap.extract_mount_candidates(body))
+            surface.api_suffixes |= set(webmap.extract_api_suffixes(body))
             if not is_html:
                 surface.add_routes(webmap.extract_api_routes(body))
                 self.scan_web_body(url, body)
@@ -5874,6 +5883,93 @@ class AssistSession:
                           f"{door[0]}/{door[1]}B)")
         return out
 
+    def resolve_mounted_endpoints(self, suffixes: list, cap: int = 40) -> list:
+        """Join CONFIRMED mounts to MINED suffixes, and prove every join by request.
+
+        GAP #20 recovered the mounts (`"workshop/"`) and confirmed them. GAP #21 is that
+        the endpoints were in the same bundle all along, UNROOTED —
+        `"api/shop/orders"`, `"api/v2/user/dashboard"`, `"api/v2/coupon/validate-coupon"`
+        — because the SPA concatenates mount + suffix at runtime. `_API_ROUTE_RE` requires
+        a leading slash, so the miner was blind at BOTH ends of that join, and every CR1
+        miss on an order, a coupon or a video was a miss on a path spelled out in full in
+        a file the harness had already downloaded.
+
+        Nothing here is invented. The mount came from the target's code and was confirmed
+        by request; the suffix came from the target's code; the JOIN is confirmed too.
+        An infix is never guessed — which is the failure this whole family of gaps is
+        made of.
+
+        Cost: a suffix belongs to ONE service, so the search stops at the first mount that
+        answers. Fail-closed: a suffix that answers 404 under every confirmed mount is not
+        written down, because a fabricated route in the grounding is what sent run 19's
+        best experiment to a path that does not exist."""
+        from .web import WebAction
+        surface = getattr(self, "surface", None)
+        if surface is None or self.browser is None:
+            return []
+        mounts = list(getattr(surface, "confirmed_mounts", []) or [])
+        if not mounts:
+            return []
+        base = (getattr(surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        confirmed = list(getattr(surface, "confirmed_routes", []) or [])
+
+        # WHAT DOES THIS MOUNT SAY ABOUT A PATH THAT CANNOT EXIST? Without this, the rule
+        # "any answer that is not 404 proves the route" confirmed all 32 mined suffixes
+        # under /identity on the live target -- including /identity/api/shop/orders and
+        # /identity/api/v2/coupon/validate-coupon, which live under /workshop and
+        # /community. crAPI's identity service answers 401 for EVERY path under it,
+        # existing or not, because its auth filter runs before routing. A blanket answer
+        # is not evidence about a path; only a DIFFERENCE from it is. Same technique as
+        # `discover_mounts`, one level down, and one baseline request per mount.
+        absent: dict = {}
+        for mount in mounts:
+            nonce = "brukal-absent-" + uuid.uuid4().hex[:10]
+            try:
+                _d, rr = self.browser.run(
+                    WebAction(kind="get",
+                              url=f"{base}/{mount.strip('/')}/{nonce}"), agent="recon")
+            except Exception:
+                rr = None
+            absent[mount] = (None if rr is None else
+                             (getattr(rr, "status", None),
+                              len(getattr(rr, "body", "") or "")))
+
+        out, spent = [], 0
+        for sfx in list(suffixes)[:cap]:
+            sfx = str(sfx).strip("/")
+            if not sfx:
+                continue
+            for mount in mounts:
+                path = f"/{mount.strip('/')}/{sfx}"
+                if path in confirmed:
+                    break
+                try:
+                    _dec, r = self.browser.run(
+                        WebAction(kind="get", url=f"{base}{path}"), agent="recon")
+                except Exception:
+                    break
+                spent += 1
+                if r is None:
+                    break                      # our gate refused: stop, do not write off
+                st = getattr(r, "status", None)
+                fp = (st, len(getattr(r, "body", "") or ""))
+                # Proof is a DIFFERENCE from what this mount says about an impossible
+                # path -- not merely "not a 404". A 405 still means the route is there but
+                # not for GET, which is what the `[not-GET]` label exists for.
+                base_fp = absent.get(mount)
+                if st is not None and st != 404 and (base_fp is None or fp != base_fp):
+                    out.append(path)
+                    confirmed.append(path)
+                    if path not in surface.confirmed_routes:
+                        surface.confirmed_routes.append(path)
+                        if st == 405:
+                            (surface.route_methods or {}).setdefault(path, "not-GET")
+                    self.note(f"[surface] endpoint CONFIRMED by request: {path} "
+                              f"(HTTP {st}) — mount and suffix both came from the app's "
+                              f"own bundle")
+                    break                      # a suffix belongs to one service
+        return out
+
     def resolve_mined_routes(self, cap: int = 40) -> list:
         """Resolve mined route FRAGMENTS to paths this target actually answers.
 
@@ -5908,6 +6004,23 @@ class AssistSession:
             self.note("[crawl] route resolution SKIPPED: this host answers 200 for paths "
                       "that do not exist, so a confirmation would prove nothing")
             return []
+        # THE MOUNTS FIRST, and only once. Everything below composes fragments against
+        # prefixes ALIGNED from paths that answered — which on a multi-service gateway can
+        # only ever learn the service the operator's login URL points at. crAPI has four,
+        # and nineteen runs saw one. Confirming the mounts the application NAMES, and then
+        # the endpoint suffixes it names, turns the other three from invisible into
+        # proved. Both steps are request-confirmed and fail closed.
+        if (getattr(surface, "mount_candidates", None)
+                and not getattr(surface, "confirmed_mounts", None)):
+            try:
+                surface.confirmed_mounts = self.discover_mounts(
+                    sorted(surface.mount_candidates))
+                if surface.confirmed_mounts and getattr(surface, "api_suffixes", None):
+                    self.resolve_mounted_endpoints(sorted(surface.api_suffixes))
+            except Exception as exc:
+                self.note(f"[surface] mount discovery failed and was skipped "
+                          f"({type(exc).__name__}: {str(exc)[:100]})")
+
         fragments = list(getattr(surface, "api_routes", []) or [])
         # YIELD TO THE PRINCIPALS. The full sweep costs a probe per fragment plus a
         # composition per prefix, and in CR1 runs 7 and 8 it spent the web-rate allowance

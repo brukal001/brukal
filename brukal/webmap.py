@@ -491,6 +491,37 @@ def extract_mount_candidates(text: str, max_candidates: int = 24) -> list[str]:
     return out
 
 
+# The OTHER half of the join. crAPI's bundle spells its endpoints out in full —
+# "api/shop/orders", "api/v2/user/dashboard", "api/v2/coupon/validate-coupon" — but
+# UNROOTED, because the SPA concatenates them onto a mount constant at runtime.
+# `_API_ROUTE_RE` requires a leading slash, so it could not see a single one of them,
+# and the miner was blind at BOTH ends of `"workshop/" + "api/shop/orders"`.
+#
+# Anchored at the start of the quoted string, and required to look like an API path
+# rather than a media type: "application/json" and "text/html" are the obvious noise.
+_API_SUFFIX_RE = re.compile(
+    r"""["']((?:api|rest|graphql|v[0-9]{1,2})(?:/[A-Za-z0-9_.~:{}-]{1,40}){1,5})["']""")
+
+
+def extract_api_suffixes(text: str, max_suffixes: int = 60) -> list[str]:
+    """Unrooted API path suffixes the application names in its own code.
+
+    These are composed with CONFIRMED mounts and every composition is proved by a
+    request — see `AssistSession.resolve_mounted_endpoints`. Nothing here is a guess:
+    the mount came from the bundle and was confirmed, the suffix came from the bundle,
+    and the join is confirmed too."""
+    out, seen = [], set()
+    for m in _API_SUFFIX_RE.finditer(text or ""):
+        sfx = m.group(1).strip("/")
+        if not sfx or sfx in seen:
+            continue
+        seen.add(sfx)
+        out.append(sfx)
+        if len(out) >= max_suffixes:
+            break
+    return out
+
+
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     """Pull distinct API-ish route paths out of a fetched body (JS bundle or HTML).
     Deterministic regex over UNTRUSTED text — the paths become leads in the site map,
@@ -570,6 +601,10 @@ class AttackSurface:
     # runtime, which is why path-shaped mining never saw them and why every run before
     # this could learn only the prefix implied by the operator's login URL.
     confirmed_mounts: list = field(default_factory=list)
+    # Leads, not facts: bare service segments and unrooted endpoint suffixes read out of
+    # the application's own code, awaiting confirmation by request.
+    mount_candidates: set = field(default_factory=set)
+    api_suffixes: set = field(default_factory=set)
     protected_routes: list = field(default_factory=list)  # (METHOD, path) the spec says need auth
     write_operations: list = field(default_factory=list)  # (METHOD, templated path) that mutate state
     privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set

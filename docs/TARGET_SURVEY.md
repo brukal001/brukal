@@ -1767,3 +1767,76 @@ service root to work from instead of only `/identity/api`, and the model is told
 application has services at all. **Turning a confirmed mount into a confirmed endpoint is
 the next piece of work, and it is also free** — and it must not be done by guessing
 infixes from a wordlist, which is the failure this whole gap is made of.
+
+---
+
+# ★★★ GAP #21 — THE ENDPOINTS WERE IN THE BUNDLE TOO, UNROOTED. THE MINER WAS BLIND AT BOTH ENDS OF THE JOIN
+
+**Class: GENUINE GAP, and the completion of GAPs #10/#11/#13/#19/#20. FOUND, FIXED AND
+VALIDATED LIVE 2026-09-19 at $0.00.**
+
+GAP #20 recovered the service MOUNTS. A mount is an anchor, not an endpoint. The endpoints
+were in the same file all along:
+
+```
+"api/shop/orders"        "api/shop/orders/return_order"   "api/shop/apply_coupon"
+"api/v2/user/dashboard"  "api/v2/user/videos"             "api/v2/user/reset-password"
+"api/v2/coupon/validate-coupon"                           "api/auth/login"
+```
+
+**Unrooted.** `_API_ROUTE_RE` requires a leading slash, so it could not see one of them —
+and `_MOUNT_CANDIDATE_RE` did not exist. The SPA computes `"workshop/" + "api/shop/orders"`
+at runtime and **the miner was blind at BOTH ends of that join.** Every CR1 miss on an
+order, a coupon or a video was a miss on a path spelled out in full in a file the harness
+had already downloaded.
+
+## The result, measured live, authenticated, $0.00
+
+**33 of 33 mined suffixes confirmed, every one under the correct service:**
+
+```
+/workshop/api/shop/orders            /identity/api/v2/user/videos
+/workshop/api/shop/orders/all        /identity/api/v2/user/reset-password
+/workshop/api/shop/orders/return_order   /identity/api/v2/user/dashboard
+/workshop/api/shop/apply_coupon      /identity/api/v2/vehicle/vehicles
+/community/api/v2/coupon/validate-coupon ... (33 total)
+```
+
+Those are the surfaces of the misses: challenge 3 (`reset-password`), 7 and 10 (`videos`),
+8 and 9 (`return_order`), 13 (`validate-coupon`), 1 (`vehicle`). **Run 19's experiment
+needed `/workshop/api/shop/orders` and the harness could not name it.** It can now.
+
+## ⚠ THE LIVE RUN CAUGHT A DEFECT THE UNIT TESTS COULD NOT EXPRESS
+
+The first version confirmed **all 32 suffixes under `/identity`**, including
+`/identity/api/shop/orders` and `/identity/api/v2/coupon/validate-coupon` — routes that do
+not exist. The rule was *"any answer that is not 404 proves the route"*, and crAPI's
+identity service answers **401 for every path under it, existing or not**, because its
+auth filter runs before routing. A fabricated surface, about to be handed to the model as
+fact.
+
+**The fixture returned 404 for unknown paths, so a blanket-401 mount could not occur in
+it.** That is GAP #12's lesson — *a fixture that cannot express the defect is not a test of
+it* — met for the second time, and caught only because the work was validated against the
+real target before being believed.
+
+The fix is the same evidence `discover_mounts` uses, one level down: compare each
+composition against **what that mount says about a path that cannot exist**. Proof is a
+DIFFERENCE from the mount's own absent-fingerprint, never merely "not a 404". Cost: one
+baseline per mount, then at most `cap` × mounts, and the search stops at the first mount
+that answers because a suffix belongs to one service.
+
+## Fail-closed, and what it costs honestly
+
+Unauthenticated, only **21 of 33** confirm: the identity endpoints are indistinguishable
+from absent behind the blanket 401. With the session the harness already holds, all 33 do.
+That is the correct behaviour in both cases — it declines to write down what it cannot
+prove, and proves more when it legitimately can.
+
+## What is now true, and what still is not
+
+Mining reads what the application says about itself; every claim is confirmed by request;
+nothing is guessed, and no wordlist is involved. **What this does NOT do is find an
+endpoint the bundle never names** — an admin API served to a different client, or a route
+added after the bundle was built. That remains out of reach of reading, and it is the
+honest boundary of this technique.
