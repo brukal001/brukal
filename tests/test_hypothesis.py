@@ -136,7 +136,7 @@ def test_a_comparator_that_raises_does_not_confirm():
 
 
 def test_the_prompt_names_only_real_comparators():
-    prompt = hyp.PROMPT.format(comparators=", ".join(hyp.comparator_names()))
+    prompt = hyp.experiment_prompt()
     for name in hyp.comparator_names():
         assert name in prompt
     assert "cannot declare anything true" in prompt
@@ -516,7 +516,7 @@ def test_the_refine_prompt_restates_the_schema():
     """A refined round that answered with "name" and "type" instead of "title" and
     "comparator" was discarded in full, so the second round contributed nothing and the
     first round's observations were wasted. "Same format as before" was not enough."""
-    text = hyp.REFINE_PROMPT.format(comparators=", ".join(hyp.comparator_names()))
+    text = hyp.refine_prompt()
     for key in ("title", "severity", "comparator", "control", "variant", "as"):
         assert key in text, f"the refine prompt never names {key!r}"
     assert "a_denied_b_allowed" in text, "the comparator set is not restated"

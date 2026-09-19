@@ -1025,3 +1025,71 @@ records absence (43 → 2), and no impossible path reaches the wire (22 → 0). 
 unchanged at 1 of 14**, and nothing here predicted otherwise — the miss attribution says
 why: HARNESS-LIMIT 6 and MODEL-LIMIT 4 are not addressed by any of it. The plumbing was
 real and is fixed; **it was not what was capping recall.**
+
+---
+
+# ★★★ GAP #14 — THE APPROVER WAS BUILT AND THE DOOR WAS NAILED SHUT
+
+**Class: GENUINE GAP, and the one that was capping recall. MEASURED by runs 14 and 17.
+FIXED 2026-09-19, NOT YET MEASURED.**
+
+Recall sat at **1 of 14 for four consecutive runs** while four sessions of work went
+into route resolution. That work was real (GAPs #8–#12) and it was **the wrong layer**.
+
+Run 17 proposed exactly three comparators — `unauthenticated_exposure` ×8,
+`cross_account_resource` ×5, `a_denied_b_allowed` ×5. **All three are READ comparators.**
+`state_changed` and `oob_callback` were proposed **zero times**, in both runs.
+
+`_approve_destructive_experiment` exists, escalates through the same approver the
+command path uses, is fail-closed on `scope.destructive_allowed`, and records
+`refused_by_operator` rather than skipping silently. **It fired zero times in both
+runs.** `grep -c 'destructive-experiment'` = 0 on each ledger.
+
+Because the experiment prompt ended with, unconditionally:
+
+> Do not propose anything destructive (no DELETE of data you did not create, no
+> password changes to accounts you do not own, no endpoints named reset/drop/wipe).
+
+It ignores `destructive_allowed`, which was **`true` in crAPI's scope for both runs**.
+That one sentence forbids by name the six HARNESS-LIMIT misses:
+
+| challenge | why it was unreachable |
+|---|---|
+| 3 · reset the password of a different user | "no password changes to accounts you do not own" |
+| 7 · delete a video of another user | "no DELETE of data you did not create" |
+| 10 · update internal video properties | state change |
+| 13 · redeem an already-claimed coupon | state change |
+| 1, 5 | reachable only via the same state-changing surface |
+
+The maintainer's instruction was explicit and predates all of it: *"brukal must be able
+to do some destructive task when authorised by the user before… it will ask the human…
+we are not compromising on its ability."* The asking machinery was built. The proposing
+was left forbidden.
+
+## The safety half, which had to land in the SAME change
+
+`_is_destructive_path` matches **words in the URL** (reset, drop, wipe). Challenge 7 is
+`DELETE /identity/api/v2/user/videos/9` — **no destructive word anywhere in it**. While
+the prompt forbade these outright the gap was invisible; opening the prompt without
+judging the METHOD would have let a DELETE execute having never reached the approver.
+
+`_is_destructive_request(method, url)` now judges the request: `DELETE`/`PUT`/`PATCH`,
+**or** the existing URL rule, which is kept in full (a `/createdb` behind a plain GET is
+how Brukal once wiped its own test target). `POST` is deliberately excluded — it
+creates, which is how setup steps reach an interesting state, and escalating every POST
+would make the approver meaningless. The experiment gate now checks control, variant
+**and** `act`.
+
+## The refine prompt, closed at the same time
+
+`REFINE_PROMPT` is a **fresh call, not a continuation**, so it inherited nothing. The
+model would have been permitted on round one and forbidden on round two — proposing a
+state-changing experiment and then quietly retreating to read-only when refining it.
+Both builders (`experiment_prompt`, `refine_prompt`) now take the scope's flag.
+
+**Fail-closed is unchanged and tested:** without the opt-in the approver is never
+consulted, no DELETE is issued, and `refused_by_operator` is recorded. The scope wall
+sentence is in **both** variants — destructive authorisation is about WHAT may be done
+to the target, never WHICH target.
+
+**Suite: 1488 passed, 1 skipped. NOT YET MEASURED against recall.**

@@ -1270,6 +1270,7 @@ Reply with ONLY a JSON array, using EXACTLY these keys — the same ones as befo
               choose a read that is stable.
   rationale   one sentence on what the difference would prove
 
+{destructive}
 """ + SETUP_REF_SYNTAX + """
 
 Do NOT rename them. A refined round that answered with "name" and "type" instead of \
@@ -1333,10 +1334,56 @@ Prefer experiments that need setup — a stateless endpoint has usually been che
 already by deterministic probes, whereas a rule that only exists partway through a \
 workflow has not.
 
-Rules: URLs must be on the authorised target. Do not propose anything destructive \
-(no DELETE of data you did not create, no password changes to accounts you do not own, \
-no endpoints named reset/drop/wipe). If you have no good experiment, reply [].
+Rules: URLs must be on the authorised target. {destructive} If you have no good \
+experiment, reply [].
 """
+
+# The two halves of that rule. Which one is used is decided by the SCOPE, never by the
+# model and never by this module.
+DESTRUCTIVE_FORBIDDEN = (
+    "Do not propose anything destructive (no DELETE of data you did not create, no "
+    "password changes to accounts you do not own, no endpoints named reset/drop/wipe)."
+)
+
+# THE DOOR THE APPROVER WAS BUILT FOR. `_approve_destructive_experiment` escalates
+# through the same approver the command path uses, is fail-closed on
+# `scope.destructive_allowed`, and records `refused_by_operator` rather than skipping
+# silently -- and it fired ZERO times across CR1 runs 14 and 17, because the prompt
+# forbade destructive proposals unconditionally and nothing ever reached it. Six of
+# those runs' eleven recall misses are state-changing challenges: reset another user's
+# password, delete another user's video, update internal video properties, redeem a
+# spent coupon. The machinery was built and the door was nailed shut.
+DESTRUCTIVE_PERMITTED = (
+    "This engagement IS authorised for state-changing tests, so propose them where the "
+    "proof requires one -- deleting or modifying an object owned by another account, "
+    "changing a credential you do not own, redeeming something already spent. Any such "
+    "experiment is ESCALATED to a human for approval before it runs, and is recorded "
+    "either way, so propose it rather than talking yourself out of it. Prove it with "
+    "`state_changed`: the control and variant are the SAME read, and `act` is the "
+    "change under test. Prefer the least damaging request that still proves the flaw, "
+    "and never touch data whose loss cannot be observed as a result."
+)
+
+
+def refine_prompt(destructive_allowed: bool = False, comparators: str = "") -> str:
+    """The follow-up prompt. It is a FRESH call, not a continuation of the first, so
+    without this it silently drops back to the default and the model is permitted on
+    round one and forbidden on round two."""
+    return REFINE_PROMPT.format(
+        comparators=comparators or ", ".join(comparator_names()),
+        destructive=(DESTRUCTIVE_PERMITTED if destructive_allowed
+                     else DESTRUCTIVE_FORBIDDEN))
+
+
+def experiment_prompt(destructive_allowed: bool = False, comparators: str = "") -> str:
+    """The proposal prompt, with the destructive clause the SCOPE authorised.
+
+    Destructive authorisation is about WHAT may be done to the target and never about
+    WHICH target: the scope wall sentence is in both variants."""
+    return PROMPT.format(
+        comparators=comparators or ", ".join(comparator_names()),
+        destructive=(DESTRUCTIVE_PERMITTED if destructive_allowed
+                     else DESTRUCTIVE_FORBIDDEN))
 
 
 # --------------------------------------------------------------------------- #

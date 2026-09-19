@@ -84,11 +84,12 @@ def test_the_prompt_documents_the_reference_syntax():
     """The model invented `{{setup.0.BasketId}}` because it was told setup establishes
     state and never told how to USE it. A syntax the model has to guess is not a
     contract."""
-    comparators = ", ".join(hyp.comparator_names())
-    for template in (hyp.PROMPT, hyp.REFINE_PROMPT):
-        prompt = template.format(comparators=comparators)   # as the model receives it
-        assert "{{setup.<i>.<field>}}" in prompt
-        assert "{{setup.0.BasketId}}" in prompt
+    # BOTH builders and BOTH destructive settings -- the clause is chosen by the scope,
+    # and the reference syntax must survive either choice.
+    for build in (hyp.experiment_prompt, hyp.refine_prompt):
+        for prompt in (build(False), build(True)):          # as the model receives it
+            assert "{{setup.<i>.<field>}}" in prompt
+            assert "{{setup.0.BasketId}}" in prompt
 
 
 # -- end to end, through the governed browser -----------------------------------

@@ -2326,6 +2326,29 @@ class AssistSession:
                     return True
         return False
 
+    # Methods that CHANGE OR DESTROY an existing object. POST is deliberately absent:
+    # it creates, which is how a setup step reaches an interesting state, and treating
+    # every POST as destructive would escalate the whole workflow surface and make the
+    # approver meaningless.
+    _DESTRUCTIVE_METHODS = frozenset({"DELETE", "PUT", "PATCH"})
+
+    @classmethod
+    def _is_destructive_request(cls, method: str, url: str) -> bool:
+        """Judge the REQUEST, not just the path.
+
+        `_is_destructive_path` reads words out of the URL — reset, drop, wipe — and
+        crAPI challenge 7 is `DELETE /identity/api/v2/user/videos/9`, which contains no
+        such word. While the prompt forbade destructive proposals outright that gap was
+        invisible; the moment the prompt is allowed to ask for them, a DELETE on an
+        innocuous-looking path would execute having never reached the approver.
+
+        Both rules apply, and neither replaces the other: the URL rule still catches
+        /createdb behind a plain GET, which is how Brukal once wiped its own test
+        target."""
+        if (method or "").upper() in cls._DESTRUCTIVE_METHODS:
+            return True
+        return cls._is_destructive_path(url)
+
     # Endpoints whose JOB is to hand the caller a token.
     _ISSUES_TOKENS_RE = re.compile(
         r"(?i)/(?:login|signin|sign-in|authenticate|auth|token|oauth|session|"
@@ -4562,7 +4585,8 @@ class AssistSession:
                 _lines.append(f"  - {_who} ({_label}): {_rendered}")
             ids_note = ("\n\n" + _hyp.PRINCIPAL_IDS_HEADER + "\n"
                         + redact.text("\n".join(_lines)))
-        prompt = _hyp.PROMPT.format(comparators=", ".join(_hyp.comparator_names()))
+        prompt = _hyp.experiment_prompt(
+            destructive_allowed=self._destructive_authorised())
         try:
             # The BASE URL, not the bare IP. The first live run handed the model
             # "172.20.0.2" while the application was on :3000, so every proposed URL
@@ -4711,8 +4735,8 @@ class AssistSession:
                         shape_block += (f"\n  [TRUNCATED: {len(shown)} of "
                                         f"{len(shapes)} setup responses listed]")
                 reply2 = llm.propose(
-                    _hyp.REFINE_PROMPT.format(
-                        comparators=", ".join(_hyp.comparator_names())),
+                    _hyp.refine_prompt(
+                        destructive_allowed=self._destructive_authorised()),
                     f"Authorised target base URL: {base}{auth}\n\n"
                     f"Attack surface:\n{grounding}{shape_block}"
                     f"\n\nResults of your last round:\n"
@@ -4747,6 +4771,11 @@ class AssistSession:
                                              handles))
         except Exception:
             return False
+
+    def _destructive_authorised(self) -> bool:
+        """What the SCOPE authorised for this engagement — never the model's choice."""
+        gate = getattr(getattr(self, "executor", None), "_gate", None)
+        return bool(getattr(getattr(gate, "scope", None), "destructive_allowed", False))
 
     def _approve_destructive_experiment(self, h) -> bool:
         """Put a destructive experiment to the operator, through the SAME approver the
@@ -4807,8 +4836,13 @@ class AssistSession:
             self.note(f"[experiment] {h.title} [{h.comparator}] "
                       f"{h.control['method']} {h.control['url']} vs "
                       f"{h.variant['method']} {h.variant['url']}")
-            if self._is_destructive_path(h.variant["url"]) \
-                    or self._is_destructive_path(h.control["url"]):
+            if self._is_destructive_request(h.variant.get("method", ""),
+                                            h.variant["url"]) \
+                    or self._is_destructive_request(h.control.get("method", ""),
+                                                    h.control["url"]) \
+                    or any(self._is_destructive_request(s.get("method", ""),
+                                                        s.get("url", ""))
+                           for s in ((getattr(h, "act", None) and [h.act]) or [])):
                 # ASK. This used to be an unconditional skip, and crAPI challenge 3 —
                 # "reset the password of a different user" — was proposed by the model and
                 # dropped here with nobody consulted, while the COMMAND path escalated
