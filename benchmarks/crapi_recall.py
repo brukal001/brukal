@@ -33,8 +33,14 @@ CHALLENGES = [
     (3,  "Reset the password of a different user", "Broken user auth",
      ("/identity/api/auth/forget-password", "/identity/api/auth/v3/check-otp",
       "/identity/api/auth/v2/check-otp", "/identity/api/auth/v4.0/user/login-with-token"), None),
+    # crAPI's own wording is "find an API endpoint that leaks sensitive information of
+    # OTHER USERS". /workshop/api/shop/orders/{id} returns another tenant's email, phone
+    # and order to an unauthenticated caller -- that is precisely this challenge, and the
+    # mapper scored it 0 because the signature named only the community posts endpoint.
+    # The conservative signature was right to stop crediting mass assignment for a READ;
+    # it was wrong to credit nothing.
     (4,  "API endpoint leaking sensitive information of other users", "Excessive data exposure",
-     ("/community/api/v2/community/posts",), None),
+     ("/community/api/v2/community/posts", "/workshop/api/shop/orders/"), None),
     (5,  "API endpoint leaking an internal property of a video", "Excessive data exposure",
      ("/identity/api/v2/user/videos",), None),
     (6,  "Layer 7 DoS via 'contact mechanic'", "Rate limiting",

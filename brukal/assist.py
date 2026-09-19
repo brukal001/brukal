@@ -1997,7 +1997,17 @@ class AssistSession:
         # ONCE per principal. "Probe identity once" is the contract; a per-call probe
         # would put the cost back on every detector that logs in, and the answer cannot
         # change while the same credential is carried the same way.
-        memo = (self._login_url, self.identity)
+        # THE MEMO MUST EXPIRE WHEN WHAT WE KNOW CHANGES. Keyed on (login_url, identity)
+        # alone it cached "no usable oracle" from a call made before route resolution had
+        # confirmed anything — and the later call, with the target's own oracle finally in
+        # `confirmed_routes`, returned that stale answer instead of probing.
+        #
+        # Third instance today of one pattern: a consumer runs once, early, and the
+        # evidence it needed arrives afterwards (derived experiments, seeding, and now
+        # identity confirmation). The surface size is what changed, so the surface size is
+        # part of the key.
+        memo = (self._login_url, self.identity,
+                len(getattr(getattr(self, "surface", None), "confirmed_routes", []) or []))
         if getattr(self, "_carriage_memo", None) == memo:
             return self._ensure_principal().carriage
         self._carriage_memo = memo
@@ -5579,8 +5589,11 @@ class AssistSession:
         base = (getattr(self.surface, "seed", "") or f"http://{self.target}/")
         probe = f"{prefix.rstrip('/')}/brukal-absent-{uuid.uuid4().hex[:10]}"
         try:
-            _d, r = self.browser.run(WebAction("request", method="GET",
-                                               url=_urljoin(base, probe)))
+            # The control is taken in the SAME state as the candidates it will be compared
+            # against, or the comparison is between two different worlds.
+            with self._as_identity("self", "probe", _urljoin(base, probe)):
+                _d, r = self.browser.run(WebAction("request", method="GET",
+                                                   url=_urljoin(base, probe)))
         except Exception:
             r = None
         sig = getattr(r, "status", None)
@@ -5727,8 +5740,16 @@ class AssistSession:
                 tried.add(bare)
                 budget -= 1
                 try:
-                    _d, br = self.browser.run(WebAction(
-                        "request", method="GET", url=_urljoin(base, bare)))
+                    # AS SELF, EXPLICITLY. These probes used to inherit whatever principal
+                    # state the browser happened to hold. crAPI's dashboard is a
+                    # header-reading oracle -- 404 to a stranger, 200 to us -- so the same
+                    # endpoint was "absent" or "present" depending on when the sweep ran,
+                    # and confirmed-route counts on one target swung 2, 3, 11, 24, 25
+                    # across runs. Run 13's cost: the oracle went unconfirmed, the model
+                    # kept proposing the unprefixed path, and four requests 404'd.
+                    with self._as_identity("self", "probe", _urljoin(base, bare)):
+                        _d, br = self.browser.run(WebAction(
+                            "request", method="GET", url=_urljoin(base, bare)))
                 except Exception:
                     br = None
                 _bs = getattr(br, "status", None)
@@ -5745,8 +5766,9 @@ class AssistSession:
                 tried.add(composed)
                 budget -= 1
                 try:
-                    _d, r = self.browser.run(WebAction(
-                        "request", method="GET", url=_urljoin(base, composed)))
+                    with self._as_identity("self", "probe", _urljoin(base, composed)):
+                        _d, r = self.browser.run(WebAction(
+                            "request", method="GET", url=_urljoin(base, composed)))
                 except Exception:
                     continue
                 status = getattr(r, "status", None)
