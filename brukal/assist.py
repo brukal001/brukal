@@ -5827,6 +5827,19 @@ class AssistSession:
             if budget <= 0:
                 break
             bare = "/" + frag.strip("/")
+            # A FRAGMENT ALREADY PROVEN NEEDS NOTHING. Resolution rewrites a fragment to
+            # its composed form, so on a later pass the fragment IS the resolved path —
+            # its bare probe is in `tried`, the probe is skipped, and control used to
+            # fall straight through to the composition loop. That loop skipped only the
+            # prefix the path already carries, so every OTHER mount was composed onto a
+            # route we had already proven (run 16, live:
+            # /workshop/api/shop/identity/api/v2/user/dashboard). Real gated requests,
+            # every pass, for every resolved route times every mount — spent against the
+            # same rate allowance whose exhaustion cost run 14 that very route.
+            # PROVEN, not merely mined: `known` is the fragment list itself, so testing
+            # against it skips every fragment on the first pass and resolves nothing.
+            if bare in (surface.confirmed_routes or ()):
+                continue
             if bare not in tried:
                 tried.add(bare)
                 budget -= 1

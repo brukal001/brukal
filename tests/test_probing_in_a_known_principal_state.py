@@ -206,3 +206,33 @@ def test_a_probe_OUR_gate_refused_is_not_recorded_as_absent(tmp_path):
     s.resolve_mined_routes()
     assert _OracleApp.DASH in s.surface.confirmed_routes, (
         "our own rate-limit denial was remembered as the target saying 'absent'")
+
+
+def test_an_ALREADY_CONFIRMED_fragment_is_not_composed_again(tmp_path):
+    """RUN 16, caught live at $0.00 spend. The GAP #9 guard was too narrow.
+
+    Resolution rewrites a fragment to its composed form, so on a later pass the fragment
+    IS `/identity/api/v2/user/dashboard`. Its bare probe is already in `tried`, so the
+    probe is skipped — and control falls straight through to the composition loop, which
+    skipped only the prefix the path already carries. Every OTHER mount was composed onto
+    a route we had already proven:
+
+        404 /workshop/api/shop/identity/api/v2/user/dashboard
+        404 /identity/api/auth/identity/api/v2/user/dashboard
+
+    Real gated requests, every pass, for every resolved route times every mount — spent
+    against the same rate allowance whose exhaustion cost run 14 this exact route.
+
+    THE RULE: a fragment already confirmed needs nothing. Skip it whole."""
+    s, cage = _session(tmp_path)
+    # TWO mounts, as run 16 had: the composition loop must have something other than the
+    # prefix the path already carries, or the narrow guard hides the defect.
+    s._answered_paths = ["/identity/api/auth/login", "/workshop/api/shop/orders/all"]
+    s.surface.add_routes(["/orders/all"])
+    s.resolve_mined_routes()
+    assert _OracleApp.DASH in s.surface.confirmed_routes, "fixture is not resolving"
+    before = len(cage.seen)
+    s.resolve_mined_routes()
+    s.resolve_mined_routes()
+    again = [p for p, _ in cage.seen[before:] if "v2/user/dashboard" in p]
+    assert not again, f"re-probed a route already proven: {again}"

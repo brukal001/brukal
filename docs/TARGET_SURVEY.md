@@ -922,3 +922,40 @@ Tests: `test_proposal_repair_generalises.py` (with a positive control, since "re
 never fires" also satisfies the negative assertion).
 
 **Suite: 1477 passed, 1 skipped.**
+
+## ⛔ GAP #12 — the GAP #9 guard was too narrow: other mounts were composed onto proven routes
+
+**Class: GENUINE GAP. CAUGHT LIVE in run 16, aborted at 9 experiments, spend $0.00,
+2026-09-19.**
+
+GAP #9 stopped a prefix being composed onto a path that already carried **that same**
+prefix. Run 16 put these on the wire anyway:
+
+```
+404 /workshop/api/shop/identity/api/v2/user/dashboard
+404 /identity/api/auth/identity/api/v2/user/dashboard
+```
+
+Resolution rewrites a fragment to its composed form, so on a later pass the fragment
+**is** `/identity/api/v2/user/dashboard`. Its bare probe is already in `tried`, so the
+probe is skipped — and control falls straight through to the composition loop, which
+skipped only the prefix the path already carries. **Every other mount was composed onto
+a route already proven**, every pass, for every resolved route × every mount — spent
+against the same rate allowance whose exhaustion cost run 14 that very route.
+
+**The fix:** a fragment already in `confirmed_routes` is skipped whole.
+
+**A first attempt tested `bare in known` and broke 30 tests**, because `known` is
+`set(fragments)` — the mined list itself — so it skipped every fragment on the first
+pass and resolved nothing. Recorded because it is the same error class as GAP #11: a
+guard written against the wrong set, which passes its own narrow test.
+
+**Why run 16's own test went green first.** The fixture learned only one mount, so the
+narrow guard covered it and the defect could not appear. Two mounts (`/identity/api` and
+`/workshop/api/shop`, as run 16 had) reproduce the exact string from the ledger. **A
+fixture that cannot express the defect is not a test of it.**
+
+**Run 16 also settled prediction 1 early:** `/identity/api/v2/user/dashboard` WAS
+resolved and reached `findings.jsonl`. The residual defect was waste, not blindness.
+
+**Suite: 1478 passed, 1 skipped.**
