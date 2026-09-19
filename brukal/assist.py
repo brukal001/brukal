@@ -4415,9 +4415,21 @@ class AssistSession:
 
         def _fix(spec):
             url = (spec or {}).get("url", "") or ""
+            # REPAIR SUPPLIES A MISSING PREFIX — it never rewrites the middle of a path.
+            # Run 15's model proposed /identity/api/orders/all: prefixed, and prefixed
+            # WRONG (crAPI mounts orders under /workshop/api/shop). Matching the fragment
+            # anywhere in the URL would have spliced the proven prefix in at the fragment,
+            # giving /identity/api/workshop/api/shop/orders/all — a URL nobody proposed
+            # and nothing proved. A path that already carries a prefix is a different
+            # claim by the model, and repair has no evidence that claim is wrong.
+            try:
+                from urllib.parse import urlsplit
+                _path = urlsplit(url).path or ""
+            except Exception:
+                _path = url
             for frag in frags:
                 target = rmap[frag]
-                if frag in url and target not in url:
+                if _path.startswith(frag) and target not in url:
                     new_url = url.replace(frag, target, 1)
                     if audit is not None:
                         try:
@@ -4431,10 +4443,8 @@ class AssistSession:
                     return
             for fam in fams:
                 pre = families[fam]
-                if pre in url:
-                    return                      # already carries the proven prefix
-                if fam + "/" not in url:
-                    continue
+                if not _path.startswith(fam + "/"):
+                    continue                    # not this family, or already prefixed
                 new_url = url.replace(fam + "/", pre + fam + "/", 1)
                 if audit is not None:
                     try:

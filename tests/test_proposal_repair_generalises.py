@@ -103,3 +103,43 @@ def test_every_family_rewrite_is_in_the_ledger(tmp_path):
     s.repair_proposals([_h(BASE + "/v2/user/videos/9")])
     blob = (tmp_path / "a.jsonl").read_text()
     assert "proposal_repaired" in blob and "/identity/api/v2/user/videos/9" in blob
+
+
+# --------------------------------------------------------------------------- #
+# The wrong-prefix case — caught in run 15's LIVE proposals, before it could fire
+# --------------------------------------------------------------------------- #
+
+def test_a_path_carrying_a_DIFFERENT_prefix_is_not_spliced(tmp_path):
+    """CAUGHT LIVE (run 15, aborted at ~4 experiments to fix this).
+
+    The model proposed `/identity/api/orders/all` — prefixed, and prefixed WRONG: crAPI
+    mounts orders under /workshop/api/shop. Repair matched the family `/orders` and
+    would have inserted the proven prefix AT THE FAMILY SEGMENT rather than at the start:
+
+        /identity/api/orders/all  ->  /identity/api/workshop/api/shop/orders/all
+
+    The earlier boundary test only covered a URL already carrying the prefix repair was
+    about to apply, so `pre in url` short-circuited it and this case went uncovered. The
+    same splice is possible through the EXACT rule, which predates the family rule.
+
+    THE RULE: repair supplies a MISSING prefix. A path that already carries one is a
+    path the model made a different claim about, and rewriting its middle invents a URL
+    nobody proposed or proved."""
+    s = _session(tmp_path)
+    s._resolved_map["/orders/all"] = "/workshop/api/shop/orders/all"
+    for bad in ("/identity/api/orders/all",        # exact rule
+                "/identity/api/orders/9",          # family rule
+                "/community/api/v2/user/videos/9"):
+        h = s.repair_proposals([_h(BASE + bad)])[0]
+        assert h.variant["url"] == BASE + bad, f"spliced: {h.variant['url']}"
+
+
+def test_the_unprefixed_form_of_the_same_path_still_repairs(tmp_path):
+    """POSITIVE CONTROL for the test above — without it, the assertion is also satisfied
+    by repair doing nothing at all, ever."""
+    s = _session(tmp_path)
+    s._resolved_map["/orders/all"] = "/workshop/api/shop/orders/all"
+    assert s.repair_proposals([_h(BASE + "/orders/all")])[0].variant["url"] == \
+        BASE + "/workshop/api/shop/orders/all"
+    assert s.repair_proposals([_h(BASE + "/orders/9")])[0].variant["url"] == \
+        BASE + "/workshop/api/shop/orders/9"

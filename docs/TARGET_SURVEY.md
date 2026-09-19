@@ -885,3 +885,40 @@ All four of run 14's unprefixed proposals repair under it.
 Tests: `test_proposal_repair_generalises.py`.
 
 **Suite after all three: 1475 passed, 1 skipped.**
+
+## ⛔ GAP #11 — repair spliced a prefix into the MIDDLE of an already-prefixed path
+
+**Class: GENUINE GAP, introduced by the GAP #10 fix. CAUGHT LIVE in run 15's own
+proposals before it fired, 2026-09-19.**
+
+Run 15's first four experiments all carried a service prefix — and one was the wrong
+one: `/identity/api/orders/all`, when crAPI mounts orders under `/workshop/api/shop`.
+Repair matched the family `/orders` and would have inserted the proven prefix **at the
+family segment** rather than at the start:
+
+```
+/identity/api/orders/all  ->  /identity/api/workshop/api/shop/orders/all
+```
+
+A URL nobody proposed and nothing proved. The same splice was reachable through the
+**exact** rule, which predates the family rule — so this is older than the fix that
+exposed it.
+
+**Why the boundary test missed it.** `test_an_already_prefixed_proposal_is_untouched`
+used a URL carrying the very prefix repair was about to apply, so the `pre in url`
+short-circuit caught it and the assertion passed for the wrong reason. A path carrying a
+*different* prefix was never exercised. **A boundary test that passes through a
+short-circuit is testing the short-circuit, not the boundary.**
+
+**The fix.** Repair supplies a **missing** prefix; it never rewrites the middle of a
+path. Both rules now require the fragment or family at the **start of the path**
+(`urlsplit(url).path`). A path that already carries a prefix is a different claim by the
+model, and repair has no evidence that claim is wrong.
+
+**Cost of catching it live:** run 15 was aborted at ~4 experiments, spend $0.00. A run
+that mangles its own proposals would have satisfied the prediction
+`proposal_repaired > 0` for exactly the wrong reason.
+Tests: `test_proposal_repair_generalises.py` (with a positive control, since "repair
+never fires" also satisfies the negative assertion).
+
+**Suite: 1477 passed, 1 skipped.**
