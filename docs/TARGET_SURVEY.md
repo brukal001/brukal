@@ -795,3 +795,93 @@ is the highest-value thing left on this board.
 caught by the gate re-reading each command rather than trusting the agent's declared
 target. Containment held on a bridge where the target's own nine backing services sit one
 IP away.
+
+---
+
+# ⛔ GAP #8 — our own rate limiter was recorded as the target saying "absent"
+
+**Class: GENUINE GAP. MEASURED by run 14 (`runs/audit_cr1n.jsonl`), fixed 2026-09-19.**
+
+Run 14 finished with 13 confirmed routes and **not** `/identity/api/v2/user/dashboard` —
+crAPI's header-reading identity oracle, and the single most load-bearing route on the
+target. A direct replay of the same sequence confirms it without trouble, so the
+mechanism was never wrong. The ledger says what was:
+
+```
+301 web_decision ALLOW  GET http://172.20.0.12/v2/user/dashboard
+302 web_decision DENY   web rate limit exceeded        layer "hard:web-rate"
+304 web_decision ALLOW  GET http://172.20.0.12/identity/api/v2/user/dashboard
+305 web_decision DENY   web rate limit exceeded
+```
+
+`web rate limit exceeded` ×43 in that run. `resolve_mined_routes` marks a path `tried`
+**before** issuing the probe, and `_composed_tried` is permanent — so both the bare and
+the composed dashboard were written off for the rest of the engagement by **our own
+gate**, having never asked the target anything. `_absent_signature` had the same shape:
+a refused control was cached as `None`, which fail-closes every route under that prefix.
+
+**This is [origin-aware health] one level down.** That fix taught the health monitor that
+a silence we caused is not the target's silence; route resolution had never learned it.
+Same law, second site — and the class of defect the portability tally exists to catch.
+
+**The fix.** One predicate, `AssistSession._we_refused(decision, result)`: a gate denial,
+a transport failure, or a cage that never ran the request. On a refusal the path is
+discarded from `tried`, the control is not cached, and the sweep **stops** — the
+remaining fragments are better left untried for a later pass than written off by a
+limiter that never asked. Tests: `test_probing_in_a_known_principal_state.py`.
+
+### Measured, free, against the live container
+
+Run 14's own 63 mined fragments, real scope, real 120/min limit, four passes:
+
+| | old (refusal = absent) | fixed |
+|---|---|---|
+| rate-limit denials | **42** | **2** |
+| dashboard confirmed | pass 3 | pass 3 |
+| routes confirmed | 11 | 11 |
+
+The outcome is the same **here** because the dashboard's probe happened to land in an
+allowed slot; in run 14 it landed in a denied one and was lost permanently. The fix
+removes the luck, and 40 of 42 gated requests that bought nothing. The deterministic
+proof is the unit test, which refuses every probe and then refills the window.
+
+## ⛔ GAP #9 — a prefix composed onto itself
+
+**Class: GENUINE GAP. Found while explaining GAP #8. MEASURED, fixed 2026-09-19.**
+
+Resolution REPLACES a fragment with its composed form, so on the next pass the fragment
+already carries the prefix — and composition added it again:
+
+```
+/identity/api/identity/api/auth/login
+```
+
+A path that cannot exist, one gated request per already-resolved route per mount point,
+billed against the same cap that decides whether later fragments are probed at all.
+Resolution runs every turn. Fixed by skipping a prefix the fragment already carries.
+
+## ⛔ GAP #10 — proposal repair fired ZERO times because its lookup was too narrow
+
+**Class: GENUINE GAP. MEASURED by run 14, fixed 2026-09-19.**
+
+`proposal_repaired: 0` in a run whose model proposed four paths with no service prefix —
+exactly the 404 class repair was built for:
+
+```
+/orders/9   /orders/31   /v2/user/videos/9   /v2/user/pictures/31
+```
+
+Repair keyed on the **exact** fragment resolution recorded. Resolution had proved, by
+request, that `/v2/user/dashboard` lives under `/identity/api` and `/orders/all` under
+`/workshop/api/shop` — so the prefix for both families was in hand, and the lookup could
+not use it. **The knowledge was there; the match was too literal.**
+
+**The fix: the family rule.** A family is a resolved fragment's leading segments less its
+last (`/v2/user` from `/v2/user/dashboard`). A prefix proven for one member applies to
+its siblings. Exact matches still win; a family under which two different prefixes were
+proved is ambiguous and repairs nothing; an unknown family is left exactly as proposed,
+because repair sends what was **proven**, never a guess. Every rewrite is in the ledger.
+All four of run 14's unprefixed proposals repair under it.
+Tests: `test_proposal_repair_generalises.py`.
+
+**Suite after all three: 1475 passed, 1 skipped.**

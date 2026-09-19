@@ -4387,6 +4387,32 @@ class AssistSession:
         # fragment that happens to be a prefix of it.
         frags = sorted(rmap, key=len, reverse=True)
 
+        # THE FAMILY RULE. Exact matching alone made repair fire ZERO times in run 14,
+        # whose model proposed four unprefixed paths — /orders/9, /orders/31,
+        # /v2/user/videos/9, /v2/user/pictures/31 — while resolution had already PROVED,
+        # by request, that /v2/user/dashboard lives under /identity/api and
+        # /orders/all under /workshop/api/shop. The prefix for both families was in hand
+        # and the lookup was too narrow to use it, so every one of those went out
+        # unprefixed and 404'd.
+        #
+        # A family is a resolved fragment's leading segments less its last: /v2/user
+        # from /v2/user/dashboard. A prefix proven for one member applies to its
+        # siblings. Deterministic, and no less evidenced than the exact rule — the
+        # prefix came from a request that answered. A family under which two different
+        # prefixes were proved is AMBIGUOUS and repairs nothing: the point is to send
+        # what was proven, never to guess between two candidates.
+        families: dict = {}
+        for _f, _t in rmap.items():
+            if not _t.endswith(_f):
+                continue
+            _pre = _t[:-len(_f)]
+            _segs = [x for x in _f.split("/") if x]
+            if not _pre or len(_segs) < 2:
+                continue
+            families.setdefault("/" + "/".join(_segs[:-1]), set()).add(_pre)
+        families = {k: v.pop() for k, v in families.items() if len(v) == 1}
+        fams = sorted(families, key=len, reverse=True)
+
         def _fix(spec):
             url = (spec or {}).get("url", "") or ""
             for frag in frags:
@@ -4403,6 +4429,24 @@ class AssistSession:
                             pass
                     spec["url"] = new_url
                     return
+            for fam in fams:
+                pre = families[fam]
+                if pre in url:
+                    return                      # already carries the proven prefix
+                if fam + "/" not in url:
+                    continue
+                new_url = url.replace(fam + "/", pre + fam + "/", 1)
+                if audit is not None:
+                    try:
+                        audit.append("proposal_repaired", {
+                            "from": url, "to": new_url, "family": fam,
+                            "target": self.target,
+                            "why": "resolution proved this family lives under "
+                                   f"{pre} by request"})
+                    except Exception:
+                        pass
+                spec["url"] = new_url
+                return
         for h in proposals or ():
             _fix(getattr(h, "control", None))
             _fix(getattr(h, "variant", None))
@@ -5554,6 +5598,23 @@ class AssistSession:
             return None
         return user, password
 
+    @staticmethod
+    def _we_refused(decision, result) -> bool:
+        """Did OUR side stop this probe, rather than the target answering it?
+
+        A gate denial (`hard:web-rate` above all), a transport failure, or a cage that
+        never made the request all come back the same shape a 404 does — and run 14 paid
+        for the difference. Its rate limiter denied both the bare and the composed
+        `/v2/user/dashboard`; the code had already marked them tried, so crAPI's whole
+        identity surface was written off as absent without the target being asked once.
+
+        This is the same law origin-aware health is built on: a silence WE caused is not
+        evidence about the target, and must never be cached as if it were."""
+        if result is not None and getattr(result, "status", None):
+            return False
+        return decision is None or getattr(decision, "verdict", "") != "ALLOW" \
+            or result is None
+
     def _absent_signature(self, prefix: str):
         """What THIS mount point answers for a path that certainly does not exist.
 
@@ -5594,8 +5655,12 @@ class AssistSession:
             with self._as_identity("self", "probe", _urljoin(base, probe)):
                 _d, r = self.browser.run(WebAction("request", method="GET",
                                                    url=_urljoin(base, probe)))
+            if self._we_refused(_d, r):
+                # NOT CACHED. A control we were refused would fail-close this prefix's
+                # every route for the rest of the run, from one denial.
+                return None
         except Exception:
-            r = None
+            return None
         sig = getattr(r, "status", None)
         cache[prefix] = sig
         if sig is not None and sig != 404:
@@ -5716,6 +5781,22 @@ class AssistSession:
         tried = getattr(self, "_composed_tried", None)
         if tried is None:
             tried = self._composed_tried = set()
+        # EVIDENCE TAKEN IN ONE STATE MUST NOT BIND JUDGEMENT IN ANOTHER. Probes made
+        # before the principals were acquired ran with a different session — and on a
+        # target whose endpoints answer by principal, a 404 then is not a 404 now. Left
+        # permanent, one early miss silently excluded a route for the rest of the run:
+        # run 14 confirmed thirteen routes and not the dashboard, which a direct replay
+        # of the same sequence confirms without trouble.
+        #
+        # So the pre-establishment probes are discarded once, at the moment the state
+        # they were taken in stops being the state we are in. The absent-signatures go
+        # with them for the same reason: a control taken as a stranger cannot judge a
+        # candidate probed as us.
+        if getattr(self, "_principals_established", False) and not getattr(
+                self, "_probes_requalified", False):
+            self._probes_requalified = True
+            tried.clear()
+            self._absent_sigs = {}
         resolved, budget = [], cap
         # A control probe is a request like any other and is billed against the same
         # budget, or the documented cap quietly becomes cap + one per mount point.
@@ -5748,10 +5829,16 @@ class AssistSession:
                     # across runs. Run 13's cost: the oracle went unconfirmed, the model
                     # kept proposing the unprefixed path, and four requests 404'd.
                     with self._as_identity("self", "probe", _urljoin(base, bare)):
-                        _d, br = self.browser.run(WebAction(
+                        _bd, br = self.browser.run(WebAction(
                             "request", method="GET", url=_urljoin(base, bare)))
                 except Exception:
-                    br = None
+                    _bd, br = None, None
+                # OUR REFUSAL IS NOT THEIR ANSWER. Forget that we tried and stop the
+                # sweep: the remaining fragments are better left untried for a later
+                # pass than written off by a rate limiter that never asked the target.
+                if self._we_refused(_bd, br):
+                    tried.discard(bare)
+                    break
                 _bs = getattr(br, "status", None)
                 if self._route_exists(bare, _bs):
                     if bare not in surface.confirmed_routes:
@@ -5760,6 +5847,13 @@ class AssistSession:
                     surface.route_methods[bare] = "not-GET" if _bs == 405 else "GET"
                     continue
             for prefix in prefixes:
+                # A PREFIX IS NEVER COMPOSED ONTO ITSELF. Resolution replaces a fragment
+                # with its composed form, so on the next pass the fragment already
+                # carries the prefix and this produced /identity/api/identity/api/...,
+                # a path that cannot exist — one gated request each, billed against the
+                # same cap that decides whether later fragments are probed at all.
+                if bare == prefix or bare.startswith(prefix.rstrip("/") + "/"):
+                    continue
                 composed = prefix + ("/" + frag.strip("/"))
                 if composed in known or composed in tried or budget <= 0:
                     continue
@@ -5767,10 +5861,14 @@ class AssistSession:
                 budget -= 1
                 try:
                     with self._as_identity("self", "probe", _urljoin(base, composed)):
-                        _d, r = self.browser.run(WebAction(
+                        _cd, r = self.browser.run(WebAction(
                             "request", method="GET", url=_urljoin(base, composed)))
                 except Exception:
-                    continue
+                    _cd, r = None, None
+                if self._we_refused(_cd, r):
+                    tried.discard(composed)
+                    budget = 0                 # ends the sweep; the next pass retries
+                    break
                 status = getattr(r, "status", None)
                 if not self._route_exists(composed, status):
                     continue

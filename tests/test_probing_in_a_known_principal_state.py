@@ -115,3 +115,94 @@ def test_the_repair_map_gets_the_entry(tmp_path):
                    setup=[])
     s.repair_proposals([h])
     assert h.control["url"] == f"{BASE}{_OracleApp.DASH}/30", h.control
+
+
+def test_a_probe_from_BEFORE_the_principals_does_not_bind_afterwards(tmp_path):
+    """RUN 14's loss, reproduced. A path probed while we held a different session (or
+    none) recorded a 404 and `_composed_tried` made that permanent — so the route was
+    excluded for the rest of the run even though it answers 200 to us now.
+
+    A direct replay of run 14's own fragment list confirms the dashboard without
+    trouble, which is what says the mechanism was right and the memory was wrong."""
+    s, cage = _session(tmp_path)
+    # the early, pre-establishment world: no session yet
+    s._principals_established = False
+    s.browser.auth_header = ""
+    s.resolve_mined_routes()
+    assert _OracleApp.DASH not in s.surface.confirmed_routes, "fixture is not reproducing"
+    # ...the principals are acquired, and the world is now different
+    s.browser.auth_header = "Bearer ours"
+    s._principals_established = True
+    s.resolve_mined_routes()
+    assert _OracleApp.DASH in s.surface.confirmed_routes, (
+        "an early miss in a different state is still excluding the route")
+
+
+def test_the_requalification_happens_ONCE(tmp_path):
+    """BOUNDARY: it is a state change, not a licence to re-probe every turn. Clearing on
+    every pass would spend the budget re-asking questions already answered in the right
+    state."""
+    s, cage = _session(tmp_path)
+    s.resolve_mined_routes()
+    n = len(cage.seen)
+    s.resolve_mined_routes()
+    s.resolve_mined_routes()
+    assert len(cage.seen) == n, f"{len(cage.seen)-n} re-probes after requalification"
+
+
+def test_a_prefix_is_never_composed_ONTO_ITSELF(tmp_path):
+    """MEASURED WASTE, found while explaining run 14. Resolution REPLACES a fragment with
+    its composed form, so on the next pass the fragment already carries the prefix — and
+    composition put it on a second time:
+
+        /identity/api/identity/api/auth/login
+
+    A path that cannot exist, one gated request each, billed against the same cap that
+    decides whether later fragments get probed at all. Resolution runs every turn, so this
+    is paid on a target's every mount point, and the requests it displaces are the ones
+    that would have found real routes."""
+    s, cage = _session(tmp_path)
+    s.resolve_mined_routes()
+    before = len(cage.seen)
+    s.resolve_mined_routes()
+    doubled = [p for p, _ in cage.seen[before:] if p.count("/identity/api") > 1]
+    assert not doubled, f"composed a prefix onto itself: {doubled}"
+
+
+class _RateLimited:
+    """The cage behind a gate that refuses the first N probes. The TARGET is healthy
+    throughout — it is never asked."""
+
+    def __init__(self, oracle, deny_first):
+        self.oracle, self.left, self.seen = oracle, deny_first, oracle.seen
+
+    def run(self, action):
+        return self.oracle.run(action)
+
+
+def test_a_probe_OUR_gate_refused_is_not_recorded_as_absent(tmp_path):
+    """RUN 14'S ACTUAL FAULT, read out of its ledger.
+
+        301 ALLOW  GET /v2/user/dashboard
+        302 DENY   web rate limit exceeded          <- layer "hard:web-rate", 43 times
+        304 ALLOW  GET /identity/api/v2/user/dashboard
+        305 DENY   web rate limit exceeded
+
+    `tried.add(composed)` runs BEFORE the request, so both the bare and the composed
+    dashboard were written off permanently — by OUR rate limiter, having never asked the
+    target anything. The run finished with thirteen confirmed routes and not the one that
+    is crAPI's whole identity surface, and a direct replay of the same sequence confirms
+    it without trouble. That gap was the run's largest single loss.
+
+    This is [origin-aware health] applied to route resolution: a silence WE caused is not
+    evidence about the target, and must not be remembered as if it were."""
+    s, cage = _session(tmp_path)
+    s.browser._rate_ok = lambda: False          # our gate, not the target
+    s.resolve_mined_routes()
+    assert _OracleApp.DASH not in s.surface.confirmed_routes
+    assert not cage.seen, "the target was asked something during a total refusal"
+
+    s.browser._rate_ok = lambda: True           # the window refills
+    s.resolve_mined_routes()
+    assert _OracleApp.DASH in s.surface.confirmed_routes, (
+        "our own rate-limit denial was remembered as the target saying 'absent'")
