@@ -4515,10 +4515,13 @@ class AssistSession:
             self._derived_hypotheses = []
             self.note(f"[experiment] asking {len(_pending)} experiment(s) derived from "
                       f"observed records (no model call)")
+            self._record_experiment_round("derived", len(_pending[:max_run]))
             return self._run_one_round(_pending[:max_run], [], [])
         llm = getattr(getattr(self, "strategist", None), "_llm", None)
         if llm is None:
+            self._record_experiment_round("model-unavailable", 0)
             return 0
+        self._record_experiment_round("model", None)
 
         # SETTLE THE SURFACE FIRST. Run 9 proposed its first experiment at ledger entry
         # 270 and 57 of the 60 resolution probes happened AFTER it, so the model planned
@@ -4781,6 +4784,26 @@ class AssistSession:
         gate = getattr(getattr(self, "executor", None), "_gate", None)
         return bool(getattr(getattr(gate, "scope", None), "destructive_allowed", False))
 
+    def _record_experiment_round(self, source: str, proposals: int | None) -> None:
+        """Say in the LEDGER whether a round of experiments asked the MODEL or not.
+
+        Reading a run's attribution requires knowing how often the imagination was
+        actually consulted, and for eighteen runs that was knowable only from a vault
+        NOTE — `(no model call)` — which no benchmark parsed. So `crapi_recall.py` scored
+        challenges MODEL-LIMIT on runs where the model had been asked exactly once, and
+        the label was believed (GAP #16, GAP #18).
+
+        `source` is "model", "derived" (no model call by design) or "model-unavailable".
+        A benchmark can now count model rounds instead of inferring them, and an
+        attribution computed over too few rounds can say so rather than blame the model."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        audit.append("experiment_round", {
+            "source": source,
+            "proposals": proposals,
+        })
+
     def _record_proposal_drops(self, drops: list, round_name: str = "propose") -> None:
         """A proposal the model MADE and validation DISCARDED must reach the ledger.
 
@@ -4801,15 +4824,17 @@ class AssistSession:
             by_comparator[d.get("comparator") or "?"] = (
                 by_comparator.get(d.get("comparator") or "?", 0) + 1)
         if audit is not None:
-            try:
-                audit.record("experiment_proposal_dropped", {
-                    "round": round_name,
-                    "count": len(drops),
-                    "by_comparator": by_comparator,
-                    "drops": drops[:12],
-                })
-            except Exception:
-                pass
+            # `append`, NOT `record` — the first version of this called a method the
+            # AuditLog does not have, inside a bare `except Exception: pass`, so the
+            # whole ledger row was dead code that could never fail visibly. That is the
+            # same silent-swallow shape as the experiment reflex's own lost exception,
+            # and the test below exists so it cannot come back.
+            audit.append("experiment_proposal_dropped", {
+                "round": round_name,
+                "count": len(drops),
+                "by_comparator": by_comparator,
+                "drops": drops[:12],
+            })
         self.note(f"[experiment] {len(drops)} proposal(s) discarded at validation "
                   f"({round_name}): "
                   + ", ".join(f"{k}x{v}" for k, v in sorted(by_comparator.items())))

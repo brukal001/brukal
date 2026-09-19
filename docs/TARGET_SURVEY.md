@@ -1245,6 +1245,54 @@ Two moved in the "predicted" direction for reasons having nothing to do with the
 and two moved the opposite way. **Read as designed, this metric would have scored run 18
 as partial success.** It is not.
 
+## THE FIX (2026-09-19, same session)
+
+The catch-all `MODEL-LIMIT` is gone. A miss now names the mechanism that stopped the
+attempt, or declines to name one:
+
+| attribution | means |
+|---|---|
+| `MEASURED-NOT-CONFIRMED` | an experiment ran; the comparator said no — evidence about the TARGET |
+| `HARNESS-LIMIT` | our gate refused a request on that surface — a named mechanism, unchanged |
+| `PROPOSED-THEN-DISCARDED` | **new** — the model DID propose against it and WE threw the proposal away (cap truncation, bad shape, unknown comparator). Filing that as the model's limit inverts the responsibility exactly. |
+| `INCONCLUSIVE-UNDER-ASKED` | **new** — no experiment, and the model was consulted fewer than 3 times, so "it would not have proposed one" and "it never got the chance" are the same evidence |
+| `REACHED-NOT-PROPOSED` | the run's requests went there, the model had its rounds, no experiment was aimed at it — what was OBSERVED, not a claim about capability |
+| `NEVER-REACHED` | nothing touched the surface at all |
+
+Two things make this possible and both had to land with it:
+
+1. **`experiment_round` in the ledger** (`source: model | derived | model-unavailable`).
+   The derived drain makes no model call *by design*, so it must never count as the model
+   having been asked — which is precisely how run 18 looked like a fair test. Model rounds
+   were previously knowable only from a vault NOTE that no benchmark parsed.
+2. **URLs on drop records**, so a discarded proposal can be mapped to the challenge
+   surface it would have asked about.
+
+**No bucket may blame the model unless the model was asked.** `_MIN_ROUNDS_FOR_A_MODEL_VERDICT = 3`
+is a floor on READABILITY, not a claim that three rounds exonerate anyone. A ledger written
+before `experiment_round` existed records 0 rounds and is therefore reported as confounded —
+correctly, because runs 1–18 were.
+
+### Run 18 re-measured under the fixed metric
+
+```
+misses by attribution: {'HARNESS-LIMIT': 6, 'INCONCLUSIVE-UNDER-ASKED': 4, 'MEASURED-NOT-CONFIRMED': 3}
+model experiment rounds: 0  ⚠ FEWER THAN 3
+
+⚠ ATTRIBUTION CONFOUNDED — no miss here may be read as the model's limit.
+```
+
+The four challenges the old metric scored `MODEL-LIMIT` now say what is actually known
+about them: nothing, because the model was barely asked. **The number of model rounds is
+printed as part of the result**, because for eighteen runs that line did not exist and the
+label was believed anyway.
+
+One existing test had to change: `test_COVERAGE_IS_NOT_A_FINDING` asserted
+`misses == {"MODEL-LIMIT"}` on a ledger recording no model round, with the docstring
+*"every miss is the model's — it never proposed anything."* **That is the defect written
+down as intent.** Its real property — coverage is not a finding — is unchanged and still
+asserted, and a second test now covers the same run with the model properly consulted.
+
 **The standing lesson:** *a metric that moves for reasons unrelated to the change will
 eventually be read as evidence for the change.* Four sessions attributed a cap to the
 layer this instrument pointed at. GAPs #8–#12 were the wrong layer; GAP #14's diagnosis

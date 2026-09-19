@@ -958,12 +958,23 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
         evidence class at all', and that must survive its own rejection."""
         if drops is None:
             return
+        _urls = []
+        if isinstance(item, dict):
+            for _k in ("control", "variant", "act"):
+                _v = item.get(_k)
+                if isinstance(_v, dict) and _v.get("url"):
+                    _urls.append(str(_v["url"])[:300])
         drops.append({
             "reason": reason,
             "comparator": (str(item.get("comparator", "")).strip()
                            if isinstance(item, dict) else ""),
             "title": (str(item.get("title", "")).strip()[:140]
                       if isinstance(item, dict) else ""),
+            # The URLs the discarded proposal would have asked about. Without them a
+            # recall benchmark cannot tell WHICH challenge surface was proposed-and-lost,
+            # which is the difference between "the model never asked" and "it asked and
+            # we threw it away".
+            "urls": _urls,
         })
 
     _window = doc[:max_hypotheses * 3]

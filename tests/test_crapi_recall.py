@@ -55,14 +55,34 @@ def test_a_confirmation_counts_only_for_ITS_OWN_surface(tmp_path):
 
 
 def test_COVERAGE_IS_NOT_A_FINDING(tmp_path):
-    """Requests that touched every endpoint, and no experiment anywhere. Recall is zero,
-    and every miss is the model's — it never proposed anything."""
+    """Requests that touched every endpoint, and no experiment anywhere. Recall is zero.
+
+    UPDATED 2026-09-19 (GAP #16). This test used to assert `misses == {"MODEL-LIMIT"}`
+    and its docstring said "every miss is the model's — it never proposed anything". That
+    is the defect, written down as intent: the ledger here records NO model round at all,
+    so "the model never proposed anything" and "the model was never asked" are the same
+    evidence. The metric may not pick one. Its real property — coverage is not a finding —
+    is unchanged and still asserted."""
     rows = [{"kind": "web_decision", "data": {"action": f"get {u}", "verdict": "ALLOW"}}
             for u in (VEHICLE, VIDEOS, DASH)]
     m = measure(_ledger(tmp_path, rows))
     assert m["found"] == 0
-    assert set(m["misses"]) == {"MODEL-LIMIT"}
+    assert set(m["misses"]) == {"INCONCLUSIVE-UNDER-ASKED"}
     assert m["covered_not_attempted"] >= 1
+
+
+def test_COVERAGE_IS_NOT_A_FINDING_when_the_model_WAS_asked(tmp_path):
+    """The same run with the model properly consulted. Recall is still zero and the
+    misses now say what was observed — reached, never proposed against — without
+    claiming to know why."""
+    rows = [{"kind": "experiment_round", "data": {"source": "model", "proposals": 6}}
+            for _ in range(4)]
+    rows += [{"kind": "web_decision", "data": {"action": f"get {u}", "verdict": "ALLOW"}}
+             for u in (VEHICLE, VIDEOS, DASH)]
+    m = measure(_ledger(tmp_path, rows))
+    assert m["found"] == 0
+    assert m["attribution_confounded"] is False
+    assert "REACHED-NOT-PROPOSED" in set(m["misses"])
 
 
 def test_an_attempted_but_unconfirmed_challenge_is_a_MEASURED_miss(tmp_path):

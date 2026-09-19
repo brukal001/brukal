@@ -129,6 +129,13 @@ def group_experiments(rows) -> list:
     return out
 
 
+# Fewer model rounds than this and no miss may be blamed on the model. Three is the
+# smallest number that distinguishes "asked repeatedly and never proposed one" from the
+# single-round accident that produced run 18's MODEL-LIMIT verdicts; it is a floor on
+# READABILITY, not a claim that three is enough to exonerate anyone.
+_MIN_ROUNDS_FOR_A_MODEL_VERDICT = 3
+
+
 def measure(path) -> dict:
     rows = _load(path)
     experiments = group_experiments(rows)
@@ -141,6 +148,27 @@ def measure(path) -> dict:
     denied = [f"{(r['data'].get('layer') or '')} {(r['data'].get('action') or '')}"
               for r in rows if (r.get("data") or {}).get("verdict") == "DENY"]
 
+    # URLs the model DID propose and that we then threw away — cap truncation, a bad
+    # shape, an unknown comparator. Without these a discarded proposal is indistinguishable
+    # from one that was never made, and the difference is who is responsible.
+    discarded = []
+    for r in rows:
+        if r.get("kind") != "experiment_proposal_dropped":
+            continue
+        for d in ((r.get("data") or {}).get("drops") or []):
+            discarded.extend(d.get("urls") or [])
+
+    # HOW OFTEN WAS THE IMAGINATION ACTUALLY CONSULTED? The derived drain makes no model
+    # call by design, so it must never count. Run 18 asked the model ONCE across 70 steps
+    # and this metric scored four challenges MODEL-LIMIT anyway.
+    model_rounds = sum(1 for r in rows if r.get("kind") == "experiment_round"
+                       and ((r.get("data") or {}).get("source") == "model"))
+    # A run with fewer than this many model rounds cannot support a verdict about the
+    # model: every "it never proposed one" is equally explained by never having been
+    # asked. Ledgers written before `experiment_round` existed have 0 rounds recorded and
+    # are therefore treated as confounded — which is correct, since runs 1-18 were.
+    confounded = model_rounds < _MIN_ROUNDS_FOR_A_MODEL_VERDICT
+
     results = []
     for cid, title, cat, sigs, unreachable in CHALLENGES:
         def _any(urls):
@@ -152,11 +180,24 @@ def measure(path) -> dict:
         elif _any(attempted_urls):
             state, attribution = "MISS", "MEASURED-NOT-CONFIRMED"
         elif _any(denied):
+            # OUR gate refused a request on this surface: a named mechanism.
             state, attribution = "MISS", "HARNESS-LIMIT"
+        elif _any(discarded):
+            # The model asked about this surface and WE discarded the proposal. Filing
+            # that as the model's limit inverts the responsibility exactly.
+            state, attribution = "MISS", "PROPOSED-THEN-DISCARDED"
+        elif confounded:
+            # No experiment, and the model was barely asked. Both "it would not have
+            # proposed one" and "it never got the chance" explain this equally, so the
+            # honest answer names neither.
+            state, attribution = "MISS", "INCONCLUSIVE-UNDER-ASKED"
+        elif _any(touched):
+            # The run's own requests went there, the model had its rounds, and no
+            # experiment was ever aimed at it. Still not a claim about capability — it is
+            # what was OBSERVED, and it is the strongest statement this ledger supports.
+            state, attribution = "MISS", "REACHED-NOT-PROPOSED"
         else:
-            # Requests may have TOUCHED the surface; no experiment was ever proposed
-            # against it, which is the model's limit and not the target's behaviour.
-            state, attribution = "MISS", "MODEL-LIMIT"
+            state, attribution = "MISS", "NEVER-REACHED"
         results.append({"id": cid, "title": title, "category": cat, "state": state,
                         "attribution": attribution, "covered": _any(touched),
                         "attempted": _any(attempted_urls), "unreachable": unreachable})
@@ -172,6 +213,8 @@ def measure(path) -> dict:
                                      if r["state"] == "MISS" and r["covered"]
                                      and not r["attempted"]),
         "misses": Counter(r["attribution"] for r in measurable if r["state"] == "MISS"),
+        "model_rounds": model_rounds,
+        "attribution_confounded": confounded,
         "results": results,
     }
 
@@ -190,6 +233,19 @@ def main(argv):
         extra = r["attribution"] or (r["unreachable"] or "")
         print(f"  {mark} {r['id']:2}  {r['title'][:52]:54} {extra[:64]}")
     print(f"\n  misses by attribution: {dict(m['misses'])}")
+    # The number of model rounds is part of the RESULT, not trivia: an attribution
+    # computed over one round is not a statement about the model, and for eighteen runs
+    # this line did not exist and the label was believed anyway.
+    print(f"  model experiment rounds: {m['model_rounds']}"
+          + ("" if not m["attribution_confounded"] else
+             f"  ⚠ FEWER THAN {_MIN_ROUNDS_FOR_A_MODEL_VERDICT}"))
+    if m["attribution_confounded"]:
+        print("\n  ⚠ ATTRIBUTION CONFOUNDED — no miss here may be read as the model's\n"
+              "    limit. The imagination was consulted "
+              f"{m['model_rounds']} time(s) in this run, so\n"
+              "    'it never proposed one' and 'it was never asked' are the same evidence.\n"
+              "    (A ledger written before `experiment_round` existed records 0 rounds,\n"
+              "     which is why every run up to CR1 run 18 reports as confounded.)")
     if m["unreachable"]:
         print("\n  UNREACHABLE, stated rather than omitted:")
         for r in m["unreachable"]:

@@ -971,11 +971,16 @@ readily. The work is in the harness.
    proposal with its reason and comparator; `_record_proposal_drops` puts them in the
    ledger as `experiment_proposal_dropped`. ⚠️ **Cap-truncated entries are still invisible
    — the `break` at `_MAX_HYPOTHESES` records nothing.** Close that with GAP #18.
-3. **GAP #16** — the attribution cannot separate "harness blocked it" from "never
-   attempted"; run 19's number is uninterpretable until it does.
+3. ~~**GAP #16**~~ **DONE this session.** The `MODEL-LIMIT` catch-all is replaced by
+   attributions that name a mechanism: `PROPOSED-THEN-DISCARDED`, `REACHED-NOT-PROPOSED`,
+   `NEVER-REACHED`, and `INCONCLUSIVE-UNDER-ASKED` when the model was consulted fewer
+   than 3 times. `experiment_round` now records in the ledger whether a round asked the
+   MODEL or was the (model-free) derived drain, and the report PRINTS the model-round
+   count plus a confound banner. Run 18 re-measured: its 4 `MODEL-LIMIT` verdicts are now
+   `INCONCLUSIVE-UNDER-ASKED`, 0 model rounds recorded.
 4. GAP #13 (~8 wasted requests) is cosmetic beside these.
 
-**Run 19 is now worth funding on 1, but 3 still governs how its number may be READ.**
+**Run 19 is now worth funding: 1 and 3 are both done.**
 Run 18 cost $3.71 to measure a pipeline that asked the model once; run 19 asks six times.
 Expect roughly **$0.30–0.50** more for the five extra propose/refine pairs.
 

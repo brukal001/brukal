@@ -94,3 +94,36 @@ def test_a_proposal_cut_by_the_MAX_HYPOTHESES_cap_is_recorded(tmp_path=None):
     assert {d["comparator"] for d in cut} == {"state_changed"}, (
         "the comparator that was cut must survive its own truncation -- that is the "
         "whole question a later run asks")
+
+
+def test_the_drop_REACHES_THE_LEDGER_not_just_a_note(tmp_path):
+    """The first version of the recorder called `audit.record(...)` -- a method AuditLog
+    does not have -- inside a bare `except Exception: pass`. It raised AttributeError on
+    every call and swallowed it, so the ledger row never existed and nothing could tell.
+
+    A recorder wrapped in a silent except is unfalsifiable. This asserts the ROW, which
+    is the only thing a later run can actually count."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+
+    scope = load_scope(_Path(__file__).resolve().parent / "fixtures" / "scope_fast.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("10.10.10.5", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()))
+
+    s._record_proposal_drops(
+        [{"reason": "control_equals_variant_without_act",
+          "comparator": "state_changed", "title": "coupon redeems twice"}])
+
+    rows = [_json.loads(l) for l in open(audit.path)]
+    dropped = [r for r in rows if r.get("kind") == "experiment_proposal_dropped"]
+    assert dropped, "the drop never reached the ledger — the row a later run counts"
+    assert dropped[0]["data"]["by_comparator"] == {"state_changed": 1}
