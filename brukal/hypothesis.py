@@ -913,13 +913,22 @@ def _clean_request(raw) -> dict | None:
     return out
 
 
-def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
+def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
+          drops: list | None = None) -> list:
     """Hypotheses from a model reply. Malformed entries are skipped, never guessed at.
 
     Accepts a JSON array, optionally inside a ```json fence, because that is what models
     reliably produce. Everything is validated: an unknown comparator is refused outright
     rather than defaulted, since defaulting would let a vague proposal borrow the
-    authority of a strict one."""
+    authority of a strict one.
+
+    `drops` is an optional list that receives one record per DISCARDED entry
+    ``{"reason", "comparator", "title"}``. Skipping used to be a bare `continue`, so a
+    proposal the model MADE and validation discarded left no trace anywhere — the raw
+    reply is not persisted either. `grep -c state_changed` over a ledger therefore
+    counted proposals that SURVIVED validation while being read as proposals the model
+    never made, and an entire run's attribution rested on that reading (GAP #17).
+    Opt-in, so no existing caller changes behaviour and the return value is untouched."""
     if not text:
         return []
     block = text
@@ -942,21 +951,44 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES) -> list:
         return []
 
     out = []
+
+    def _drop(reason, item):
+        """Record a discard. The COMPARATOR is kept even when it is the thing that was
+        wrong, because the question a later run asks is 'did the model reach for this
+        evidence class at all', and that must survive its own rejection."""
+        if drops is None:
+            return
+        drops.append({
+            "reason": reason,
+            "comparator": (str(item.get("comparator", "")).strip()
+                           if isinstance(item, dict) else ""),
+            "title": (str(item.get("title", "")).strip()[:140]
+                      if isinstance(item, dict) else ""),
+        })
+
     for item in doc[:max_hypotheses * 3]:
         if not isinstance(item, dict):
+            _drop("not_an_object", item)
             continue
         comparator = str(item.get("comparator", "")).strip()
         if comparator not in _COMPARATORS:
+            _drop("unknown_comparator", item)
             continue                       # unknown comparison: refuse, do not default
         title = str(item.get("title", "")).strip()
         if not title or len(title) > 140:
+            _drop("bad_title", item)
             continue
         control = _clean_request(item.get("control"))
         variant = _clean_request(item.get("variant"))
         if control is None or variant is None:
+            _drop("unusable_control_or_variant", item)
             continue
         act = _clean_request(item.get("act"))
         if control == variant and act is None:
+            # The shape the prompt's own `setup` wording invites: the model expressed
+            # the state change as a setup step, so the two judged sides are identical
+            # and there is nothing to perform between them.
+            _drop("control_equals_variant_without_act", item)
             continue                       # a differential against itself proves nothing
         # ...unless something is PERFORMED between them. A `state_changed` experiment is
         # the same read twice with an action in the middle, so identical sides are the

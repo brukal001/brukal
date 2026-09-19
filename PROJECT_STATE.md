@@ -868,6 +868,20 @@ that caught GAP #11 — a prediction fixed after the fact proves nothing):
   costs requests, not recall. Do not fix it before run 18 — it would confound the
   measurement.
 
+## ⚠️ OPEN: an intermittent test, not resolved
+
+`tests/test_principal_switch_is_atomic.py::test_a_probe_naming_another_principal_is_a_recorded_failure`
+failed **2 of 7** full-suite runs this session and passed the other 5; it passes in
+isolation and passes its own file every time. With the session's source changes stashed
+it passed 3 of 3 — **too small a sample to attribute it either way**, so it is recorded
+as an open flake rather than dismissed as pre-existing or blamed on the change.
+
+Ruled out by test: it uses the fake cage (no network/port), and pre-registering the
+principal's address in `redact`'s process-global `_SECRETS` does not flip it. The likely
+shape is cross-test global state, and `redact._SECRETS` is process-global with a `clear()`
+that the suite does not call between tests. **Next person: run the suite with `-p no:cacheprovider`
+and bisect by test file before trusting a green run of this one.**
+
 ## Standing lessons earned this session
 
 - **A boundary test that passes through a short-circuit tests the short-circuit.**
@@ -894,27 +908,33 @@ that caught GAP #11 — a prediction fixed after the fact proves nothing):
 
 | # | prediction (fixed in `_model_note` before launch) | result |
 |---|---|---|
-| 1 | `state_changed` proposed > 0 | **0** of 41 proposals ⛔ |
+| 1 | `state_changed` proposed > 0 | **0** of 18 proposals ⛔ |
 | 2 | `destructive-experiment` escalations > 0 | **0** ⛔ |
 | 3 | recall > 1 of 14 | **1 of 14** ⛔ |
 
 Funnel **identical** to run 17: 18 experiments, 5 confirmed, 13 not confirmed.
 Recall has now been 1 of 14 for **five consecutive runs**.
 
-## The attribution moves to MODEL-LIMIT — established directly, not from the benchmark
+## ⚠️ RETRACTED LATER THE SAME SESSION: the attribution is HARNESS-LIMIT, not MODEL-LIMIT
 
-The harness half is verifiably live: the ledger records `destructive_allowed: true`, and
-the `DESTRUCTIVE_PERMITTED` clause supplies the construction outright ("the control and
-variant are the SAME read, and `act` is the change"). Permission granted, recipe given,
-**zero** state-changing experiments built across 41 comparators.
+The first write-up of run 18 concluded "permission granted, recipe supplied, nothing
+built ⇒ the model is the cap". **That is wrong.** See GAP #18 in `docs/TARGET_SURVEY.md`.
 
-**This is progress and is recorded as progress.** The cap is no longer a door we nailed
-shut; it is a capability gap that can now be worked on directly.
+- **The model was asked ONCE.** `run_hypotheses(derived_only=True)` (`assist.py:4511`)
+  returns before the LLM is fetched, and `loop.py:510` calls it **every turn**; the
+  model path (`loop.py:634`) sits in **REFLEX 0b**, which "runs once". Run 18's vault
+  says `no model call` five times. Of 18 proposals, 10 are the derived drain and round 0's
+  8 are one model round plus the coverage floor.
+- **The model builds `state_changed` readily.** Offline A/B on the REAL prompt, live
+  `max_tokens`, 4 calls per arm: **7 of 8 calls proposed one**, all with a valid `act`,
+  all surviving `parse()`. Cost **$0.31**.
+- **The cap sits where the model puts them.** `_MAX_HYPOTHESES = 6` and `parse()` breaks
+  at it, recording nothing. In the GET-only arm `state_changed` lands at **index 5 of 6 —
+  the last slot — in 3 of 4 replies.**
 
-⚠️ **One earlier claim in this session was wrong and is retracted in the survey:** run 18
-did NOT show the model attempting state changes for the first time. Run 17 already issued
-2 (`PUT` ×2) under the forbidding prompt; run 18 issued 3. 2 → 3 is noise. Only the
-**DELETE** is novel to run 18, n=1, suggestive and nothing more.
+Run 18 measured a pipeline that asks the model almost nothing and read the silence as the
+model having nothing to say. **What GAP #14's fix bought is not measurable by a run shaped
+like this one**; the fix remains correct and necessary.
 
 ## Two new gaps, both recorded in `docs/TARGET_SURVEY.md`, neither fixed
 
@@ -934,13 +954,24 @@ did NOT show the model attempting state changes for the first time. Run 17 alrea
   FOUND. Totals were identical 6/4/3 while 2 challenges moved each way on denial
   bookkeeping. **Read as designed, this metric would have scored run 18 a partial win.**
 
-## Next step
+## Next step — run 19 must not be launched until the pipeline asks
 
-The question is now well-posed and cheap to attack **offline, at $0.00**: can the model
-construct a valid `state_changed` experiment at all? Test the builder directly against a
-fixture before spending another $4 on a live run. GAP #13 (~8 wasted requests) and
-GAP #16 (the instrument) are both worth fixing before run 19, since run 19's number is
-uninterpretable until #16 is.
+That question is now ANSWERED (7 of 8, $0.31): the model constructs `state_changed`
+readily. The work is in the harness.
+
+1. **GAP #18 first.** Ask the model more than once per engagement, and stop the
+   derived-only drain from standing in for a model round. Raise or reorder
+   `_MAX_HYPOTHESES` so the last slot is not where the measured comparator dies.
+2. **GAP #17 — DONE this session.** `parse(..., drops=[])` records every discarded
+   proposal with its reason and comparator; `_record_proposal_drops` puts them in the
+   ledger as `experiment_proposal_dropped`. ⚠️ **Cap-truncated entries are still invisible
+   — the `break` at `_MAX_HYPOTHESES` records nothing.** Close that with GAP #18.
+3. **GAP #16** — the attribution cannot separate "harness blocked it" from "never
+   attempted"; run 19's number is uninterpretable until it does.
+4. GAP #13 (~8 wasted requests) is cosmetic beside these.
+
+**Do not spend another $4 until 1 and 3 are done.** Run 18 cost $3.71 to measure a
+pipeline that asked the model once.
 
 ## Standing lessons earned this session
 

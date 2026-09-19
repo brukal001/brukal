@@ -4655,7 +4655,9 @@ class AssistSession:
         # experiments the shapes — the one thing that would fix the next round — would be
         # the entries pushed out.
         shapes: list = []
-        proposals = _hyp.parse(reply)
+        _drops: list = []
+        proposals = _hyp.parse(reply, drops=_drops)
+        self._record_proposal_drops(_drops)
         # Record the attempt BEFORE the early return. The first live run asked the model,
         # got a truncated reply, parsed nothing, and left no trace at all — the coverage
         # table simply had no row, which is the exact ambiguity that table exists to
@@ -4744,7 +4746,9 @@ class AssistSession:
                     max_tokens=8000)
             except Exception:
                 break
-            proposals = _hyp.parse(reply2)
+            _drops2: list = []
+            proposals = _hyp.parse(reply2, drops=_drops2)
+            self._record_proposal_drops(_drops2, round_name="refine")
             if proposals:
                 self._covered("Model-proposed experiments", probes=len(proposals),
                               note="refined round, informed by the first round's results")
@@ -4776,6 +4780,39 @@ class AssistSession:
         """What the SCOPE authorised for this engagement — never the model's choice."""
         gate = getattr(getattr(self, "executor", None), "_gate", None)
         return bool(getattr(getattr(gate, "scope", None), "destructive_allowed", False))
+
+    def _record_proposal_drops(self, drops: list, round_name: str = "propose") -> None:
+        """A proposal the model MADE and validation DISCARDED must reach the ledger.
+
+        Without this, `parse()` skipped a malformed entry with a bare `continue` and the
+        raw reply was persisted nowhere, so counting a comparator over the ledger
+        measured what SURVIVED validation while being read as what the model PROPOSED.
+        Run 18's entire MODEL-LIMIT attribution rested on that reading and its artifacts
+        could not tell the two apart (GAP #17).
+
+        The comparator is recorded even when the comparator is what was wrong: the
+        question a later run asks is whether the model reached for an evidence class at
+        all, and that has to survive the proposal's own rejection."""
+        if not drops:
+            return
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        by_comparator: dict = {}
+        for d in drops:
+            by_comparator[d.get("comparator") or "?"] = (
+                by_comparator.get(d.get("comparator") or "?", 0) + 1)
+        if audit is not None:
+            try:
+                audit.record("experiment_proposal_dropped", {
+                    "round": round_name,
+                    "count": len(drops),
+                    "by_comparator": by_comparator,
+                    "drops": drops[:12],
+                })
+            except Exception:
+                pass
+        self.note(f"[experiment] {len(drops)} proposal(s) discarded at validation "
+                  f"({round_name}): "
+                  + ", ".join(f"{k}x{v}" for k, v in sorted(by_comparator.items())))
 
     def _approve_destructive_experiment(self, h) -> bool:
         """Put a destructive experiment to the operator, through the SAME approver the

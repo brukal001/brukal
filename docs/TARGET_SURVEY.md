@@ -1107,13 +1107,13 @@ GAP #13 was deliberately left unfixed so it could not confound the measurement.
 
 | # | prediction | result | |
 |---|---|---|---|
-| 1 | `state_changed` proposed **> 0** | **0** of 41 proposals | ⛔ **FAILED** |
+| 1 | `state_changed` proposed **> 0** | **0** of 18 proposals | ⛔ **FAILED** |
 | 2 | `grep -c destructive-experiment` **> 0** | **0** | ⛔ **FAILED** |
 | 3 | recall **> 1 of 14** | **1 of 14** | ⛔ **FAILED** |
 
 The funnel is **identical** to run 17: 18 experiments, 5 confirmed, 13 not confirmed.
-Comparators proposed: `unauthenticated_exposure` 18, `a_denied_b_allowed` 15,
-`cross_account_resource` 8 — **all read comparators, again.**
+Comparators proposed (from the 18 `experiment_proposed` events): `unauthenticated_exposure` 9,
+`a_denied_b_allowed` 5, `cross_account_resource` 4 — **all read comparators, again.**
 
 ## What that establishes, stated as the handoff required
 
@@ -1125,7 +1125,7 @@ construction**: *"the control and variant are the SAME read, and `act` is the ch
 under test."*
 
 So the model was told it was authorised, told exactly how to build the experiment, and
-proposed **zero** of them across 41 comparators. **The attribution moves HARNESS-LIMIT →
+proposed **zero** of them across 18 proposals. **The attribution moves HARNESS-LIMIT →
 MODEL-LIMIT, and this is progress**: the cap is no longer a door we nailed shut. It is
 established directly — permission granted, recipe supplied, nothing built — rather than
 inferred from the benchmark's buckets, which (see GAP #16) cannot carry that inference.
@@ -1250,3 +1250,129 @@ eventually be read as evidence for the change.* Four sessions attributed a cap t
 layer this instrument pointed at. GAPs #8–#12 were the wrong layer; GAP #14's diagnosis
 was right about the prompt and wrong about the metric that was supposed to prove it.
 **The attribution must name the mechanism that blocked the attempt, or not claim to.**
+
+---
+
+# ⛔ GAP #17 — a proposal dropped at parse leaves NO TRACE, so "the model never proposed it" is not observable
+
+**Class: GENUINE GAP, INSTRUMENT. Found 2026-09-19 while trying to justify run 18's
+MODEL-LIMIT attribution. NOT FIXED.**
+
+`hypothesis.parse()` (`hypothesis.py:915-975`) validates every entry and skips a bad one
+with a bare `continue` — **no counter, no note, no ledger entry**. The raw model reply is
+not persisted anywhere either: the ledger's `experiment_proposed` events are written
+*after* parse, and `runs/vault-*/agents/strategist/*.md` holds shell findings, not
+experiment replies.
+
+Therefore `grep -c state_changed <ledger>` measures **"state_changed proposals that
+survived validation"**, not **"state_changed proposals the model made"**. Run 18's
+artifacts cannot distinguish them, and the funnel's `unaccounted: 0` is structurally
+blind to the difference because it is computed over already-parsed proposals.
+
+Two shapes are silently dropped today, both plausible model errors (probed
+deterministically, `$0.00`):
+
+| shape | verdict |
+|---|---|
+| canonical: same read twice + `act` | KEPT |
+| change in `variant`, no `act` | KEPT (as a non-state_changed differential) |
+| **same read twice, change placed in `setup` instead of `act`** | **DROPPED, silent** |
+| **`act` supplied as a LIST instead of a dict** | **DROPPED, silent** |
+
+The first drop is the dangerous one: the prompt itself advertises `setup` as the way to
+"reach an interesting state (create an order, apply a coupon, start a workflow)", which
+is *exactly* the language a model would follow to express a state change.
+
+**Consequence for run 18's headline**, and this must be carried forward: the claim "the
+model built nothing" is **downgraded to NOT ESTABLISHED**. The measurement is consistent
+with the model proposing state-changing experiments that validation discarded without
+record. Fixing this is a precondition for run 19 meaning anything.
+
+**The fix is cheap and deterministic**: count and record every skipped entry with the
+reason, and persist the raw reply. Neither needs a model call to test.
+
+---
+
+# ★★★ GAP #18 — THE MODEL IS ASKED FOR EXPERIMENTS ONCE PER ENGAGEMENT, AND RUN 18's ATTRIBUTION IS THEREFORE WRONG
+
+**Class: GENUINE GAP, and the one that actually caps recall. MEASURED 2026-09-19 against
+run 18's own ledger plus an offline A/B probe (`$0.31`). NOT FIXED.**
+
+## Run 18's MODEL-LIMIT verdict is RETRACTED
+
+The commit that recorded run 18 concluded: *permission granted, recipe supplied, nothing
+built ⇒ the cap is the model.* **That is wrong, and the evidence against it is in run
+18's own vault.**
+
+### 1. The model was barely asked
+
+`runs/vault-cr1r/.../engagement.md` contains, five times:
+
+```
+[experiment] asking 2 experiment(s) derived from observed records (no model call)
+```
+
+`run_hypotheses(derived_only=True)` (`assist.py:4511`) returns before `llm` is ever
+fetched. `loop.py:510` calls it **every turn**. The model-proposal path, `loop.py:634`,
+sits inside **REFLEX 0b**, gated `if ... and not self._confirmed_done:` which is set
+`True` on entry — *"Runs once, bounded, governed."*
+
+**So across 70 steps the model was asked to propose experiments ONE time** (plus its one
+refine round). Grouping run 18's 18 `experiment_proposed` events by time:
+
+| round | n | comparators |
+|---|---|---|
+| 0 | 8 | cross_account_resource ×4, unauthenticated_exposure ×4 |
+| 1–4 | 2 each | a_denied_b_allowed + unauthenticated_exposure |
+
+Rounds 1–4 are the derived drain — **no model call**. Round 0 is the single model round
+plus the coverage floor. The model's own contribution to the entire run is **at most 8
+proposals, from one call, capped at 6 by `_MAX_HYPOTHESES`.**
+
+### 2. The model builds `state_changed` readily when asked
+
+Offline A/B, the REAL `experiment_prompt(destructive_allowed=True)`, live `max_tokens=8000`,
+`claude-sonnet-5`, 4 calls per arm. Only the grounding varies:
+
+| | asked total | **`state_changed` asked** | kept after parse | with `act` |
+|---|---|---|---|---|
+| **A** — surface names state-changing routes | 24 | **7** | 7 | 7 |
+| **B** — GET-only surface | 25 | **3** | 3 | 3 |
+
+**7 of 8 calls proposed at least one `state_changed`, every one carrying a valid `act`,
+and every one survived `parse()`.** The capability the handoff said had "never once"
+been demonstrated is demonstrated in the first eight tries.
+
+### 3. And the cap sits exactly where the model puts them
+
+`_MAX_HYPOTHESES = 6`, and `parse()` **`break`s** at the cap — trailing proposals are
+discarded with no record at all (not even a GAP #17 drop). Position of `state_changed` in
+each reply:
+
+```
+A: [2,5]  [2,3]  [3,4]  [2]
+B: [5]    [5]    []     [5]        <- index 5 of 6: the last slot, at the cut
+```
+
+In the GET-only arm — the shape a real run produces — the model puts `state_changed`
+**last, at the cap boundary, in three of four replies.** One extra earlier proposal and
+it is silently cut.
+
+## The corrected attribution
+
+**HARNESS-LIMIT.** Not because the prompt forbids it any more (GAP #14 genuinely fixed
+that), but because the model is consulted once per engagement, capped at six proposals,
+with the comparator it is being measured on systematically landing in the last slot.
+Run 18 measured a pipeline that asks the model almost nothing, and read the silence as
+the model having nothing to say.
+
+**What GAP #14's fix actually bought** cannot be seen in run 18 at all: with one model
+round, the sample is too small to distinguish permitted from forbidden. The fix is still
+correct and still necessary — it is simply not measurable by a run shaped like this one.
+
+## The standing lesson
+
+**Before concluding a capability is absent, verify the component was ASKED.** Four
+sessions measured the model's imagination through a path that calls it once and truncates
+its answer at six. The offline probe that settled it cost `$0.31` and could have been run
+at any point in those four sessions — including before run 18.
