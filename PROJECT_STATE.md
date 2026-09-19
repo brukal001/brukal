@@ -776,3 +776,105 @@ missing, and they must not be "corrected" to a SHA.
   test-first work).
 - Engagement artifacts stay UNCOMMITTED in the working tree (scope file, compose scope-mount edit, disabled
   ovpn, graphify-out) — they are per-engagement state, not project code.
+
+---
+
+# SESSION HANDOFF — 2026-09-19 (end of session)
+
+## Where things stand
+
+`HEAD = b17d91b`. **1488 tests pass, 1 skipped.** Working tree clean except
+`scope.crapi.json` (gitignored; staged for run 18, see below).
+
+**CR1 run 17 is the last completed measurement** (`runs/audit_cr1q.jsonl`,
+`runs/vault-cr1q`): 70 steps, $4.17, chain intact, funnel 18/18/18/18, 5 confirmed,
+**0 unaccounted**, **recall 1 of 14**. Runs 15 and 16 were aborted before the paid loop
+at **$0.00 each** after their own live ledgers exposed defects.
+
+## What was done this session, in order
+
+Seven defects, all in `docs/TARGET_SURVEY.md` as GAP #8–#14 with evidence.
+
+| gap | what | state |
+|---|---|---|
+| #8 | our own rate limiter recorded as the target saying "absent" (43 denials wrote off crAPI's oracle permanently) | fixed, **measured 43 → 2** |
+| #9 | a prefix composed onto itself | fixed |
+| #10 | proposal repair keyed on the exact fragment, so it never fired | fixed |
+| #11 | repair splicing a prefix into the MIDDLE of an already-prefixed path | fixed, caught live at $0.00 |
+| #12 | other mounts composed onto an already-proven route | fixed, **measured 22 → 0** |
+| #13 | coverage proposes raw fragments BEFORE resolution can prove them | **RECORDED, NOT FIXED** |
+| #14 | **the prompt forbade destructive proposals unconditionally** | fixed, **NOT YET MEASURED** |
+
+## The thing that matters
+
+GAPs #8–#12 were real and were **the wrong layer**. Recall did not move: 1 of 14 in run
+14 and 1 of 14 in run 17. **GAP #14 is the one that was capping it**, and it is fixed
+but unmeasured:
+
+- Run 17 proposed three comparators, **all READ comparators**. `state_changed` and
+  `oob_callback`: zero proposals, both runs.
+- `_approve_destructive_experiment` fired **zero times**, both runs
+  (`grep -c 'destructive-experiment'` = 0).
+- The experiment prompt ended with an unconditional *"Do not propose anything
+  destructive…"*, ignoring `destructive_allowed: true` — forbidding by name the six
+  HARNESS-LIMIT misses (challenges 3, 7, 10, 13 and the two reachable only through that
+  surface).
+
+Now: `experiment_prompt(destructive_allowed)` and `refine_prompt(destructive_allowed)`
+pick the clause from the SCOPE; `_is_destructive_request(method, url)` judges
+DELETE/PUT/PATCH **or** the URL-word rule, so a `DELETE /…/videos/9` cannot bypass the
+approver. Fail-closed is unchanged and tested.
+
+## The immediate next step: RUN 18
+
+The scope is already staged at `scope.crapi.json`
+(`brukal-crapi-CR1r17-…` — **bump it to r18** and update `_model_note`).
+Principal A exists: `/tmp/a_email`, `/tmp/a_pass` (recreate with a signup if lost).
+
+```sh
+cd /mnt/c/Users/ashis/Desktop/Brukal/brukal
+export BRUKAL_AUDIT_KEY="$(cat ~/.brukal/cr1.key)"
+export ANTHROPIC_API_KEY="$(grep ANTHROPIC_API_KEY runs/anthropic.env | cut -d= -f2-)"
+.venv/bin/python -m brukal.cli auto 172.20.0.12 \
+  --yes-authorised --scope scope.crapi.json --full-send --web --container brukal-kali \
+  --login-url http://172.20.0.12/identity/api/auth/login --login-type json \
+  --login-field-user email --login-field-pass password \
+  --login-user "$(cat /tmp/a_email)" --login-pass "$(cat /tmp/a_pass)" \
+  --audit runs/audit_cr1r.jsonl --vault runs/vault-cr1r \
+  --max-steps 70 --max-cost 12.00 --no-resume --no-handoff
+```
+
+~70 min, ~$4. Then:
+`.venv/bin/python benchmarks/crapi_recall.py runs/audit_cr1r.jsonl`
+
+**Predictions to write into `_model_note` BEFORE launching** (this is the discipline
+that caught GAP #11 — a prediction fixed after the fact proves nothing):
+
+1. `state_changed` proposed **> 0** times — the direct test of GAP #14.
+2. `grep -c 'destructive-experiment' runs/audit_cr1r.jsonl` **> 0** — the approver is
+   finally consulted.
+3. Recall **> 1 of 14**. *This is the real one and it may still fail* — see below.
+
+## Honest risks for run 18
+
+- Permission is necessary, not sufficient. The model must also **construct** a valid
+  `state_changed` experiment (control and variant are the SAME read; `act` is the
+  change). It has never done so once. If proposals appear but none confirm, the
+  attribution moves HARNESS-LIMIT → MODEL-LIMIT, which is **still progress and must be
+  reported as such**, not as failure.
+- `--full-send` auto-approves, so run 18 measures capability, not the human loop. The
+  interactive approval path is separately tested but unexercised live.
+- GAP #13 is unfixed: ~8 requests per run wasted on unprefixed coverage proposals. It
+  costs requests, not recall. Do not fix it before run 18 — it would confound the
+  measurement.
+
+## Standing lessons earned this session
+
+- **A boundary test that passes through a short-circuit tests the short-circuit.**
+  (GAP #11: the fixture used a URL carrying the very prefix repair was about to apply.)
+- **A fixture that cannot express the defect is not a test of it.** (GAP #12: one mount
+  learned, so the narrow guard covered it and the test went green before it went red.)
+- **A guard written against the wrong set passes its own narrow test.** (`bare in known`
+  — `known` is `set(fragments)` — broke 30 tests.)
+- **Fixing the layer you can see defects in is not the same as fixing what caps the
+  number.** Four sessions, seven real defects, recall unchanged.
