@@ -878,3 +878,76 @@ that caught GAP #11 — a prediction fixed after the fact proves nothing):
   — `known` is `set(fragments)` — broke 30 tests.)
 - **Fixing the layer you can see defects in is not the same as fixing what caps the
   number.** Four sessions, seven real defects, recall unchanged.
+
+
+---
+
+# SESSION HANDOFF — 2026-09-19 (run 18 measured)
+
+## Where things stand
+
+`HEAD` = this commit. **1488 tests pass, 1 skipped.** Run 18 is banked:
+`runs/audit_cr1r.jsonl`, `runs/vault-cr1r`. 70 steps, 101 model calls, **$3.71**,
+57 commands (13 blocked), chain intact, 8 findings.
+
+## Run 18: all three predictions FAILED, and that is the result
+
+| # | prediction (fixed in `_model_note` before launch) | result |
+|---|---|---|
+| 1 | `state_changed` proposed > 0 | **0** of 41 proposals ⛔ |
+| 2 | `destructive-experiment` escalations > 0 | **0** ⛔ |
+| 3 | recall > 1 of 14 | **1 of 14** ⛔ |
+
+Funnel **identical** to run 17: 18 experiments, 5 confirmed, 13 not confirmed.
+Recall has now been 1 of 14 for **five consecutive runs**.
+
+## The attribution moves to MODEL-LIMIT — established directly, not from the benchmark
+
+The harness half is verifiably live: the ledger records `destructive_allowed: true`, and
+the `DESTRUCTIVE_PERMITTED` clause supplies the construction outright ("the control and
+variant are the SAME read, and `act` is the change"). Permission granted, recipe given,
+**zero** state-changing experiments built across 41 comparators.
+
+**This is progress and is recorded as progress.** The cap is no longer a door we nailed
+shut; it is a capability gap that can now be worked on directly.
+
+⚠️ **One earlier claim in this session was wrong and is retracted in the survey:** run 18
+did NOT show the model attempting state changes for the first time. Run 17 already issued
+2 (`PUT` ×2) under the forbidding prompt; run 18 issued 3. 2 → 3 is noise. Only the
+**DELETE** is novel to run 18, n=1, suggestive and nothing more.
+
+## Two new gaps, both recorded in `docs/TARGET_SURVEY.md`, neither fixed
+
+- **GAP #15 — SAFETY, fail-OPEN.** `check_web` (`web.py:97-153`) has no method check and
+  **never reads `scope.destructive_allowed`**. Proven by execution against the real scope
+  file: `DELETE /workshop/api/shop/orders/1` returns `ALLOW / web:allow` under
+  `destructive_allowed` **False and True alike**. `_is_destructive_request` has exactly
+  one caller — the experiment path. In-run inversion: a read `curl` on the shell path
+  ESCALATEs for sign-off while a DELETE on the web path does not. Present in run 17 too,
+  so it PREDATES the GAP #14 fix. **Left unfixed deliberately**: it puts a risk layer on a
+  path that never had one and changes run comparability — maintainer's call per CLAUDE.md.
+- **GAP #16 — INSTRUMENT.** HARNESS-LIMIT and MODEL-LIMIT **both** mean "no experiment
+  attempted"; only an incidental `DENY` string match separates them
+  (`benchmarks/crapi_recall.py:147-159`). So a forbidden proposal lands in MODEL-LIMIT,
+  never HARNESS-LIMIT, and **the handoff's predicted HARNESS→MODEL transition was the
+  wrong direction** — a working GAP #14 fix could only produce MEASURED-NOT-CONFIRMED or
+  FOUND. Totals were identical 6/4/3 while 2 challenges moved each way on denial
+  bookkeeping. **Read as designed, this metric would have scored run 18 a partial win.**
+
+## Next step
+
+The question is now well-posed and cheap to attack **offline, at $0.00**: can the model
+construct a valid `state_changed` experiment at all? Test the builder directly against a
+fixture before spending another $4 on a live run. GAP #13 (~8 wasted requests) and
+GAP #16 (the instrument) are both worth fixing before run 19, since run 19's number is
+uninterpretable until #16 is.
+
+## Standing lessons earned this session
+
+- **A metric that moves for reasons unrelated to the change will eventually be read as
+  evidence for the change.** (GAP #16.)
+- **An attribution must name the mechanism that blocked the attempt, or not claim to.**
+- **Verify a fail-closed claim by executing both branches, never by reading the gate.**
+  The GAP #15 verdict took one script and turned an asymmetry into a proven fail-open.
+- **Check whether the prior run already did the thing you are calling new.** The "first
+  state-changing request" claim survived twenty minutes and one `grep -c` across ledgers.
