@@ -1921,3 +1921,94 @@ Each empty reply was recorded by the run as *"model returned no usable experimen
 reply is **empty AND was cut off** (`finish_reason == "length"`). An empty reply that
 simply ended is an answer and is not retried: retrying every empty would double the bill on
 every refusal. Same factor, same ceiling and same cost bound as the Anthropic path.
+
+---
+
+# ★★★ CR2 RUN 1 (`audit_cr2a.jsonl`, 2026-09-20) — RECALL MOVES: 1 → 2 of 14, FOR $0.064
+
+**NEW SERIES.** Runs 1–19 were all claude-sonnet-5; this is `deepseek/deepseek-v4-pro` via
+OpenRouter. A different model measures a different system, so **no number here may be
+quoted as continuing the CR1 series.** CR2 run 1 is its own baseline.
+
+20 commands, 20 model calls, **$0.0641**, chain intact, 5 findings. The run **stopped
+itself** at 20 of 70 steps — "the next step is yours (intrusive/interactive exploitation)".
+
+## The four predictions, fixed before launch
+
+| # | prediction | result | |
+|---|---|---|---|
+| 0 | `experiment_round source=model` ≥ 3 → not confounded | **3** | ✅ **MET** |
+| 1 | `state_changed` proposed > 0 | **0 of 14** | ⛔ **FAILED** |
+| 2 | zero `both_sides_absent` AND ≥ 25 endpoints confirmed | **0 absent, 33 endpoints** | ✅ **MET** |
+| 3 | recall > 1 of 14 | **2 of 14** | ✅ **MET** |
+
+**Recall moved for the first time in seven runs**, and the attribution is READABLE for the
+first time ever — 3 model rounds clears the confound guard, so these misses are statements
+rather than artefacts of a model asked once:
+
+```
+HARNESS-LIMIT 1 · PROPOSED-THEN-DISCARDED 1 · REACHED-NOT-PROPOSED 6 · MEASURED-NOT-CONFIRMED 4
+```
+
+The two confirmations are real and judged:
+- `a_denied_b_allowed` — `/community/api/v2/community/posts` does not authenticate its
+  callers. **That endpoint exists in the grounding only because of GAP #20/#21**; no
+  earlier run could name it.
+- `cross_account_resource` — the dashboard IDOR, the single finding CR1 also reached.
+
+**Prediction 2 is the session's work paying off directly.** Every proposal went to a real,
+fully-prefixed path — `/workshop/api/shop/orders`, `/community/api/v2/coupon/validate-coupon`
+— and **not one experiment was judged against a path that does not exist.** Run 19's best
+experiment died exactly there.
+
+## ⛔ GAP #23 — THE BENCHMARK REPORTED 3 OF 14. THE TRUE NUMBER IS 2.
+
+**Caught before the result was written up, and it would have overstated the first real
+improvement in seven runs by 50%.**
+
+Two experiments were confirmed; three challenges were credited. The extra was challenge 15,
+*"Forge a valid JWT token"*, awarded to:
+
+```
+[cross_account_resource] Cross-account user dashboard IDOR
+    http://172.20.0.12/identity/api/v2/user/dashboard?user_id=35
+```
+
+because `/identity/api/v2/user/dashboard` sat in challenge 15's signature list. **No token
+was forged in that run — `"alg"` appears ZERO times in its ledger.**
+
+This is the file's oldest law one step along. *Coverage is not a finding*; and now: **a
+confirmation on a URL is not a confirmation of every challenge whose signature contains
+that URL.** A challenge whose signatures are URLs that any ordinary authenticated finding
+touches will be credited by any ordinary authenticated finding.
+
+Challenge 15's signatures are narrowed to the token-carrying auth routes
+(`/auth/v4.0/user/login-with-token`, `/auth/v3/check-otp`, `/auth/verify`): forging a JWT
+is proved by a forged token being ACCEPTED, not by reading a dashboard an ordinary session
+can already read. Tests cover both boundaries — the dashboard must still credit challenge
+14, which it genuinely proves, and a real forged-token confirmation must still credit 15.
+
+## What is still open: `state_changed` — and the cause is now narrowed
+
+**0 of 14 proposals**, in a run whose pre-flight produced `state_changed` in 4 of 4 calls
+on this exact model and prompt. So the model can build it and did not, which means the
+difference is the LIVE GROUNDING, precisely as the prediction's own wording anticipated.
+
+Not for want of the cue: 12 of the 33 confirmed endpoints carry `[not-GET]`, and the
+summary explains that marker means *"use another method"*. The next question is why a
+model that proposes state changes against a 5-route synthetic surface does not against a
+33-route real one — surface size, salience, or the read-comparator examples crowding the
+prompt. **That is measurable offline, at $0.00, by replaying the live grounding into the
+probe.** It should be answered before another run is funded.
+
+## Cost, against the series
+
+| | model | spend | recall |
+|---|---|---|---|
+| CR1 run 18 | claude-sonnet-5 | **$3.71** | 1 of 14 |
+| CR1 run 19 | claude-sonnet-5 | died on credits | — |
+| **CR2 run 1** | **deepseek-v4-pro** | **$0.0641** | **2 of 14** |
+
+**58× cheaper than run 18, and it moved the number run 18 could not.** The pre-flight
+discipline is what bought that: `deepseek-v4-flash` was rejected on 1 `state_changed` in 16
+calls for about a cent, before a run was launched.

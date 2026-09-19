@@ -71,8 +71,19 @@ CHALLENGES = [
     (14, "An endpoint that performs no authentication check", "Unauthenticated access",
      ("/identity/api/v2/user/dashboard", "/community/api/v2/community/posts",
       "/workshop/api/shop/products"), None),
+    # NARROWED 2026-09-20 (GAP #23). These were `/identity/api/auth/login` and
+    # `/identity/api/v2/user/dashboard` — URLs that ANY ordinary authenticated finding
+    # touches. CR2 run 1 confirmed two experiments and this file reported THREE
+    # challenges, the extra being a "Cross-account user dashboard IDOR" credited as token
+    # forgery because it read the dashboard. No token was forged in that run: "alg"
+    # appears zero times in its ledger.
+    #
+    # Forging a JWT is proved by a FORGED TOKEN BEING ACCEPTED. The token-carrying auth
+    # routes are the surface where that shows up; reading a dashboard an ordinary session
+    # can already read is not evidence of it.
     (15, "Forge a valid JWT token", "JWT",
-     ("/identity/api/auth/login", "/identity/api/v2/user/dashboard"), None),
+     ("/identity/api/auth/v4.0/user/login-with-token",
+      "/identity/api/auth/v3/check-otp", "/identity/api/auth/verify"), None),
     (16, "Prompt-injection against the chatbot", "LLM",
      ("/chatbot",),
      "NOT DEPLOYED HERE: crapi-chatbot needs a third-party LLM API key this lab does not "
