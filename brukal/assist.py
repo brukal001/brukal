@@ -5935,11 +5935,17 @@ class AssistSession:
                               len(getattr(rr, "body", "") or "")))
 
         out, spent = [], 0
+        # ENDPOINTS CLUSTER BY SERVICE. Alphabetical order put `chatbot` first for every
+        # suffix in a free run — 109 composed probes and 48 of our own rate-limit denials,
+        # most of them spent on a service nothing lives under. Once a mount has answered,
+        # it is the best-evidenced guess for the next suffix, and that evidence comes from
+        # this run rather than from an assumption about how APIs are laid out.
+        hits: dict = {}
         for sfx in list(suffixes)[:cap]:
             sfx = str(sfx).strip("/")
             if not sfx:
                 continue
-            for mount in mounts:
+            for mount in sorted(mounts, key=lambda m: -hits.get(m, 0)):
                 path = f"/{mount.strip('/')}/{sfx}"
                 if path in confirmed:
                     break
@@ -5947,10 +5953,26 @@ class AssistSession:
                     _dec, r = self.browser.run(
                         WebAction(kind="get", url=f"{base}{path}"), agent="recon")
                 except Exception:
-                    break
+                    _dec, r = None, None
                 spent += 1
-                if r is None:
-                    break                      # our gate refused: stop, do not write off
+                # OUR SILENCE IS NOT THE TARGET'S. A gate denial — `hard:web-rate` above
+                # all — a transport failure, or a cage that never ran the request all come
+                # back the same shape a 404 does. GAP #8 paid for this once: run 14's own
+                # limiter denied the dashboard probes and crAPI's whole identity surface
+                # was written off as absent without the target being asked. The first
+                # version of THIS method repeated it — a free local run showed 48
+                # `hard:web-rate` denials, 12 of them on composed probes, each silently
+                # abandoning a suffix while the sweep kept spending the very allowance
+                # that refused it.
+                #
+                # So a refusal STOPS the sweep whole. What is left untried stays
+                # untried, and a later pass can ask: untried is recoverable, written-off
+                # is not.
+                if self._we_refused(_dec, r):
+                    self.note("[surface] endpoint resolution STOPPED — our own gate or "
+                              "limiter refused a probe; the remaining suffixes are left "
+                              "UNTRIED rather than written off as absent")
+                    return out
                 st = getattr(r, "status", None)
                 fp = (st, len(getattr(r, "body", "") or ""))
                 # Proof is a DIFFERENCE from what this mount says about an impossible
@@ -5964,6 +5986,7 @@ class AssistSession:
                         surface.confirmed_routes.append(path)
                         if st == 405:
                             (surface.route_methods or {}).setdefault(path, "not-GET")
+                    hits[mount] = hits.get(mount, 0) + 1
                     self.note(f"[surface] endpoint CONFIRMED by request: {path} "
                               f"(HTTP {st}) — mount and suffix both came from the app's "
                               f"own bundle")
@@ -6010,16 +6033,28 @@ class AssistSession:
         # and nineteen runs saw one. Confirming the mounts the application NAMES, and then
         # the endpoint suffixes it names, turns the other three from invisible into
         # proved. Both steps are request-confirmed and fail closed.
-        if (getattr(surface, "mount_candidates", None)
-                and not getattr(surface, "confirmed_mounts", None)):
-            try:
+        try:
+            if (getattr(surface, "mount_candidates", None)
+                    and not getattr(surface, "confirmed_mounts", None)):
                 surface.confirmed_mounts = self.discover_mounts(
                     sorted(surface.mount_candidates))
-                if surface.confirmed_mounts and getattr(surface, "api_suffixes", None):
-                    self.resolve_mounted_endpoints(sorted(surface.api_suffixes))
-            except Exception as exc:
-                self.note(f"[surface] mount discovery failed and was skipped "
-                          f"({type(exc).__name__}: {str(exc)[:100]})")
+            # EVERY PASS, not just the one that discovered the mounts. A sweep stops the
+            # moment our own limiter refuses it and leaves the rest UNTRIED — which is
+            # only recoverable if something comes back for them. Wiring this inside the
+            # discovery block made "untried" mean "never", and a free run proved it: the
+            # first refusal ended endpoint resolution for the whole engagement, 0
+            # confirmed. Resolution already runs whenever new evidence arrives, so the
+            # remainder is picked up there, a bounded slice at a time.
+            if getattr(surface, "confirmed_mounts", None) and getattr(
+                    surface, "api_suffixes", None):
+                _done = set(getattr(surface, "confirmed_routes", []) or [])
+                _left = [x for x in sorted(surface.api_suffixes)
+                         if not any(r.endswith("/" + x) for r in _done)]
+                if _left:
+                    self.resolve_mounted_endpoints(_left)
+        except Exception as exc:
+            self.note(f"[surface] mount discovery failed and was skipped "
+                      f"({type(exc).__name__}: {str(exc)[:100]})")
 
         fragments = list(getattr(surface, "api_routes", []) or [])
         # YIELD TO THE PRINCIPALS. The full sweep costs a probe per fragment plus a

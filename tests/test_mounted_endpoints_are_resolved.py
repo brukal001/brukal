@@ -174,3 +174,60 @@ def test_a_mount_whose_AUTH_FILTER_answers_everything_confirms_nothing_falsely(t
     assert got == ["/workshop/api/shop/orders"], got
     assert "/identity/api/shop/orders" not in got, (
         "a blanket 401 was read as proof that a path exists")
+
+
+def test_OUR_rate_limiter_must_not_decide_an_endpoint_is_absent(tmp_path):
+    """GAP #8's law, met again inside endpoint resolution — and this time the defect was
+    MINE, found by a free local run (48 `hard:web-rate` denials, 12 on composed probes).
+
+    The first version `break`s out of the mount search when a request comes back with no
+    result. A refusal by our own gate is not the target saying 'no such path': it is our
+    silence. Breaking there abandons that suffix — the suffix is never confirmed, nothing
+    records why, and the sweep carries on spending the very allowance that refused it.
+
+    A refused sweep must STOP and leave the remainder untried, so a later pass can ask.
+    Untried is recoverable; written-off is not."""
+    calls = []
+
+    class _RefusingCage:
+        def run(self, a):
+            calls.append(a.url)
+            if "brukal-absent-" in a.url:
+                return WebResult(status=404, url=a.url, body="x" * 179)
+            raise RuntimeError("web rate limit exceeded")   # our side, not the target
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession(TARGET, ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, _RefusingCage(), audit))
+    s.surface = AttackSurface(seed=f"http://{TARGET}/")
+    s.surface.confirmed_mounts = ["identity", "workshop"]
+
+    got = s.resolve_mounted_endpoints([f"api/x{i}" for i in range(20)])
+    assert got == []
+    composed = [c for c in calls if "brukal-absent-" not in c]
+    assert len(composed) <= 2, (
+        f"the sweep kept spending after OUR side refused it: {len(composed)} probes")
+    assert s.surface.confirmed_routes == []
+
+
+def test_the_mount_that_keeps_answering_is_tried_FIRST(tmp_path):
+    """Cost, measured: a free run spent 109 composed probes and hit our own 120/min
+    limiter 48 times, because mounts were tried in alphabetical order — `chatbot` first,
+    for every single suffix, though nothing lives there.
+
+    Endpoints cluster by service. Once a mount has answered, it is the best guess for the
+    next suffix, and that is evidence from this very run, not a heuristic about APIs."""
+    real = {f"/workshop/api/s{i}" for i in range(6)}
+    s, calls = _session(tmp_path, real)
+    s.surface.confirmed_mounts = ["alpha", "beta", "chatbot", "workshop"]
+    s.resolve_mounted_endpoints([f"api/s{i}" for i in range(6)])
+    composed = [c for c in calls if "brukal-absent-" not in c]
+    # First suffix costs a search; the rest should go straight to workshop.
+    assert len(composed) <= 10, (
+        f"{len(composed)} probes for 6 suffixes — the order never learned", composed)
+    assert len(s.surface.confirmed_routes) == 6

@@ -1840,3 +1840,50 @@ nothing is guessed, and no wordlist is involved. **What this does NOT do is find
 endpoint the bundle never names** — an admin API served to a different client, or a route
 added after the bundle was built. That remains out of reach of reading, and it is the
 honest boundary of this technique.
+
+## The free run earned its keep twice more (2026-09-19)
+
+Wiring the discovery into a real run found two defects that neither the unit tests nor
+the direct-call validation could reach.
+
+**1. I repeated GAP #8, in the code that fixes GAP #21.** The first wiring `break`s out of
+the mount search when a probe comes back with no result. A free run showed **48
+`hard:web-rate` denials, 12 of them on composed probes** — so *our own limiter* was
+silently deciding an endpoint did not exist, exactly the defect GAP #8 exists to name:
+*a silence WE caused is not evidence about the target.* The sweep now calls the existing
+`_we_refused` predicate and STOPS whole, leaving the rest untried, because untried is
+recoverable and written-off is not.
+
+**2. "Untried" meant "never", because nothing came back for it.** The retry only ran
+inside the block that discovers mounts, and that block runs once. The next free run
+confirmed **0 endpoints** — the first refusal ended endpoint resolution for the whole
+engagement. Resolution already re-runs whenever new evidence arrives, so the remaining
+suffixes are now picked up there, a bounded slice per pass.
+
+**3. Alphabetical mount order was pure waste.** `chatbot` was tried first for every
+suffix though nothing lives under it. Endpoints cluster by service, so a mount that has
+answered is now tried first for the next suffix — evidence from the run itself, not an
+assumption about how APIs are laid out.
+
+### The result: a full free run, 16 steps, `$0.0000`
+
+```
+ENDPOINTS CONFIRMED BY REQUEST: 33
+  identity 19 · workshop 11 · community 3
+  /workshop/api/shop/orders            /identity/api/v2/user/videos
+  /workshop/api/shop/orders/return_order   /identity/api/v2/user/reset-password
+  /workshop/api/shop/apply_coupon      /identity/api/v2/vehicle/vehicles
+  /community/api/v2/coupon/validate-coupon  ... (33 total)
+```
+
+Every surface behind the CR1 misses — challenges 1, 3, 7, 8, 9, 10, 13 — is now a
+confirmed route in the grounding, discovered and proved **without one paid model call.**
+
+### ⚠ And a process note worth more than the code
+
+I reported "0 endpoints confirmed" **twice** before finding the real number. Both times I
+had grepped `runs/vault-*/<target>/*.md` while the notes live in
+`agents/strategist/*.md` and `findings.jsonl`. The run had worked; my measurement had not.
+**A null result from a tool you wrote five minutes ago deserves the same scepticism as a
+positive one** — the second "zero" was investigated only because the first had already
+turned out to be a grep error.
