@@ -1887,3 +1887,37 @@ had grepped `runs/vault-*/<target>/*.md` while the notes live in
 **A null result from a tool you wrote five minutes ago deserves the same scepticism as a
 positive one** — the second "zero" was investigated only because the first had already
 turned out to be a grep error.
+
+---
+
+# ⛔ GAP #22 — THE THINKING-BUDGET RETRY EXISTED ONLY FOR ANTHROPIC
+
+**Class: GENUINE GAP, PORTABILITY. Found during an OpenRouter pre-flight for ~$0.01,
+fixed 2026-09-19.**
+
+A reasoning model bills its reasoning tokens against the **same `max_tokens` as the
+answer**, so it can spend the whole allowance thinking and return an empty string — a call
+that succeeds, costs full price, and says nothing. The Anthropic backend has handled this
+since a live run lost its experiments to it, and its comment names the symptom exactly:
+*"the call then succeeds, costs full price, and returns ''"*.
+
+**The OpenAI-compatible backend never got it** — the path EVERY open model uses:
+OpenRouter, DeepSeek, Groq, NVIDIA, Ollama, LM Studio. *A defect fixed at one provider and
+not the others is not fixed*, which is precisely what the portability tally exists to
+catch, and it had been sitting in the one code path this project would need the moment it
+stopped paying frontier prices.
+
+Measured on `deepseek/deepseek-v4-flash` at the experiment path's hardcoded 8000:
+
+| budget | empty replies |
+|---|---|
+| 8,000 | **3 of 8** |
+| 20,000 | **1 of 8** |
+
+Each empty reply was recorded by the run as *"model returned no usable experiment
+(0 chars)"* — which reads as a model with nothing to say about the target.
+
+`_OpenAICompatBackend.propose` now retries ONCE with a 4× budget (ceiling 32,000) when the
+reply is **empty AND was cut off** (`finish_reason == "length"`). An empty reply that
+simply ended is an answer and is not retried: retrying every empty would double the bill on
+every refusal. Same factor, same ceiling and same cost bound as the Anthropic path.

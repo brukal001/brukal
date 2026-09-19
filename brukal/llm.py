@@ -386,7 +386,7 @@ class _OpenAICompatBackend:
             content = (message.get("reasoning_content") or "").strip()
         return content
 
-    def propose(self, system: str, user: str, max_tokens: int) -> str:
+    def _propose_once(self, system: str, user: str, max_tokens: int) -> str:
         body = json.dumps({
             "model": self.model, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system},
@@ -415,6 +415,38 @@ class _OpenAICompatBackend:
         self.last_stop_reason = choice.get("finish_reason") or ""
         message = choice.get("message") or {}
         return _strip_think(self._message_text(message))
+
+    # The same COST bound as the Anthropic backend's, and for the same reason.
+    _THINKING_RETRY_FACTOR = 4
+    _THINKING_RETRY_CEILING = 32_000
+
+    def propose(self, system: str, user: str, max_tokens: int) -> str:
+        """A reply, retried ONCE when the allowance was spent entirely on reasoning.
+
+        THE PORTABILITY DEFECT THIS CLOSES. The Anthropic backend has handled this since
+        a live run lost its experiments to it; the OpenAI-compatible backend — the path
+        EVERY open model uses (OpenRouter, DeepSeek, Groq, NVIDIA, Ollama, LM Studio) —
+        never got it. A defect fixed at one provider and not the others is not fixed, and
+        that is exactly what the portability tally exists to catch.
+
+        MEASURED, 2026-09-19: `deepseek/deepseek-v4-flash` emits `reasoning` tokens billed
+        against the same `max_tokens` as the answer. At the experiment path's hardcoded
+        8000, **3 of 8 replies came back as 0 characters** — the call succeeded, cost full
+        price, and returned nothing, which the run then recorded as "model returned no
+        usable experiment (0 chars)". That reads as a model with nothing to say about the
+        target. It had plenty to say; it never reached the part where it says it.
+
+        Retried only when the reply is EMPTY and was CUT OFF (`finish_reason == "length"`).
+        An empty reply that simply ended is an answer, and retrying it would double the
+        bill on every refusal."""
+        text = self._propose_once(system, user, max_tokens)
+        if text or self.last_stop_reason != "length":
+            return text
+        bigger = min(max_tokens * self._THINKING_RETRY_FACTOR,
+                     self._THINKING_RETRY_CEILING)
+        if bigger <= max_tokens:
+            return text
+        return self._propose_once(system, user, bigger)
 
 
 class LLMClient:
