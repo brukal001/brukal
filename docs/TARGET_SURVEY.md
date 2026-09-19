@@ -1370,6 +1370,41 @@ the model having nothing to say.
 round, the sample is too small to distinguish permitted from forbidden. The fix is still
 correct and still necessary — it is simply not measurable by a run shaped like this one.
 
+## THE FIX (2026-09-19, same session)
+
+**Recurring model rounds.** `GroundedLoop` gains `hypothesis_every=8` and
+`max_hypothesis_rounds=6`. REFLEX 0b still owns round ONE — it must, because it orders
+principal establishment and surface confirmation ahead of the first experiment, and a
+cross-account experiment proposed before the second principal exists is aimed at nobody.
+Rounds after that need none of that setup (the surface only grows), so they fire on step
+cadence from the top of the turn loop, right after the derived drain.
+
+Measured on a run shaped like run 18: **1 model round → 6.**
+
+```
+70-step run, default cadence -> 6 model experiment round(s)
+  (run 18 got 1; ceiling is 6, cadence every 8 steps)
+```
+
+**Bounded on purpose.** Each round is a model call plus a handful of gated requests, so
+"ask more" without a ceiling is just a different defect. The cost and step budgets are
+still checked at the top of every turn and this never bypasses them. Expected added
+spend for a 70-step run: five extra propose/refine pairs, roughly **$0.30–0.50**.
+
+**Cap truncation is now visible.** `parse()` used to `break` at `_MAX_HYPOTHESES` and the
+entries after the cut were never even reached by the drop path — they vanished more
+quietly than a malformed proposal. They are now recorded as `cap_truncated` *with their
+comparator*, which matters precisely because the A/B shows the model placing
+`state_changed` in the last slot. **The cap itself was deliberately NOT raised**: tuning
+6 upward because the measured comparator happens to land at 6 would be fitting the
+harness to the metric. If run 19 shows `cap_truncated` eating `state_changed`, that is
+then an evidenced reason to change it — which is the difference between a measurement and
+a nudge.
+
+Tests: `test_the_model_is_asked_more_than_once.py` (with a positive control — the two
+substantive tests were confirmed to FAIL with the cadence disabled, since "asked once"
+satisfies a weak assertion), `test_dropped_proposals_are_recorded.py`.
+
 ## The standing lesson
 
 **Before concluding a capability is absent, verify the component was ASKED.** Four

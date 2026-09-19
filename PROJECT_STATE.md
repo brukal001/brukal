@@ -959,9 +959,14 @@ like this one**; the fix remains correct and necessary.
 That question is now ANSWERED (7 of 8, $0.31): the model constructs `state_changed`
 readily. The work is in the harness.
 
-1. **GAP #18 first.** Ask the model more than once per engagement, and stop the
-   derived-only drain from standing in for a model round. Raise or reorder
-   `_MAX_HYPOTHESES` so the last slot is not where the measured comparator dies.
+1. ~~**GAP #18 first.**~~ **DONE this session.** `GroundedLoop(hypothesis_every=8,
+   max_hypothesis_rounds=6)`: REFLEX 0b keeps round one (it orders principals and surface
+   ahead of it); later rounds fire on step cadence from the top of the turn loop.
+   Measured on a run shaped like run 18: **1 model round → 6.** Cap truncation is now
+   recorded as `cap_truncated` with its comparator. `_MAX_HYPOTHESES` was deliberately
+   NOT raised — tuning it because the measured comparator lands at 6 fits the harness to
+   the metric; if run 19 shows `cap_truncated` eating `state_changed`, that is then
+   evidence to change it.
 2. **GAP #17 — DONE this session.** `parse(..., drops=[])` records every discarded
    proposal with its reason and comparator; `_record_proposal_drops` puts them in the
    ledger as `experiment_proposal_dropped`. ⚠️ **Cap-truncated entries are still invisible
@@ -970,8 +975,16 @@ readily. The work is in the harness.
    attempted"; run 19's number is uninterpretable until it does.
 4. GAP #13 (~8 wasted requests) is cosmetic beside these.
 
-**Do not spend another $4 until 1 and 3 are done.** Run 18 cost $3.71 to measure a
-pipeline that asked the model once.
+**Run 19 is now worth funding on 1, but 3 still governs how its number may be READ.**
+Run 18 cost $3.71 to measure a pipeline that asked the model once; run 19 asks six times.
+Expect roughly **$0.30–0.50** more for the five extra propose/refine pairs.
+
+**Run 19's predictions must be fixed in `_model_note` before launch, as always.** The
+honest set, given what is now known: (1) `state_changed` PROPOSED > 0 — the offline A/B
+says 7 of 8 calls produce one, so with six rounds this should be near-certain, and if it
+still fails the cause is in the live grounding, not the model; (2) `destructive-experiment`
+escalations > 0 follows from (1); (3) recall > 1 of 14 remains the real one and is still
+not implied by either.
 
 ## Standing lessons earned this session
 

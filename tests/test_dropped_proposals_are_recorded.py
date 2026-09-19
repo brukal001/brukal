@@ -68,3 +68,29 @@ def test_drops_are_opt_in_so_every_existing_caller_is_unaffected():
     parse() RETURNS, only what it can additionally report."""
     assert H.parse(_one(comparator="totally_made_up")) == []
     assert len(H.parse(_one())) == 1
+
+
+def test_a_proposal_cut_by_the_MAX_HYPOTHESES_cap_is_recorded(tmp_path=None):
+    """GAP #18, second half. `parse()` `break`s at `_MAX_HYPOTHESES` and the entries
+    after the cut were not even reached by the drop path -- they vanished more quietly
+    than a malformed one.
+
+    This is not hypothetical: an offline A/B showed the model placing `state_changed`
+    LAST (index 5 of 6) in three of four replies, so the comparator run 18 was measuring
+    is exactly the one the cap eats first."""
+    doc = []
+    for i in range(H._MAX_HYPOTHESES + 3):
+        doc.append(dict(title=f"t{i}", severity="low",
+                        comparator=("state_changed" if i >= H._MAX_HYPOTHESES
+                                    else "unauthenticated_exposure"),
+                        control={"url": f"http://h/{i}", "method": "GET"},
+                        variant={"url": f"http://h/{i}?x=1", "method": "GET"},
+                        rationale="r"))
+    drops = []
+    got = H.parse(json.dumps(doc), drops=drops)
+    assert len(got) == H._MAX_HYPOTHESES
+    cut = [d for d in drops if d["reason"] == "cap_truncated"]
+    assert len(cut) == 3, f"{len(cut)} recorded, 3 were cut"
+    assert {d["comparator"] for d in cut} == {"state_changed"}, (
+        "the comparator that was cut must survive its own truncation -- that is the "
+        "whole question a later run asks")

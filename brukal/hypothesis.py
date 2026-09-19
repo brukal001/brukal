@@ -966,7 +966,17 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
                       if isinstance(item, dict) else ""),
         })
 
-    for item in doc[:max_hypotheses * 3]:
+    _window = doc[:max_hypotheses * 3]
+    for _idx, item in enumerate(_window):
+        if len(out) >= max_hypotheses:
+            # THE CAP, and everything after it. These entries were never examined, so
+            # without this they vanished more quietly than a malformed one: no drop, no
+            # ledger row, nothing. An offline A/B showed the model placing
+            # `state_changed` LAST in three of four replies, which makes the cap the
+            # first thing to eat the comparator a run is trying to measure (GAP #18).
+            for _rest in _window[_idx:]:
+                _drop("cap_truncated", _rest)
+            break
         if not isinstance(item, dict):
             _drop("not_an_object", item)
             continue
@@ -1002,8 +1012,6 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
                  if r is not None]
         out.append(Hypothesis(title, severity, comparator, control, variant,
                               str(item.get("rationale", ""))[:300], setup, act))
-        if len(out) >= max_hypotheses:
-            break
     return out
 
 

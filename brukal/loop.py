@@ -177,7 +177,8 @@ class GroundedLoop:
 
     def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 4,
                  max_similar: int = 4, max_coach: int = 3, observer=None, verifier=None,
-                 agents=None, trust=None, kill=None, budget=None, on_checkpoint=None):
+                 agents=None, trust=None, kill=None, budget=None, on_checkpoint=None,
+                 hypothesis_every: int = 8, max_hypothesis_rounds: int = 6):
         self.session = session
         self._verifier = verifier             # optional Verifier: confirms 'solved'
         # Phase 3 robustness: a hard kill switch (stop now, close sessions), a per-
@@ -211,6 +212,17 @@ class GroundedLoop:
         self._probe_queue = None              # passive vuln probes to drain after the crawl
         self._confirmed_done = False          # active SQLi/XSS confirmation runs once
         self._domain_enum_queue = None        # proactive AD/cloud enumeration (drains once)
+        # GAP #18. REFLEX 0b fires ONCE, so for eighteen runs the model was asked for
+        # experiments exactly one time per engagement while the derived drain — which
+        # costs no model call — ran every turn. CR1 run 18 spent $3.71 and 70 steps on a
+        # single model round, proposed no `state_changed` at all, and the absence was
+        # written up as the MODEL's limit; an offline A/B then had the same prompt
+        # proposing one in 7 of 8 calls. The imagination was never missing. It was asked
+        # once.
+        self.hypothesis_every = max(1, int(hypothesis_every))
+        self.max_hypothesis_rounds = max(1, int(max_hypothesis_rounds))
+        self._hypothesis_rounds = 0           # MODEL rounds taken (the drain is not one)
+        self._last_hypothesis_at = 0          # step index of the last model round
 
     def _seed_principals(self) -> None:
         """Run the target's own onboarding for each principal we hold, ONCE.
@@ -296,6 +308,36 @@ class GroundedLoop:
             if note:
                 note("[experiment] second principal NOT established — no signup door on "
                      "this target; cross-account experiments will be recorded NOT RUN")
+
+    def _maybe_ask_the_model_for_experiments(self) -> None:
+        """Ask the model for experiments AGAIN, on a bounded cadence (GAP #18).
+
+        REFLEX 0b establishes the principals, confirms the surface and then asks once —
+        correct ordering, and for eighteen runs also the only time the model was asked in
+        an entire engagement. Everything after it was the derived drain, which by design
+        makes no model call. Run 18 therefore measured a single model round over 70 steps
+        and 100 model calls' worth of other work, found no `state_changed` proposal in it,
+        and the write-up called that the model's limit. It was the pipeline's.
+
+        The first round still belongs to REFLEX 0b: it must not run before the principals
+        exist, or every cross-account experiment is proposed against an account that is
+        not there. Subsequent rounds need none of that setup — the surface only grows —
+        so they are gated on step cadence and a hard round ceiling instead.
+
+        BOUNDED ON PURPOSE. Each round is a model call plus a handful of gated requests,
+        so 'ask more' becomes its own defect without a ceiling. Cost and step budgets are
+        still checked at the top of every turn; this never bypasses them."""
+        if not self._confirmed_done:
+            return                            # round one is REFLEX 0b's, with its ordering
+        if self._hypothesis_rounds >= self.max_hypothesis_rounds:
+            return
+        if (len(self.steps) - self._last_hypothesis_at) < self.hypothesis_every:
+            return
+        if not self.session.probeable_surface():
+            return                            # nothing to aim an experiment at yet
+        self._hypothesis_rounds += 1
+        self._last_hypothesis_at = len(self.steps)
+        self.session.run_hypotheses()
 
     def _record_swallowed_experiment_error(self, exc: Exception) -> None:
         """Say that the experiment reflex failed, and what failed it.
@@ -510,6 +552,14 @@ class GroundedLoop:
                     self.session.run_hypotheses(derived_only=True)
             except Exception as exc:
                 self._record_swallowed_experiment_error(exc)
+            # ASK THE MODEL AGAIN. The drain above is deliberately free of model calls,
+            # and for eighteen runs it was the ONLY experiment work most turns did — the
+            # model's own round fired once, from REFLEX 0b, and never again. See
+            # `_maybe_ask_the_model_for_experiments`.
+            try:
+                self._maybe_ask_the_model_for_experiments()
+            except Exception as exc:
+                self._record_swallowed_experiment_error(exc)
             # RE-RESOLVE when the agent's exploration has taught us new ground. A path
             # that answered is evidence about where this application mounts things, and
             # run 6 saw a third of crAPI because the only such evidence was the login URL.
@@ -632,6 +682,11 @@ class GroundedLoop:
                 # sweep and should not compete with it.
                 try:
                     n += self.session.run_hypotheses()
+                    # Round ONE. The cadence below measures from here, so REFLEX 0b keeps
+                    # its ordering guarantee (principals and surface confirmed first) and
+                    # is no longer the only round there is.
+                    self._hypothesis_rounds = 1
+                    self._last_hypothesis_at = len(self.steps)
                 except Exception as exc:
                     # The SIBLING of `run_hypotheses`' own swallow, one layer out, on the
                     # same call. That one now records what it caught; this one guards
