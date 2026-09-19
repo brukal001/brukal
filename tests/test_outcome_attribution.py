@@ -45,10 +45,13 @@ ALL_TERMINALS = tuple(_REFUSED_BEFORE_DISPATCH) + tuple(_DISPATCHED_NOT_RESOLVED
 
 def test_the_recorded_terminals_are_all_attributed_and_this_test_notices_a_new_one():
     """A terminal added without an attribution is the failure mode this guards — and it
-    has already caught one: `refused_by_operator` was added on 2026-09-18 when destructive
+    has already caught TWO: `refused_by_operator` was added on 2026-09-18 when destructive
     experiments started escalating to the operator instead of being silently skipped, and
-    this test failed until the attribution table was updated with it."""
-    assert len(ALL_TERMINALS) == 11, ALL_TERMINALS
+    `both_sides_absent` on 2026-09-19 when a 404/404 comparison stopped being filed as a
+    measurement. Each failed this count until the attribution table was updated — which
+    is the whole point: a terminal must not enter the vocabulary without someone deciding,
+    in writing, whose limit it represents."""
+    assert len(ALL_TERMINALS) == 12, ALL_TERMINALS
 
 
 @pytest.mark.parametrize("outcome", ALL_TERMINALS)

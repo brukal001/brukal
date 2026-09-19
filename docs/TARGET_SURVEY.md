@@ -1543,3 +1543,72 @@ designed to prevent it.
 1. **Fix GAP #13.** It just destroyed the series' best experiment.
 2. Re-state prediction 2 against what it can actually test, or drop it.
 3. Credits.
+
+---
+
+# ★★★ GAP #19 — A COMPARISON OF TWO ABSENT PATHS WAS FILED AS EVIDENCE ABOUT THE TARGET
+
+**Class: GENUINE GAP, and the one that destroyed run 19's result. MEASURED from run 19's
+ledger, FIXED 2026-09-19, at $0.00.**
+
+Run 19's model built the experiment four sessions had been chasing — `state_changed`,
+control and variant the SAME read, `as: second` on both sides. It was aimed at
+`http://172.20.0.12/orders/40`; crAPI mounts orders at `/workshop/api/shop/orders/40`:
+
+```
+result: .../orders/40  status 404  role control
+result: .../orders/40  status 404  role variant
+OUTCOME: not_confirmed, stage judged, attribution MEASURED
+```
+
+`MEASURED` means *"the comparator read both answers and the claim did not hold"* —
+**evidence about the TARGET**. Two 404s from a path that does not exist are evidence about
+our aim. The best experiment the series has produced was filed as a fact about crAPI.
+
+## Why repair could not save it
+
+From run 19's own ledger, before the proposal at row 312 of 666:
+
+```
+NO request proving /workshop/api/shop/orders before the proposal
+confirmed_route rows: 0        proposal_repaired: 0
+```
+
+**The mount had never been proven, so repair had no prefix to apply.** `align_mount_prefixes`
+learns a prefix by aligning mined fragments against paths that ANSWERED, and the only
+answering anchor was the operator-supplied login URL — which teaches `/identity/api` and
+nothing else. On a multi-service gateway (crAPI has three: `/identity/api`,
+`/workshop/api/shop`, `/community/api/v2`) **only the prefix of the service you logged
+into is learnable that way.** The model was aimed at the only path it had been shown.
+
+## The fix: the same floor the 5xx rule already sets, one status class over
+
+The 5xx floor already says *"a difference between two server errors is not evidence about
+the application"*. A difference between two **absences** is not evidence either:
+
+```python
+if (_as or 0) == 404 and (_bs or 0) == 404:
+    self._record_experiment_outcome(h, "both_sides_absent")
+```
+
+New terminal `both_sides_absent`, attributed **HARNESS-LIMIT** — ours, not the target's:
+the application never had the chance to behave. Run 19's experiment would now be recorded
+as our aim being wrong, which is what it was, and would appear in the recall report as a
+harness limit rather than a fact about crAPI.
+
+`test_outcome_attribution.py`'s terminal count caught the addition and had to be updated
+deliberately — its second catch, and exactly what it is for: **a terminal must not enter
+the vocabulary without someone deciding, in writing, whose limit it represents.**
+
+## The test that first passed for the wrong reason
+
+The first version of this test asserted only `attribution("both_sides_absent") ==
+"HARNESS-LIMIT"` — and passed **before the fix existed**, because `attribution()` falls
+back to `HARNESS-LIMIT` for any unknown string. It asserted nothing. The real test drives
+a 404/404 experiment through `_run_one_round` and reads the recorded outcome, with a
+positive control (a real experiment on an existing path still judges) and a boundary (a
+ONE-sided 404 is often the whole finding and must survive the floor).
+
+**Same lesson, third time in this file:** GAP #11's boundary test passed through a
+short-circuit, GAP #12's fixture could not express the defect, and this one asserted a
+default. *A test must be seen to fail for the reason it names.*

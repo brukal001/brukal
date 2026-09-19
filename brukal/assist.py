@@ -5059,6 +5059,27 @@ class AssistSession:
             # getattr, not attribute access: either side is None when the gate or the
             # rate limiter refused that request, and a blocked pair is handled below.
             _as, _bs = getattr(a, "status", None), getattr(b, "status", None)
+            # THE SAME FLOOR, ONE STATUS CLASS OVER. When BOTH sides are 404 the path
+            # does not exist, so the comparison is between two absences and says nothing
+            # about the application. CR1 run 19 produced the series' first correctly
+            # shaped `state_changed` experiment -- control and variant the same read, as
+            # the second principal -- and aimed it at `/orders/40` because crAPI's
+            # `/workshop/api/shop` mount had not been proven when the proposal was made,
+            # so repair had no prefix to apply. Both sides 404'd and it was recorded
+            # `not_confirmed / MEASURED`: a fact about crAPI. It was a fact about our aim.
+            #
+            # Attributed to the HARNESS, not the model: run 19's ledger shows nothing had
+            # ever answered under that mount, so the prefix was not learnable at proposal
+            # time. The model aimed at the only path it had been shown.
+            if (_as or 0) == 404 and (_bs or 0) == 404:
+                self._record_experiment_outcome(h, "both_sides_absent")
+                self.note(f"[experiment] BOTH SIDES ABSENT (404/404), not judged: "
+                          f"{h.title} — the path does not exist on this target, so the "
+                          f"comparison is between two absences and measures nothing")
+                outcomes.append(f"BOTH SIDES ABSENT (experiment NOT judged, this is not "
+                                f"a result) {h.title}: control and variant both HTTP 404 "
+                                f"— fix the URL, the mount prefix is probably missing")
+                continue
             if (_as or 0) >= 500 and (_bs or 0) >= 500:
                 self._record_experiment_outcome(h, "both_sides_failed")
                 self.note(f"[experiment] BOTH SIDES FAILED ({_as}/{_bs}), not "

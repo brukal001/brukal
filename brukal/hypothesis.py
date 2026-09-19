@@ -1460,6 +1460,7 @@ _REFUSED_BEFORE_DISPATCH = (
 )
 _DISPATCHED_NOT_RESOLVED = (
     "both_sides_failed",        # two 5xx — the application broke, it did not behave
+    "both_sides_absent",        # two 404s — the path does not exist; we aimed wrong
     "no_answer",                # the gate or the limiter refused; nothing was observed
 )
 _JUDGED = ("not_confirmed", "confirmed")
@@ -1488,6 +1489,10 @@ _ATTRIBUTION = {
     # The target answered, and its answer is why there is no measurement.
     "setup_failed": "TARGET-REFUSED",       # the setup request went out and was refused
     "both_sides_failed": "TARGET-REFUSED",  # two 5xx: it broke rather than behaved
+    # Two 404s are OURS, not the target's: the path does not exist, so the application
+    # never had the chance to behave. Run 19 filed exactly this as MEASURED and it read
+    # as a fact about crAPI (see test_two_404s_are_not_a_measurement.py).
+    "both_sides_absent": "HARNESS-LIMIT",
     # Ours. The request never went out, or went out and we could not use what came back.
     "errored": "HARNESS-LIMIT",             # never reached the target
     "no_answer": "HARNESS-LIMIT",           # our gate or our limiter refused it
