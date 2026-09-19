@@ -5810,6 +5810,70 @@ class AssistSession:
             return False                      # no control, no judgement (fail-closed)
         return int(status) != int(sig)
 
+    def discover_mounts(self, candidates: list, cap: int = 12) -> list:
+        """CONFIRM which candidate segments the gateway actually routes to a backend.
+
+        `webmap.extract_mount_candidates` reads service names out of the application's
+        own bundle — crAPI ships `og="identity/", ig="workshop/", ag="chatbot/",
+        lg="community/"` — but a name in a bundle is a LEAD. Nothing derived is acted on
+        until one gated request has confirmed it, which is the same law
+        `resolve_mined_routes` follows for compositions.
+
+        THE EVIDENCE (live crAPI, 2026-09-19): a gateway that routes a prefix to a service
+        answers an impossible path under it DIFFERENTLY from how it answers an impossible
+        path at the root, because a different program produced the error.
+
+            404 / 159 bytes   /zzz             <- the front door itself
+            404 / 179 bytes   /workshop/zzz    <- the workshop service
+            404 /  19 bytes   /community/zzz   <- the community service
+            401 /  49 bytes   /identity/zzz    <- identity's auth filter
+
+        One baseline request plus one per candidate, capped. FAIL-CLOSED: on a host where
+        every unknown path answers the same — a soft-404 SPA, a catch-all gateway —
+        nothing differs from the baseline and NOTHING is confirmed, because inventing
+        mounts there would put a fabricated surface in front of the model.
+
+        Why this is not a wordlist: every segment tested came out of the target's own
+        code, and every one kept was proved by the target's own answer."""
+        from .web import WebAction
+        if self.browser is None:
+            return []
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        nonce = "brukal-absent-" + uuid.uuid4().hex[:10]
+
+        def _fingerprint(url):
+            try:
+                # `run` returns (Decision, WebResult | None) — the result is None when
+                # our own gate or limiter refused, which is not evidence about routing.
+                # ROLE MATTERS: mount discovery is reconnaissance, and `probe` does not
+                # hold the RECON capability — the gate refuses it, `run` returns no
+                # result, and discovery would silently confirm nothing forever.
+                _dec, r = self.browser.run(WebAction(kind="get", url=url), agent="recon")
+            except Exception:
+                return None
+            if r is None:
+                return None
+            st = getattr(r, "status", None)
+            if st is None:
+                return None                   # our gate or limiter refused: not evidence
+            return (st, len(getattr(r, "body", "") or ""))
+
+        door = _fingerprint(f"{base}/{nonce}")
+        if door is None:
+            return []
+        out = []
+        for seg in list(candidates)[:cap]:
+            seg = str(seg).strip("/")
+            if not seg:
+                continue
+            fp = _fingerprint(f"{base}/{seg}/{nonce}")
+            if fp is not None and fp != door:
+                out.append(seg)
+                self.note(f"[surface] mount CONFIRMED by request: /{seg} "
+                          f"(answers {fp[0]}/{fp[1]}B where the front door answers "
+                          f"{door[0]}/{door[1]}B)")
+        return out
+
     def resolve_mined_routes(self, cap: int = 40) -> list:
         """Resolve mined route FRAGMENTS to paths this target actually answers.
 

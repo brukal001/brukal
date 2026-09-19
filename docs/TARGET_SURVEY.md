@@ -1688,3 +1688,82 @@ and all of it was bought at ~$4 a time.
 
 **Standing rule from here: no paid run until a free run shows experiments landing on paths
 that exist.**
+
+---
+
+# ★★★ GAP #20 — THE MOUNT PREFIX WAS IN THE BUNDLE ALL ALONG, AS A SEPARATE CONSTANT
+
+**Class: GENUINE GAP, and the missing half of GAPs #10/#11/#13/#19. FOUND AND FIXED
+2026-09-19 at $0.00 — no model call, no paid run.**
+
+GAP #13's re-diagnosis established that crAPI's bundle holds `/orders`, `/dashboard`,
+`/signup` — router paths with no service prefix — and concluded the prefix "was never
+there". **That was half right.** Grepping the bundle for the mount NAMES rather than for
+path-shaped text:
+
+```js
+og="identity/", ig="workshop/", ag="chatbot/", lg="community/"
+```
+
+The SPA keeps each service mount in its **own constant** and concatenates it with a route
+at runtime. A regex hunting path-SHAPED strings cannot see a bare segment, so for nineteen
+runs the only learnable prefix was the one implied by the operator-supplied login URL —
+`/identity/api` — and every experiment aimed at an order or a coupon went to a path that
+does not exist.
+
+## The two halves, and neither guesses
+
+**1. Read the names the application itself uses.** `webmap.extract_mount_candidates`
+takes quoted bare segments (`"workshop/"`), excludes obvious non-mounts (`http`, `static`,
+`assets`, …) and is capped at 24 — a bundle is megabytes of quoted strings and an
+unbounded extractor would be a scan rather than a read.
+
+**2. CONFIRM each by request.** `AssistSession.discover_mounts` is the same law
+`resolve_mined_routes` already follows: nothing derived is used until the target has
+answered for it. A gateway that routes a prefix to a backend answers an impossible path
+under it **differently** from an impossible path at the root, because a different program
+wrote the error. Measured live:
+
+```
+404 / 159 B   /zzz             <- the front door itself
+404 / 179 B   /workshop/zzz    <- the workshop service answered
+404 /  19 B   /community/zzz   <- the community service answered
+401 /  49 B   /identity/zzz    <- identity's auth filter answered
+```
+
+One baseline request plus one per candidate. **Fail-closed:** on a soft-404 SPA or a
+catch-all gateway nothing differs from the baseline and NOTHING is confirmed, because
+inventing mounts there would put a fabricated surface in front of the model.
+
+### Measured end to end against the live container, $0.00
+
+```
+bundle bytes: 1,655,900
+candidates mined from the LIVE bundle: ['identity', 'workshop', 'chatbot', 'community']
+CONFIRMED by request:                  ['identity', 'workshop', 'chatbot', 'community']
+```
+
+Exactly the four real services, **zero noise**, from 1.6 MB of minified JavaScript.
+
+The confirmed mounts now lead the grounding, stated as the fact that makes an unprefixed
+fragment actionable: *"the API lives UNDER one of these — an unprefixed path below is not
+an endpoint on its own."*
+
+## The gate caught the bug this would otherwise have hidden
+
+The first version probed with `agent="probe"`, which does **not** hold the RECON
+capability. `check_web` refused every request, `run` returned no result, and
+`discover_mounts` would have confirmed nothing, forever, in silence — the same
+silent-no-op shape as the `audit.record` bug earlier this session. The unit test caught it
+because it asserts the REQUEST COUNT, not just the return value. **Two of the four tests
+were passing vacuously on that same emptiness** until the count assertion exposed it.
+
+## The honest remaining limit
+
+**A confirmed mount is not a full API prefix.** `/workshop` is proved; crAPI's orders live
+at `/workshop/api/shop/orders`, and the `api/shop` infix is still unknown. What this
+delivers is the missing ANCHOR: composition and alignment now have a real, confirmed
+service root to work from instead of only `/identity/api`, and the model is told the
+application has services at all. **Turning a confirmed mount into a confirmed endpoint is
+the next piece of work, and it is also free** — and it must not be done by guessing
+infixes from a wordlist, which is the failure this whole gap is made of.

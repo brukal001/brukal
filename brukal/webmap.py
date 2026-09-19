@@ -450,6 +450,47 @@ def extract_path_candidates(text: str, cap: int = 200) -> set:
     return out
 
 
+# A SEGMENT the application concatenates onto a path, rather than a path itself. crAPI's
+# bundle holds its service mounts this way — og="identity/", ig="workshop/",
+# ag="chatbot/", lg="community/" — and joins them to route strings at runtime, so a regex
+# looking for path-SHAPED text cannot see them. That invisibility is why every CR1 run
+# could learn only the prefix implied by the operator-supplied login URL, and why run 19's
+# best experiment was aimed at `/orders/40` instead of `/workshop/api/shop/orders/40`.
+#
+# Quoted, no leading slash, exactly one trailing slash, and a plausible service-name shape.
+_MOUNT_CANDIDATE_RE = re.compile(r"""["']([a-z][a-z0-9_-]{1,30})/["']""", re.I)
+
+# Segments that are never a service mount, and would each cost a confirmation request.
+_NOT_A_MOUNT = frozenset({
+    "http", "https", "www", "static", "assets", "img", "images", "css", "js", "fonts",
+    "public", "dist", "build", "node_modules", "src", "tmp", "temp",
+})
+
+
+def extract_mount_candidates(text: str, max_candidates: int = 24) -> list[str]:
+    """Bare service-mount segments the application names in its own code.
+
+    NOT a wordlist and NOT a guess: these are strings the target ships. Every candidate
+    is still CONFIRMED by a request before anything is composed under it — see
+    `AssistSession.discover_mounts`, which compares a candidate's answer for a path that
+    cannot exist against the FRONT DOOR's answer for one. A gateway routes `/workshop/...`
+    to a service whose 404 differs from its own; that difference is the evidence.
+
+    Bounded, because a minified bundle is megabytes of quoted strings and an unbounded
+    extractor is a scan rather than a read."""
+    out, seen = [], set()
+    for m in _MOUNT_CANDIDATE_RE.finditer(text or ""):
+        seg = m.group(1)
+        low = seg.lower()
+        if low in _NOT_A_MOUNT or low in seen or len(low) < 2:
+            continue
+        seen.add(low)
+        out.append(low)
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
 def extract_api_routes(text: str, max_routes: int = 40) -> list[str]:
     """Pull distinct API-ish route paths out of a fetched body (JS bundle or HTML).
     Deterministic regex over UNTRUSTED text — the paths become leads in the site map,
@@ -523,6 +564,12 @@ class AttackSurface:
     params: dict = field(default_factory=dict)       # base-URL -> set(param names)
     techs: set = field(default_factory=set)          # tech fingerprints noticed
     api_routes: list = field(default_factory=list)   # API route paths mined from JS/HTML
+    # Service mounts NAMED by the application's own bundle and CONFIRMED by request —
+    # see `extract_mount_candidates` and `AssistSession.discover_mounts`. crAPI ships
+    # og="identity/", ig="workshop/", lg="community/" and joins them to routes at
+    # runtime, which is why path-shaped mining never saw them and why every run before
+    # this could learn only the prefix implied by the operator's login URL.
+    confirmed_mounts: list = field(default_factory=list)
     protected_routes: list = field(default_factory=list)  # (METHOD, path) the spec says need auth
     write_operations: list = field(default_factory=list)  # (METHOD, templated path) that mutate state
     privileged_fields: list = field(default_factory=list)  # body fields a client shouldn't set
@@ -627,6 +674,15 @@ class AttackSurface:
                     paths.append(path)
             lines.append("  pages fetched (VERIFIED reachable): "
                          + ", ".join(sorted(paths)[:24]))
+        if getattr(self, "confirmed_mounts", None):
+            # Stated BEFORE the route lists, because it is the fact that makes an
+            # unprefixed fragment actionable: `/orders` is not an endpoint, but this
+            # application routes `/workshop/...` to a service, and the endpoint is under
+            # one of these.
+            lines.append("  service mounts NAMED by this app's own bundle and CONFIRMED "
+                         "by request (the API lives UNDER one of these — an unprefixed "
+                         "path below is not an endpoint on its own): "
+                         + ", ".join("/" + m for m in self.confirmed_mounts[:8]))
         if self.confirmed_routes:
             # Resolved against a learned mount prefix and CONFIRMED by a request. The
             # label is earned here, not asserted: each of these answered something other
