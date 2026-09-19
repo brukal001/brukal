@@ -1000,3 +1000,51 @@ not implied by either.
   The GAP #15 verdict took one script and turned an asymmetry into a proven fail-open.
 - **Check whether the prior run already did the thing you are calling new.** The "first
   state-changing request" claim survived twenty minutes and one `grep -c` across ledgers.
+
+
+---
+
+# SESSION HANDOFF — 2026-09-19 (run 19 aborted on credits)
+
+## ⛔ BLOCKED: the Anthropic API credit balance is exhausted
+
+Run 19 died at **step 15 of 70**:
+
+    Error code: 400 — 'Your credit balance is too low to access the Anthropic API.'
+
+Nothing in the repo can clear this. **Add credits, then relaunch run 19 with the SAME
+scope** — `scope.crapi.json` is already at `brukal-crapi-CR1r19` and its predictions were
+fixed before the first launch, so they still stand. Use fresh output paths
+(`runs/audit_cr1t.jsonl`, `runs/vault-cr1t`); `cr1s` holds the truncated ledger and is
+worth keeping.
+
+## What the 15 steps established anyway
+
+- ✅ **Prediction 1 MET — and it is the result of the session.** The model proposed a
+  `state_changed` experiment, the first in the CR1 series, and its SHAPE IS CORRECT:
+  control and variant are the same read (`as: second` both sides), change in setup/act.
+  Run 18's handoff said it *"has never once"* done this. The GAP #18 cadence fix is what
+  made the round happen.
+- ◑ **Prediction 0 on track:** 2 `experiment_round source=model` rows in 15 steps. The
+  instrumentation works; the ≥3 threshold needs the full run.
+- ⛔ **Prediction 2 not met, and ITS REASONING WAS WRONG — my error.** I claimed it
+  followed from (1). It does not: `_is_destructive_request` deliberately excludes POST,
+  and this experiment's act is `POST /return_order`. A `state_changed` whose act is a POST
+  MUST NOT escalate. Re-state it against what it can test, or drop it.
+- ▫ **Prediction 3 unmeasurable.** No recall number may be quoted from this run.
+
+## ★★★ The top priority for run 20: GAP #13
+
+The model's first correct state-changing experiment was judged against
+`http://172.20.0.12/orders/40` — **unprefixed**, so both control and variant 404'd, and
+the outcome was recorded `not_confirmed / MEASURED`, i.e. as evidence about the target.
+It is nothing of the kind. crAPI mounts orders at `/workshop/api/shop/orders/40`.
+
+GAP #13 was held back from run 18 and run 19 so it could not confound them. It has now
+destroyed the single most valuable experiment the series has produced. **Fix it first.**
+
+## Still open, unchanged
+
+- **GAP #15** — the web-request path has no method check and never reads
+  `destructive_allowed`; a fail-OPEN proven by executing both branches. Maintainer's call.
+- The intermittent `test_principal_switch_is_atomic` flake.

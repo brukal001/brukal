@@ -1459,3 +1459,87 @@ satisfies a weak assertion), `test_dropped_proposals_are_recorded.py`.
 sessions measured the model's imagination through a path that calls it once and truncates
 its answer at six. The offline probe that settled it cost `$0.31` and could have been run
 at any point in those four sessions — including before run 18.
+
+---
+
+# CR1 RUN 19 (`audit_cr1s.jsonl`, 2026-09-19) — ABORTED AT STEP 15/70: ANTHROPIC CREDITS EXHAUSTED
+
+```
+⚠ model/cage error: Error code: 400 — 'Your credit balance is too low to access the
+Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'
+```
+
+External blocker, not a code fault. The run reached step 15 of 70, wrote 666 ledger rows
+and a partial report, then every model call failed. **Recall is NOT measurable from this
+run and no recall number from it may be quoted.** What the partial ledger does settle is
+worth more than the abort costs.
+
+## The predictions, judged honestly on a truncated run
+
+| # | prediction | result | |
+|---|---|---|---|
+| 0 | `experiment_round source=model` ≥ 3 | **2 rounds in 15 steps** | ◑ **ON TRACK** — the instrumentation works; the threshold needs the full run |
+| 1 | `state_changed` proposed > 0 | **1, and correctly shaped** | ✅ **MET** |
+| 2 | `destructive-experiment` > 0 | **0** | ⛔ **NOT MET — and the prediction's reasoning was WRONG** |
+| 3 | recall > 1 of 14 | — | ▫ **UNMEASURABLE**, run truncated |
+
+## ★ Prediction 1 is met, and the thing the handoff called impossible happened
+
+Run 18's handoff said the model *"has never once"* constructed a valid `state_changed`
+experiment. Run 19's first model round produced one, and its **shape is correct**:
+
+```json
+{"title": "Return-order abuse on another account's order",
+ "comparator": "state_changed", "setup_steps": 1,
+ "control_as": "second", "variant_as": "second",
+ "control_url": "http://172.20.0.12/orders/40",
+ "variant_url": "http://172.20.0.12/orders/40"}
+```
+
+Control and variant are the **same read**, as the comparator requires, with the change
+carried in `setup`/`act`. That is the construction, built correctly, on the first round it
+was properly asked for. The GAP #18 cadence fix is what made the round happen at all.
+
+## ⚠ And it died on GAP #13 — the gap deliberately left unfixed
+
+```
+result: http://172.20.0.12/orders/40  status 404  role control
+result: http://172.20.0.12/orders/40  status 404  role variant
+OUTCOME: not_confirmed, stage judged, attribution MEASURED
+```
+
+**Both sides 404.** The URL is unprefixed — crAPI mounts orders at
+`/workshop/api/shop/orders/40`. The model's first correct state-changing experiment was
+judged against a path that does not exist, and recorded as `MEASURED` — that is, as
+evidence about the target. **It is nothing of the kind.**
+
+GAP #13 was held back from run 18 so it could not confound that measurement, and from run
+19 for the same reason. It has now cost the single most valuable experiment the series has
+produced. **It is the top priority for run 20**, ahead of everything else on this list.
+
+## ⚠ Prediction 2's reasoning was wrong, and it was my error, not the harness's
+
+I wrote *"(2) follows from (1), since a state-changing variant or act must reach
+`_approve_destructive_experiment`."* **That does not follow.** `_is_destructive_request`
+deliberately EXCLUDES `POST`:
+
+```
+POST   /workshop/api/shop/orders/return_order  -> False
+DELETE /identity/api/v2/user/videos/9          -> True
+GET    /reset-password                         -> True
+```
+
+The exclusion is correct and documented — POST creates, which is how setup steps reach an
+interesting state, and escalating every POST would make the approver meaningless. A
+`state_changed` experiment whose `act` is a POST **must not** escalate. So prediction 2 is
+not a test of prediction 1 at all; it tests only whether a DELETE/PUT/PATCH-shaped
+experiment happens to be proposed. **A prediction that does not follow from its stated
+reason is not evidence, however it resolves** — the same failure as reading a metric that
+moves for unrelated reasons (GAP #16), committed by me while writing the predictions
+designed to prevent it.
+
+## What run 20 needs
+
+1. **Fix GAP #13.** It just destroyed the series' best experiment.
+2. Re-state prediction 2 against what it can actually test, or drop it.
+3. Credits.
