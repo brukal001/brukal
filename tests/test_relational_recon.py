@@ -263,3 +263,47 @@ def test_it_needs_a_second_principal_to_be_meaningful():
                             body='{"order_id":9}', status=200)]
     h = foreign_value_experiments(links, caps, base="http://t")[0]
     assert {h.control["as"], h.variant["as"]} == {"second"}
+
+
+def test_a_json_body_is_sent_with_a_CONTENT_TYPE():
+    """MEASURED, and it was a false negative of my own making. The foreign-value and reuse
+    experiments carried a JSON body and no Content-Type, so crAPI never parsed it and
+    answered BOTH sides with
+
+        {"coupon_code":["This field is required."],"amount":["This field is required."]}
+
+    — an identical 400 on control and variant, so `status_differs` correctly reported no
+    difference and the experiment was recorded not_confirmed WITHOUT EVER ASKING ITS
+    QUESTION. By hand the same two requests answer 400 "Coupon not found" and 200 "Coupon
+    successfully applied!", which is a confirmation.
+
+    A comparator can only be as honest as the requests it judges."""
+    from brukal.capture import foreign_value_experiments, reuse_experiments
+    links = [{"source_path": "/a", "source_field": "coupon_code",
+              "consumer_path": "/spend", "consumer_field": "coupon_code",
+              "value": "TRAC075", "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST", url="http://t/spend",
+                            body='{"coupon_code":"TRAC075","amount":75}', status=200)]
+
+    for maker in (foreign_value_experiments, reuse_experiments):
+        for h in maker(links, caps, base="http://t"):
+            for side in (h.control, h.variant, h.act):
+                if not side or not side.get("body"):
+                    continue
+                ctype = {k.lower(): v for k, v in (side.get("headers") or {}).items()}
+                assert "content-type" in ctype, f"{maker.__name__}: body with no type"
+                assert "json" in ctype["content-type"].lower()
+
+
+def test_a_non_json_body_is_not_mislabelled():
+    """BOUNDARY: a form-encoded capture must not be announced as JSON, or the server
+    fails to parse it for the opposite reason."""
+    from brukal.capture import reuse_experiments
+    links = [{"source_path": "/a", "source_field": "id", "consumer_path": "/spend",
+              "consumer_field": "order_id", "value": "9", "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST", url="http://t/spend",
+                            body="order_id=9&x=1", status=200)]
+    h = reuse_experiments(links, caps, base="http://t")[0]
+    ctype = {k.lower(): v for k, v in (h.control.get("headers") or {}).items()}
+    assert "json" not in ctype.get("content-type", "").lower()
+    assert "urlencoded" in ctype.get("content-type", "").lower()

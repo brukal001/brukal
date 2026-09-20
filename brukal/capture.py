@@ -333,7 +333,8 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
                           f"is accepted for a resource we do not own, the same read "
                           f"changes around it",
                 setup=None,
-                act={"url": url, "method": c.method, "body": c.body, "as": "second"}))
+                act={"url": url, "method": c.method, "body": c.body, "as": "second",
+                     "headers": _content_type_for(c.body)}))
             continue
         # A read. Who else can do it?
         comparator = ("cross_account_resource" if _ID_IN_PATH.search(path)
@@ -546,6 +547,22 @@ def _parse_json(text):
         return None
 
 
+def _content_type_for(body: str) -> dict:
+    """The header the captured body needs to be PARSED.
+
+    Omitting it cost a whole experiment: crAPI received a JSON body with no Content-Type,
+    never parsed it, and answered both control and variant with
+    `{"coupon_code":["This field is required."]}` — an identical 400, so the comparator
+    correctly saw no difference and the experiment was recorded not_confirmed without ever
+    asking its question. A comparator can only be as honest as the requests it judges."""
+    text = (body or "").strip()
+    if not text:
+        return {}
+    if text.startswith(("{", "[")):
+        return {"Content-Type": "application/json"}
+    return {"Content-Type": "application/x-www-form-urlencoded"}
+
+
 def reuse_experiments(links, caps, base: str = "", max_hypotheses: int = 4) -> list:
     """Was a value the application ITSELF handed back accepted a second time?
 
@@ -578,7 +595,8 @@ def reuse_experiments(links, caps, base: str = "", max_hypotheses: int = 4) -> l
         if original is None:
             continue                       # nothing faithful to replay
         url = f"{base.rstrip('/')}{link['consumer_path']}"
-        spec = {"url": url, "method": original.method, "body": original.body, "as": "self"}
+        spec = {"url": url, "method": original.method, "body": original.body,
+                "as": "self", "headers": _content_type_for(original.body)}
         out.append(Hypothesis(
             title=(f"{link['consumer_path']} accepted "
                    f"{link['consumer_field']}={link['value']} which "
@@ -642,9 +660,11 @@ def foreign_value_experiments(links, caps, base: str = "", max_hypotheses: int =
                    f"another account behave differently from one issued to nobody?"),
             severity="medium", comparator="status_differs",
             control={"url": url, "method": original.method, "as": "second",
-                     "body": original.body.replace(real, bogus)},
+                     "body": original.body.replace(real, bogus),
+                     "headers": _content_type_for(original.body)},
             variant={"url": url, "method": original.method, "as": "second",
-                     "body": original.body},
+                     "body": original.body,
+                     "headers": _content_type_for(original.body)},
             rationale=(f"{link['source_path']} issued {link['source_field']}={real} to the "
                        f"FIRST principal; the second principal submits a same-shaped value "
                        f"belonging to nobody, then that one — a difference means the "
