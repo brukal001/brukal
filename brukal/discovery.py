@@ -63,7 +63,7 @@ _EXTENSIONS = (
 )
 
 
-def extensions_for(techs) -> str:
+def extensions_for(techs, observed=None) -> str:
     """File extensions this target plausibly serves, from what fingerprinting FOUND.
 
     MEASURED: 900 requests of `common.txt` against DVWA found exactly one path,
@@ -75,6 +75,17 @@ def extensions_for(techs) -> str:
     for needles, exts in _EXTENSIONS:
         if any(n in blob for n in needles):
             return exts
+    # A PATH THE TARGET ALREADY SERVED is stronger evidence than a fingerprint string,
+    # and it is available earlier. Discovery ran before fingerprinting had filled
+    # `techs`, asked for /setup and /instructions with no extension, and missed
+    # /setup.php — while the crawl had already fetched /login.php. The target had said
+    # what it serves and nothing was listening.
+    for path in (observed or ()):
+        low = str(path).lower().split("?")[0]
+        for needles, exts in _EXTENSIONS:
+            for ext in exts.split(","):
+                if ext and low.endswith(ext):
+                    return exts
     return ""
 
 
@@ -136,7 +147,10 @@ def parse_ffuf_json(text: str, max_results: int = 200) -> list:
 _BASE_WORDS = (
     # The eight in the first group each ANSWERED on DVWA in the measured run; they are
     # here because they paid, not because they looked plausible.
-    "index", "login", "logout", "setup", "security", "instructions", "about", "phpinfo",
+    # NB: "logout" answered on DVWA and is still EXCLUDED — requesting it ends our own
+    # session, and every authenticated request after it silently becomes anonymous.
+    # "It answered" and "it is safe to ask for" are different questions.
+    "index", "login", "setup", "security", "instructions", "about", "phpinfo",
     "config", "docs",
     "admin", "test", "backup", "install", "readme", "home", "dashboard",
     "upload", "uploads", "api", "status", "health", "debug", "server-status",
@@ -146,13 +160,13 @@ _ALWAYS = ("/robots.txt", "/sitemap.xml", "/.git/HEAD", "/.env", "/.gitignore",
            "/crossdomain.xml", "/.well-known/security.txt")
 
 
-def high_yield_candidates(techs=None, limit: int = 80) -> list:
+def high_yield_candidates(techs=None, limit: int = 80, observed=None) -> list:
     """Paths worth asking for FIRST, shaped by what the target is.
 
     Deliberately small. This runs through the governed browser rather than a sweeper, so
     every hit is gated, audited, and self-captured — which means a discovered path becomes
     a replay candidate for free, instead of a line in a tool's output that nothing reads."""
-    exts = extensions_for(techs)
+    exts = extensions_for(techs, observed=observed)
     suffixes = [e for e in exts.split(",") if e] if exts else []
     out = list(_ALWAYS)
     for w in _BASE_WORDS:

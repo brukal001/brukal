@@ -1699,6 +1699,18 @@ class AssistSession:
             prev.soft_404 = prev.soft_404 or surface.soft_404
             surface = prev
         self.surface = surface
+        # ASK THE TARGET WHAT IT HAS. Runs once, right after the surface is
+        # published and before the model is first grounded, so what it sees is
+        # what this application actually serves rather than what the last two
+        # targets served. Bounded and rate-limited like every other request.
+        try:
+            if not getattr(self, '_discovered_content', False):
+                self._discovered_content = True
+                self.discover_content()
+        except Exception as exc:
+            self.note(f"[discovery] failed and was skipped "
+                      f"({type(exc).__name__}: {str(exc)[:90]})")
+
         # CAPTURED TRAFFIC, folded in the moment a surface EXISTS to receive it.
         # Held at start-up by `capture.hold_for_surface` because `self.surface`
         # is None until this line runs — the first two attempts at this wiring
@@ -4324,6 +4336,53 @@ class AssistSession:
     # How many derived proposals may wait at once. Bounded because they are generated
     # from output, and output is unbounded.
     _DERIVED_MAX = 8
+
+    def discover_content(self, limit: int = 40) -> list:
+        """Ask the target what it HAS, with the small list that pays per request.
+
+        GAP #26: nothing in the harness had ever asked. ffuf and friends sat installed in
+        the cage for the project's whole life, and recon was a wishlist carried over from
+        the last two targets — 19 of 30 URLs on the first cold target were crAPI and Juice
+        Shop paths on a PHP app.
+
+        Probed through the GOVERNED BROWSER, not a sweeper: gated, audited, rate-limited
+        by the same allowance as everything else, and self-captured, so a discovered path
+        becomes a replay candidate instead of a line in tool output nothing reads.
+
+        Measured on DVWA: 22 stack-aware words found 11 paths where 900 requests of a
+        generic 4749-word list found one."""
+        from . import discovery as _discovery
+        from .web import WebAction
+        surface = getattr(self, "surface", None)
+        if surface is None or self.browser is None:
+            return []
+        if not _discovery.should_discover(surface):
+            self.note("[discovery] SKIPPED: this host answers for paths that do not "
+                      "exist, so every candidate would 'succeed' and the surface would "
+                      "fill with fiction")
+            return []
+        base = (getattr(surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        found = []
+        for path in _discovery.high_yield_candidates(
+                getattr(surface, "techs", None), limit=limit,
+                observed=list(getattr(surface, "pages", ()) or ())):
+            try:
+                _dec, res = self.browser.run(
+                    WebAction(kind="get", url=f"{base}{path}"), agent="recon")
+            except Exception:
+                break
+            if res is None:
+                break                      # our own gate or limiter — stop, do not
+                                           # write the rest off as absent (GAP #8)
+            st = getattr(res, "status", None)
+            if st and st != 404 and st < 500:
+                found.append(path)
+                if path not in surface.api_routes:
+                    surface.api_routes.append(path)
+        if found:
+            self.note(f"[discovery] {len(found)} path(s) found by asking the target: "
+                      + ", ".join(found[:12]))
+        return found
 
     def queue_self_capture_experiments(self, max_new: int = 4) -> int:
         """Turn requests BRUKAL ITSELF made into experiments, and queue them.

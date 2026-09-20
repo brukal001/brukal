@@ -151,3 +151,102 @@ def test_candidates_are_paths_ready_to_request():
     from brukal.discovery import high_yield_candidates
     for p in high_yield_candidates({"PHP"}):
         assert p.startswith("/") and " " not in p
+
+
+def test_the_session_actually_PROBES_the_candidates(tmp_path):
+    """WIRING, not capability. The generator and its tests can be perfect and change
+    nothing — which is exactly what happened to capture.py twice today and to the ffuf
+    tooling for the entire life of the project. A capability nothing calls is not a
+    capability."""
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+    from brukal.web import GovernedBrowser, WebResult
+    from brukal.webmap import AttackSurface
+
+    scope = load_scope(Path(__file__).resolve().parent.parent / "scope.dvwa.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    asked = []
+
+    class _Cage:
+        def run(self, a):
+            asked.append(a.url)
+            real = a.url.endswith(("/setup.php", "/login.php"))
+            return WebResult(status=200 if real else 404, url=a.url,
+                             body="ok" if real else "")
+
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.2", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, _Cage(), audit))
+    s.surface = AttackSurface(seed="http://172.20.0.2/")
+    s.surface.techs.add("PHP")
+
+    found = s.discover_content(limit=40)
+    assert asked, "no candidate was ever requested"
+    assert "/setup.php" in found, found
+    assert "/setup.php" in " ".join(s.surface.api_routes)
+    # An absence must not be written down as a route.
+    assert not any("/backup.php" in r for r in s.surface.api_routes)
+
+
+def test_discovery_is_skipped_on_a_soft_404_host(tmp_path):
+    """Every candidate would 'answer', and the surface would fill with fiction."""
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+    from brukal.web import GovernedBrowser, WebResult
+    from brukal.webmap import AttackSurface
+
+    scope = load_scope(Path(__file__).resolve().parent.parent / "scope.dvwa.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.2", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, type("C", (), {
+            "run": lambda self, a: WebResult(status=200, url=a.url, body="always")})(),
+            audit))
+    s.surface = AttackSurface(seed="http://172.20.0.2/")
+    s.surface.soft_404 = True
+    assert s.discover_content() == []
+
+
+def test_session_destroying_paths_are_never_candidates():
+    """`/logout` was in the first version of the list because it ANSWERED on DVWA — it was
+    one of the eleven measured hits. Requesting it is still wrong: it ends the harness's
+    own session mid-engagement, and every authenticated request after it silently becomes
+    an anonymous one.
+
+    `test_redirect.py::test_a_logout_destination_is_still_refused` caught this, which is
+    the value of a rule written down as a test rather than remembered: "it answered" and
+    "it is safe to ask for" are different questions, and yield measurement only answers
+    the first."""
+    from brukal.discovery import high_yield_candidates
+    for techs in ({"PHP"}, {"Express"}, set()):
+        for p in high_yield_candidates(techs):
+            low = p.lower()
+            assert "logout" not in low and "signout" not in low and "logoff" not in low, p
+
+
+def test_extensions_are_inferred_from_paths_the_target_ALREADY_SERVED():
+    """MEASURED: discovery ran before fingerprinting had populated `surface.techs`, so it
+    asked for /setup, /security, /instructions with NO extension and missed /setup.php —
+    the exact 200 the cold run never found. The ordering was fine; the evidence source was
+    too narrow.
+
+    The crawl had already fetched `/login.php`. The target had told us what it serves;
+    nothing was listening. A path the target ANSWERED is stronger evidence than a
+    fingerprint string anyway."""
+    from brukal.discovery import extensions_for
+    assert ".php" in extensions_for(set(), observed=["/login.php", "/"])
+    assert ".aspx" in extensions_for(set(), observed=["/Default.aspx"])
+    # An unknown stack with nothing observed still guesses nothing.
+    assert extensions_for(set(), observed=["/", "/about"]) == ""
+    # A fingerprint still works when there is one.
+    assert ".php" in extensions_for({"PHP"}, observed=[])
