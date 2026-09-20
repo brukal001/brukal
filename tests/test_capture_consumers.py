@@ -14,6 +14,8 @@ two consumers are where a capture becomes capability:
 """
 from __future__ import annotations
 
+import json
+
 import sys
 from pathlib import Path
 
@@ -214,3 +216,91 @@ def test_the_same_capture_is_not_queued_twice(tmp_path):
     assert first > 0
     s._derived_hypotheses = []                 # the loop drains it every turn
     assert s.queue_self_capture_experiments() == 0, "the same capture was re-queued"
+
+
+def test_the_OPERATOR_har_reaches_the_REPLAY_consumer_too(tmp_path):
+    """MEASURED: a real crAPI session was recorded (12 requests, 5 writes — a purchase, a
+    coupon validated, a coupon applied), handed over with --capture, and ingested cleanly:
+
+        [capture] crapi_session.har: ingested 12; dropped 0 out-of-scope, 0 static, 0 malformed
+
+    and produced ZERO state_changed experiments.
+
+    The captures reached consumer 1 (surface enrichment) and were then CLEARED by the
+    drain. Consumer 2 read `browser.captured() + shell_captures()` — self-capture only —
+    so the operator's writes, the whole reason the HAR exists, never became experiments.
+
+    Two consumers, one of them wired. That is the SIXTH capability-nothing-calls in this
+    session, and the first five were all found the same way: by running it and reading
+    what actually happened rather than trusting that a tested function is a used one."""
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.capture import hold_for_surface, drain_onto_surface, parse_har
+    from brukal.kali import ExecResult
+    from brukal.web import FakeWebCage, GovernedBrowser
+    from brukal.webmap import AttackSurface
+
+    scope = load_scope(Path(__file__).resolve().parent.parent / "scope.crapi.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    har = json.dumps({"log": {"entries": [{
+        "request": {"method": "POST",
+                    "url": "http://172.20.0.12/workshop/api/shop/orders",
+                    "headers": [],
+                    "postData": {"mimeType": "application/json",
+                                 "text": '{"product_id":1,"quantity":1}'}},
+        "response": {"status": 200,
+                     "content": {"size": 120, "mimeType": "application/json"}}}]}})
+    caps, _rep = parse_har(har, scope)
+    assert caps and caps[0].is_write()
+
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.12", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, FakeWebCage(), audit))
+
+    hold_for_surface(s, caps)
+    s.surface = AttackSurface(seed="http://172.20.0.12/")
+    drain_onto_surface(s)                      # consumer 1 runs and clears the list
+
+    queued = s.queue_self_capture_experiments()
+    assert queued > 0, "the operator's captured writes never became experiments"
+    assert any(h.comparator == "state_changed" for h in s.derived_hypotheses()), (
+        "a purchase the operator actually made did not become a state-changing experiment")
+
+
+def test_WRITES_are_derived_before_reads():
+    """MEASURED on a real crAPI session. The capture order is login, dashboard, vehicles,
+    products, ORDERS(POST), ... — so a cap of 4 derivations spends every slot on reads
+    before reaching the purchase. Worse, the next turn re-derives the same four, dedup
+    discards them as seen, and the queue never advances past index 3: the writes are
+    unreachable no matter how many turns run.
+
+    Writes are both scarcer and the only source of `state_changed`, the comparator no
+    model in either series ever proposed. They go first."""
+    from brukal.capture import CapturedRequest, hypotheses_from
+    caps = [
+        CapturedRequest(method="GET", url="http://t/a", status=200),
+        CapturedRequest(method="GET", url="http://t/b", status=200),
+        CapturedRequest(method="GET", url="http://t/c", status=200),
+        CapturedRequest(method="GET", url="http://t/d", status=200),
+        CapturedRequest(method="POST", url="http://t/workshop/api/shop/orders",
+                        body='{"product_id":1}', status=200),
+        CapturedRequest(method="POST", url="http://t/workshop/api/shop/apply_coupon",
+                        body='{"coupon_code":"X"}', status=200),
+    ]
+    hyps = hypotheses_from(caps, max_hypotheses=3)
+    assert all(h.comparator == "state_changed" for h in hyps[:2]), (
+        [h.comparator for h in hyps])
+    assert {h.act["url"] for h in hyps if h.act} == {
+        "http://t/workshop/api/shop/orders", "http://t/workshop/api/shop/apply_coupon"}
+
+
+def test_reads_are_still_derived_when_there_are_no_writes():
+    """BOUNDARY: prioritising writes must not mean discarding reads — on a session with
+    none, the cross-principal read questions are all there is."""
+    from brukal.capture import CapturedRequest, hypotheses_from
+    caps = [CapturedRequest(method="GET", url=f"http://t/{i}", status=200) for i in range(3)]
+    assert len(hypotheses_from(caps, max_hypotheses=3)) == 3

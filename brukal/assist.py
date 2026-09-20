@@ -4433,7 +4433,12 @@ class AssistSession:
         browser = getattr(self, "browser", None)
         if browser is None or not hasattr(browser, "captured"):
             return 0
-        caps = browser.captured() + self.shell_captures()
+        # ALL THREE PRODUCERS: what the browser did, what the shell did, and what the
+        # OPERATOR handed over. The last is the only source of writes a human actually
+        # performs — the harness makes almost none itself, which is the boundary
+        # self-capture cannot cross.
+        caps = (browser.captured() + self.shell_captures()
+                + list(getattr(self, "_captured_for_replay", []) or []))
         if not caps:
             return 0
         from . import capture as _capture

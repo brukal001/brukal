@@ -287,8 +287,16 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
     would re-issue the request as the SAME principal and prove nothing."""
     from .hypothesis import Hypothesis
 
+    # WRITES FIRST. A real session records reads before the write they lead to — a crAPI
+    # session went login, dashboard, vehicles, products, then the purchase — so a cap
+    # applied in capture order spends every slot on reads. Worse, the next turn re-derives
+    # the same ones, dedup discards them as seen, and the queue never advances past the
+    # cap: the writes become unreachable however long the run lasts. They are also the
+    # only source of `state_changed`, the comparator no model in either series proposed.
+    ordered = sorted(caps, key=lambda c: 0 if c.is_write() else 1)
+
     out = []
-    for c in caps:
+    for c in ordered:
         if len(out) >= max_hypotheses:
             break
         url, path = c.url, c.path()
@@ -349,6 +357,13 @@ def drain_onto_surface(session) -> int:
     if not caps or surface is None:
         return 0
     learned = apply_to_surface(caps, surface)
+    # KEEP THEM FOR REPLAY. Consumer 1 (the surface) is done with these; consumer 2 is
+    # not, and clearing the only reference meant an operator's HAR enriched the map and
+    # produced no experiments. A recorded crAPI session with five real writes — a
+    # purchase, a coupon validated, a coupon applied — ingested cleanly and yielded ZERO
+    # state_changed, because the writes were dropped here before replay ever saw them.
+    session._captured_for_replay = list(
+        getattr(session, "_captured_for_replay", []) or []) + list(caps)
     session._captured = []
     return learned
 
