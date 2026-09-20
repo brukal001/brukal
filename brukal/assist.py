@@ -6410,7 +6410,15 @@ class AssistSession:
             return []
         base = getattr(surface, "seed", "") or f"http://{self.target}/"
         seen, out = set(), []
-        for route in list(getattr(surface, "api_routes", []) or []) \
+        # CONFIRMED ROUTES FIRST. A live crAPI run lost its second principal — and with it
+        # ten `state_changed` experiments, recorded `second_unavailable` — by posting at
+        # `/REGISTER`, an unprefixed mined fragment, while `/identity/api/auth/signup` had
+        # ALREADY been confirmed by request and was sitting in the same surface. That is
+        # GAP #10's shape one consumer along: the knowledge was there and the chooser was
+        # reading the unverified tier. A route the target itself answered outranks a
+        # fragment somebody mined.
+        for route in list(getattr(surface, "confirmed_routes", []) or []) \
+                + list(getattr(surface, "api_routes", []) or []) \
                 + [p for p in (getattr(surface, "pages", {}) or {})]:
             if not route or "{" in route:
                 continue

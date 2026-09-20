@@ -2188,3 +2188,68 @@ against a target the harness had been shaped to fit.
 
 **No claim is made here that Brukal "works" on an unseen target. It did not.** It stayed
 honest, which is the minimum, and it found almost nothing, which is the result.
+
+---
+
+# REPLAY, MEASURED END TO END (2026-09-20, $0.00 on a local 7B model)
+
+## ★★★ `state_changed` reached the wire — 13 times, from a 7B model
+
+The comparator proposed **ZERO times in every run of both series**, including with
+claude-sonnet-5 and deepseek-v4-pro, was proposed **13 times** by qwen2.5 running locally
+for nothing. The model did not get better; **the harness stopped asking it to imagine the
+experiment** and derived it from captured traffic instead. Four sessions of prompt work
+could not produce this construction. Reading a request the target had already accepted
+produced it immediately.
+
+## ⛔ And all 13 were worthless, which the run also showed
+
+Every one was `POST /identity/api/auth/login` — **the harness's own login, replayed at
+itself**. A login does not change a resource somebody owns; it mints a session, and
+replaying it risks re-authenticating or locking the accounts the run depends on. Auth
+endpoints are now excluded from replay, and dedup runs against everything ever queued
+rather than the current queue (the loop drains it each turn, so queue-only dedup re-derived
+one question 13 times).
+
+**The honest consequence, measured on the next run: `state_changed` went to ZERO.** Removing
+the worthless 13 left nothing, because every write the harness itself made was an auth call:
+
+```
+write requests the harness made: 12 — all /auth/login, /auth/signup, /REGISTER
+```
+
+**Self-capture can only replay what the harness does, and the harness almost never performs
+an interesting write.** That is not a bug to fix; it is the boundary of the technique, and
+it is precisely why the OPERATOR capture path (`--capture`) matters more than self-capture:
+a human exercising real workflows generates the writes that are worth replaying.
+
+## ⛔ GAP #27 — the second principal dies on a validation error the target explains
+
+Ten of the thirteen were recorded `second_unavailable`: no second account existed, so the
+cross-account class could not execute at all.
+
+**First cause, fixed:** the signup chooser read `api_routes` — the UNVERIFIED tier — and
+posted at `/REGISTER`, an unprefixed mined fragment, while `/identity/api/auth/signup` had
+ALREADY been confirmed by request and sat in the same surface object. GAP #10's shape one
+consumer along: *the knowledge was there and the chooser was reading the wrong tier.*
+Confirmed routes now rank first. Verified on the rerun: `POST /identity/api/auth/signup`
+was attempted.
+
+**Second cause, NOT fixed and now precisely located.** It still fails, and the target says
+exactly why:
+
+```
+POST /identity/api/auth/signup  ->  400
+{"message":"Validation failed","details":"... Field error in object 'signUpForm' on field
+ 'name': rejected value [T]; codes [Size.signUpForm.name, Size.name, ...]"}
+```
+
+The account name the harness sends is too short. A hand-made signup with `name=BrukalB`
+succeeds (200) against the same endpoint, and a second principal created that way logs in
+(200). **The application NAMES the failing field and the failing constraint, and the
+harness discards it** — its own note even reads *"its error named no field we could
+supply"*, so it looks at the error and cannot read this shape.
+
+This is the highest-value remaining fix in the replay chain: a target that tells you which
+field it rejected and why is handing over the answer, and every cross-account experiment in
+the series is blocked behind it.
