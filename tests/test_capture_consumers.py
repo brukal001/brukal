@@ -162,3 +162,55 @@ def test_captures_are_applied_even_when_the_surface_does_not_exist_yet(tmp_path)
     assert learned > 0
     assert any("/setup.php" in r for r in s.surface.api_routes)
     assert drain_onto_surface(s) == 0, "draining twice must not double-apply"
+
+
+def test_authentication_endpoints_are_never_replayed():
+    """MEASURED on crAPI: all 13 state_changed experiments a live run derived were the
+    same one — `POST /identity/api/auth/login`, the harness's OWN login.
+
+    Replaying a login as another principal proves nothing: it does not change a resource
+    somebody owns, it mints a session. Worse, replaying auth endpoints risks locking or
+    re-authenticating the very accounts the run depends on. Same lesson as `/logout` in
+    content discovery: "it was captured" and "it is worth replaying" are different
+    questions, and capture only answers the first."""
+    from brukal.capture import CapturedRequest, hypotheses_from
+    caps = [
+        CapturedRequest(method="POST", url="http://t/identity/api/auth/login", status=200),
+        CapturedRequest(method="POST", url="http://t/identity/api/auth/signup", status=200),
+        CapturedRequest(method="POST", url="http://t/auth/refresh", status=200),
+        CapturedRequest(method="POST", url="http://t/workshop/api/shop/orders/return_order",
+                        status=200),
+    ]
+    hyps = hypotheses_from(caps)
+    urls = " ".join(h.control["url"] for h in hyps)
+    assert "auth/login" not in urls and "auth/signup" not in urls and "refresh" not in urls
+    assert "return_order" in urls, "the one experiment worth running was dropped too"
+
+
+def test_the_same_capture_is_not_queued_twice(tmp_path):
+    """MEASURED: the same experiment was proposed 13 times in one run. The queue is
+    drained every turn, so dedup against the CURRENT queue forgets everything already
+    consumed and re-derives it next turn — spending the run's budget re-asking one
+    question."""
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+    from brukal.web import FakeWebCage, GovernedBrowser, WebAction
+
+    scope = load_scope(Path(__file__).resolve().parent.parent / "scope.crapi.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.12", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, FakeWebCage(), audit))
+    s.browser.run(WebAction(kind="request", method="POST",
+                            url="http://172.20.0.12/workshop/api/shop/orders/return_order",
+                            body="order_id=2"), agent="exploit")
+
+    first = s.queue_self_capture_experiments()
+    assert first > 0
+    s._derived_hypotheses = []                 # the loop drains it every turn
+    assert s.queue_self_capture_experiments() == 0, "the same capture was re-queued"

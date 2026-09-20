@@ -252,6 +252,21 @@ def apply_to_surface(caps, surface) -> int:
 
 _ID_IN_PATH = __import__("re").compile(r"/(\d+)(?:/|$)")
 
+# Endpoints that MINT OR DESTROY a session rather than address a resource somebody owns.
+# Replaying them proves nothing — a login does not change another account's state, it
+# creates a session — and it risks re-authenticating or locking the very accounts the run
+# depends on. A live crAPI run derived 13 state_changed experiments and every one was
+# `POST /identity/api/auth/login`: the harness's own login, replayed at itself.
+# Same lesson as /logout in content discovery: "it was captured" and "it is worth
+# replaying" are different questions.
+_NOT_WORTH_REPLAYING = ("/auth/", "/login", "/logout", "/signup", "/register",
+                        "/token", "/refresh", "/oauth", "/session")
+
+
+def _worth_replaying(path: str) -> bool:
+    low = (path or "").lower()
+    return not any(n in low for n in _NOT_WORTH_REPLAYING)
+
 
 def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> list:
     """Turn captured traffic into experiments the comparators can judge.
@@ -277,6 +292,8 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
         if len(out) >= max_hypotheses:
             break
         url, path = c.url, c.path()
+        if not _worth_replaying(path):
+            continue
         if c.is_write():
             # The read that shows the effect. Best effort: the collection the write
             # addresses, which is the same URL without its query.
@@ -334,3 +351,58 @@ def drain_onto_surface(session) -> int:
     learned = apply_to_surface(caps, surface)
     session._captured = []
     return learned
+
+
+def parse_curl(command: str, scope, status, resp_bytes: int = 0, source: str = "shell"):
+    """A `curl` command line as a CapturedRequest, or None.
+
+    THE GAP THIS CLOSES. Self-capture hooks the web plane's single door, but agents also
+    reach the target with `curl` through the SHELL plane. In CR2 run 1, four of eleven
+    shell commands were HTTP requests against the target — each a control that answered,
+    none of them a replay candidate.
+
+    IT DECLINES RATHER THAN GUESSES. This reads `-X`, `-H`, `-d` and the URL; anything
+    else it does not understand it refuses, because a MISREAD command would put a URL
+    nobody issued into the surface, and a fabricated route is worse than a missing one.
+    It is not a shell parser and must not become one."""
+    import shlex
+
+    text = (command or "").strip()
+    if not text.startswith("curl"):
+        return None
+    if not status or int(status) == 404 or int(status) >= 500:
+        return None                        # an absence is not a control (same web floor)
+    try:
+        argv = shlex.split(text)
+    except ValueError:
+        return None
+
+    url, method, body, headers = None, None, None, {}
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("-X", "--request") and i + 1 < len(argv):
+            method = argv[i + 1].upper(); i += 2; continue
+        if tok in ("-H", "--header") and i + 1 < len(argv):
+            raw = argv[i + 1]
+            if ":" in raw:
+                k, v = raw.split(":", 1)
+                headers[k.strip()] = v.strip()
+            i += 2; continue
+        if tok in ("-d", "--data", "--data-raw", "--data-binary") and i + 1 < len(argv):
+            body = argv[i + 1]; i += 2; continue
+        if tok.startswith(("http://", "https://")):
+            if url is not None:
+                return None                # two URLs: not a shape we read confidently
+            url = tok; i += 1; continue
+        if tok.startswith("-"):
+            i += 1; continue               # a flag we do not need
+        i += 1
+    if not url:
+        return None
+    # curl's own rule: data implies POST unless told otherwise. Reading it as GET would
+    # file a write as a read, and the write surface is the interesting one.
+    if method is None:
+        method = "POST" if body else "GET"
+    return _record(method, url, headers, body, int(status), int(resp_bytes or 0),
+                   "", scope, IngestReport(), source)

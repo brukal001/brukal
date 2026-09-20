@@ -1045,6 +1045,35 @@ class AssistSession:
         new_hl: list[tuple[str, str]] = []
         if result is not None:
             self.executed_cmds.append(command)   # fed back as ALREADY TRIED next turn
+            # SHELL-PLANE CAPTURE. Self-capture hooks the web plane's single door, but
+            # agents also reach the target with `curl`, and those requests were invisible
+            # to it: four of eleven shell commands in CR2 run 1 were HTTP requests against
+            # the target, each a control that answered and none a replay candidate. The
+            # parser declines anything it cannot read confidently, because a misread
+            # command would put a URL nobody issued into the surface.
+            try:
+                from . import capture as _capture
+                _status = 200 if (result.returncode == 0
+                                  and (result.stdout or "").strip()) else 0
+                _cap = _capture.parse_curl(command, self.executor._gate.scope, _status,
+                                           len((result.stdout or "")))
+                if _cap is not None:
+                    store = getattr(self, "_shell_captures", None)
+                    if store is None:
+                        store = self._shell_captures = []
+                    if len(store) < 25:
+                        store.append(_cap)
+            except Exception as exc:
+                # NOT a bare pass. The first version wrote `result.exit_code` — the field
+                # is `returncode` — and a bare `except` swallowed the AttributeError, so
+                # shell capture silently did nothing while reporting success. That is the
+                # FIFTH such no-op in this session and the except was mine, written
+                # minutes after naming the pattern. Capture still must not break a run,
+                # so it is caught; it is no longer INVISIBLE.
+                if not getattr(self, "_shell_capture_warned", False):
+                    self._shell_capture_warned = True
+                    self.note(f"[capture] shell capture is failing and is disabled for "
+                              f"this run ({type(exc).__name__}: {str(exc)[:90]})")
             raw = (result.stdout or "").strip()
             # THE COMMAND PLANE'S OBSERVATION POINT. This is where CR1's finding was
             # seen and lost: the agent's curl returned another tenant's order and the
@@ -4384,6 +4413,10 @@ class AssistSession:
                       + ", ".join(found[:12]))
         return found
 
+    def shell_captures(self) -> list:
+        """Requests the agents made with `curl`, as capture records."""
+        return list(getattr(self, "_shell_captures", []) or [])
+
     def queue_self_capture_experiments(self, max_new: int = 4) -> int:
         """Turn requests BRUKAL ITSELF made into experiments, and queue them.
 
@@ -4400,17 +4433,25 @@ class AssistSession:
         browser = getattr(self, "browser", None)
         if browser is None or not hasattr(browser, "captured"):
             return 0
-        caps = browser.captured()
+        caps = browser.captured() + self.shell_captures()
         if not caps:
             return 0
         from . import capture as _capture
-        seen = {(h.comparator, h.control.get("url")) for h in self.derived_hypotheses()}
+        # Dedup against EVERYTHING ever queued, not the current queue: the loop drains it
+        # every turn, so queue-only dedup forgets what it consumed and re-derives the same
+        # experiment next turn. A live run proposed one question 13 times that way.
+        ever = getattr(self, "_capture_replay_seen", None)
+        if ever is None:
+            ever = self._capture_replay_seen = set()
+        seen = set(ever) | {(h.comparator, h.control.get("url"))
+                            for h in self.derived_hypotheses()}
         queued = 0
         for h in _capture.hypotheses_from(caps, max_hypotheses=max_new):
             key = (h.comparator, h.control.get("url"))
             if key in seen:
                 continue
             seen.add(key)
+            ever.add(key)
             self._derived_hypotheses = list(getattr(self, "_derived_hypotheses", []) or [])
             self._derived_hypotheses.append(h)
             queued += 1
