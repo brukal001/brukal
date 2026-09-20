@@ -2063,3 +2063,49 @@ claimed until measured: the honest test is two runs on the same target, the seco
 the first's store, with the predictions fixed beforehand — and then the harder one, a run
 on a target the store has never seen, to check that what carries forward is knowledge
 rather than crAPI-shaped overfitting.
+
+---
+
+# ⛔ GAP #25 — THE DOCUMENTED WAY TO CHANGE SCOPE DOES NOT CHANGE SCOPE
+
+**Class: GENUINE GAP, SAFETY-RELEVANT. Found 2026-09-20 while setting up the first cold
+target, by following the project's own instruction verbatim.**
+
+`docker/docker-compose.yml` said:
+
+> The entrypoint builds the kernel egress lock from THIS file at startup. Changing scope
+> => rebuild the ruleset => **you MUST restart the cage (`docker compose ... restart
+> kali`)**.
+
+**`docker compose restart` does not pick up a changed bind-mount.** It restarts the
+EXISTING container with its existing configuration. Measured, after editing the mount to
+`scope.dvwa.json` and restarting exactly as instructed:
+
+```
+host scope file  : brukal-dvwa-COLD1    172.20.0.2/32
+cage /scope.json : brukal-crapi-CR2r1   172.20.0.12/32    <- UNCHANGED
+kernel lock      : ip daddr 172.20.0.12 accept            <- UNCHANGED
+```
+
+The harness reads the NEW scope from the host and proceeds; the kernel goes on enforcing
+the OLD one. **Here it failed closed** — the new target was simply unreachable — and the
+software gate is independent, so defence in depth held. What did not hold is the
+operator's basis for belief: this project's structural claim is *"even a compromised agent
+cannot reach an unauthorised host, because the kernel drops it"*, and that claim is worth
+exactly what the operator's confidence that the lock matches the scope is worth. **A
+documented procedure that silently does nothing is the worst possible source for that
+confidence.**
+
+`docker compose up -d --force-recreate kali` does apply it, verified in the same session —
+the lock flipped and containment reversed on demand:
+
+```
+crAPI 172.20.0.12 -> HTTP 000   (dropped at the kernel)
+DVWA  172.20.0.2  -> HTTP 302   (reachable)
+```
+
+The comment now names the correct command, states WHY `restart` is wrong (so the next
+person does not shorten it back), and ends with a verification step — `docker exec
+brukal-kali nft list ruleset | grep daddr` — because the whole lesson here is **check,
+do not assume**. Tests assert the documentation cannot regress: no unnegated instruction
+to use `restart`, a command that really re-reads the mount, and the reason stated.

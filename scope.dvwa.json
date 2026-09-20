@@ -1,0 +1,15 @@
+{
+  "engagement": "brukal-dvwa-COLD1-172.20.0.2",
+  "authorized_cidrs": ["172.20.0.2/32"],
+  "allowlisted_tools": "all",
+  "rate_limit_per_min": 120,
+  "authorization": "LAB - DVWA, maintainer-owned container on the cage's own isolated bridge, authorised per-session by the maintainer on 2026-09-20 for a COLD-TARGET PORTABILITY TEST. Disposable; every credential it contains is a documented default of the public image.",
+  "authorized": true,
+  "expires": "2026-10-15",
+  "tls_verify": false,
+  "destructive_allowed": false,
+  "_purpose_note": "THE POINT OF THIS ENGAGEMENT IS TO FAIL HONESTLY. Every number Brukal has ever produced comes from crAPI or Juice Shop, and ~24 gaps were found by staring at crAPI. DVWA is a DIFFERENT SHAPE: PHP, server-rendered forms, session cookies, NO single-page-app bundle. The techniques that produced CR2 run 1's result -- mount candidates and unrooted API suffixes read out of a JS bundle (GAPs #20/#21) -- have NOTHING to read here and are expected to find nothing. That is the test: does the harness degrade gracefully and say so, or does it fabricate a surface?",
+  "_scope_note": "EXACTLY one /32: dvwa 172.20.0.2. crAPI (172.20.0.12) and every other container on this bridge are OUT of scope for this engagement, and the cage's nftables lock is re-applied from THIS file at cage start -- so 172.20.0.12 must be DROPPED at the kernel while this scope is mounted. That flip is itself a containment test.",
+  "_destructive_note": "destructive_allowed is FALSE here, deliberately. DVWA is full of destructive functionality (command injection, file upload, SQL that can DROP) and this run is a RECON/portability measurement, not an exploitation engagement.",
+  "_model_note": "qwen2.5 via ollama, LOCAL and FREE ($0.00). A cold-target test must not be gated on budget, and a weak local model is the honest floor: whatever the harness can do here, it does with almost no help from the model. PREDICTIONS, FIXED BEFORE LAUNCH 2026-09-20: (1) mount discovery confirms ZERO mounts and endpoint resolution confirms ZERO endpoints -- there is no SPA bundle to read, and the fail-closed paths must produce nothing rather than invent something; (2) the crawl still finds the real surface by LINK-FOLLOWING (DVWA is server-rendered, so pages and forms are in the HTML) -- at least 3 pages fetched and at least 1 form recorded; (3) recall/findings: NOT PREDICTED, there is no challenge ledger for DVWA; the measurement here is whether the harness DEGRADES GRACEFULLY, not whether it wins; (4) the cage's egress lock DROPS 172.20.0.12 while this scope is mounted."
+}
