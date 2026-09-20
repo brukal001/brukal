@@ -1018,6 +1018,34 @@ coverage path.
 **This is an ordering defect, not a repair defect**, and it is now the largest single
 identified source of wasted experiments.
 
+### ✅ CLOSED 2026-09-21 — by the CAUSE being fixed, not by patching the symptom
+
+Measured before touching anything, which is what decided the fix:
+
+| run | experiment urls | UNPREFIXED |
+|---|---|---|
+| CR1 run 17 | 36 | **8** |
+| CR1 run 18 | 36 | **8** |
+| CR2 run 1 | 26 | **0** |
+| A/B arm A | 22 | 0 (2 were `/`, the base) |
+
+**The waste was already gone.** `coverage_proposals` only ever swept `confirmed_routes`
+— its docstring said so all along — and the list had simply been full of unproven
+fragments. Once mount/endpoint discovery (GAPs #20/#21) began filling it with paths PROVED
+BY REQUEST, the eight phantom sweeps a run disappeared on their own.
+
+So there was nothing left to patch, and patching anyway would have been the exact mistake
+this file exists to record: *fixing the layer a symptom is visible at rather than the one
+that causes it.* GAPs #8–#12 were four sessions of that.
+
+What WAS missing is that the absence was **incidental**. `test_coverage_only_sweeps_
+confirmed.py` makes it a property: coverage proposes nothing when nothing is confirmed, an
+unprefixed fragment can never be swept, the sweep stays bounded, a family already asked
+about is not re-swept, and — the wiring, which is where this kind of thing actually breaks
+— the call site passes `confirmed_routes` and never `api_routes`. A future change that
+refills the confirmed list with guesses now fails a test instead of quietly spending eight
+requests a run.
+
 ## What this run actually establishes
 
 The four fixes did exactly what they claimed, measured: our own limiter no longer
