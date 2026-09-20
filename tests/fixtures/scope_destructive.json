@@ -1,0 +1,13 @@
+{
+  "engagement": "test-destructive-authorised",
+  "authorized_cidrs": [
+    "10.129.0.0/16",
+    "10.10.10.0/24",
+    "127.0.0.1/32"
+  ],
+  "allowlisted_tools": "all",
+  "rate_limit_per_min": 6000,
+  "_note": "same scope as scope.json but without a rate wall, for tests that make many governed probes",
+  "destructive_allowed": true,
+  "_destructive_note": "A SEPARATE fixture, deliberately. Tests that exercise DESTRUCTIVE capabilities \u2014 the BFLA prover changing another account's password with PUT, request tampering sending PUT/DELETE \u2014 need an engagement that authorised them, because GAP #15 made the web path refuse state-changing methods otherwise. Flipping the SHARED fixture instead broke two tests that depend on it being non-destructive (test_scope_authorisation_is_DISCLOSED, test_the_loop_seeds_BOTH_principals_once), which is the point: a fixture's authorisation is part of what it tests, so a test needing different authorisation needs a different fixture."
+}

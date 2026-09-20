@@ -20,10 +20,11 @@ from brukal.scope import Scope
 from brukal.web import (FakeWebCage, GovernedBrowser, WebAction, check_web)
 
 SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope.json"
+DESTRUCTIVE_SCOPE = Path(__file__).resolve().parent / "fixtures" / "scope_destructive.json"
 
 
-def _scope_with_host(host="nexus.htb"):
-    base = load_scope(SCOPE)          # authorises 10.10.10.0/24 + 127.0.0.1
+def _scope_with_host(host="nexus.htb", scope_path=None):
+    base = load_scope(scope_path or SCOPE)   # authorises 10.10.10.0/24 + 127.0.0.1
     return base.with_host(host)
 
 
@@ -84,11 +85,12 @@ def test_page_action_needs_in_scope_page_first():
 
 # -- the governed browser (one door) ---------------------------------------- #
 
-def _browser(host="nexus.htb"):
+def _browser(host="nexus.htb", scope_path=None):
     tmp = tempfile.mkdtemp()
     cage = FakeWebCage(responses={"nexus.htb/flag": "HTB{fake_flag}"})
     audit = AuditLog(Path(tmp) / "web.jsonl")
-    return GovernedBrowser(_scope_with_host(host), cage, audit), cage, audit
+    return (GovernedBrowser(_scope_with_host(host, scope_path), cage, audit),
+            cage, audit)
 
 
 def test_governed_browser_runs_in_scope_denies_out_of_scope():
@@ -113,8 +115,12 @@ def test_navigate_then_fill_payload_flows_through_the_gate():
 
 
 def test_request_tampering_headers_and_body_reach_the_cage():
-    # the interception/replay primitive: craft an arbitrary method + headers + body
-    br, cage, _ = _browser()
+    # the interception/replay primitive: craft an arbitrary method + headers + body.
+    # A DESTRUCTIVE-AUTHORISED scope, because the primitive under test sends PUT and
+    # GAP #15 made the web path refuse state-changing methods on an engagement that did
+    # not authorise them. The tampering capability is unchanged; what changed is that it
+    # now requires the engagement to have said yes.
+    br, cage, _ = _browser(scope_path=DESTRUCTIVE_SCOPE)
     d, r = br.run(WebAction("request", url="http://nexus.htb/api", method="PUT",
                             headers={"X-Forwarded-For": "127.0.0.1"}, body='{"admin":true}'))
     assert d.verdict == "ALLOW"

@@ -22,7 +22,7 @@ from brukal.agents.strategist import StrategistAgent
 from brukal.kali import FakeKali
 from brukal.web import GovernedBrowser, WebResult
 
-SCOPE = "tests/fixtures/scope.json"
+SCOPE = "tests/fixtures/scope_destructive.json"  # this file PUTs another account's password (GAP #15)
 TARGET = "127.0.0.1"
 B = "http://127.0.0.1:5000"
 CHANGE = B + "/users/v1/{username}/password"
@@ -184,7 +184,7 @@ def test_confirm_surface_invokes_the_bfla_check():
     Uses the high-rate-limit scope: the intrusive passes are deliberately skipped once
     the scope limiter trips, so the default fixture's 30/min would make this test pass
     for the wrong reason (nothing ran at all)."""
-    sess = _session(_Listing(), scope_path="tests/fixtures/scope_fast.json")
+    sess = _session(_Listing(), scope_path="tests/fixtures/scope_destructive.json")
     sess.surface = _surface(["/users/v1", "/users/v1/login",
                              "/users/v1/{username}/password"])
     sess.last_jwt = "tok-attacker"

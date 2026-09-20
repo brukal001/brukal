@@ -44,6 +44,9 @@ from .scope import Scope
 _URL_ACTIONS = frozenset({"navigate", "get", "request"})
 _PAGE_ACTIONS = frozenset({"click", "fill", "screenshot", "eval"})
 _INTERCEPT_ACTIONS = frozenset({"intercept"})
+# Methods that change server state. POST is absent on purpose — see the note at the
+# destructive check in `check_web`.
+_DESTRUCTIVE_METHODS = frozenset({"DELETE", "PUT", "PATCH"})
 _ALL_ACTIONS = _URL_ACTIONS | _PAGE_ACTIONS | _INTERCEPT_ACTIONS
 _OK_SCHEMES = frozenset({"http", "https"})
 
@@ -148,6 +151,40 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
                  f"action", "hard:web-capability")
         d.reason_code = CAPABILITY_DENIED_REASON
         return d
+
+    # DESTRUCTIVE METHODS — LAST, so every earlier refusal keeps its own reason and layer
+    # and this can only ever ADD a denial, the same discipline the capability check above
+    # follows.
+    #
+    # GAP #15. `_is_destructive_request` was added so a DELETE carrying no destructive
+    # word could not bypass the approver, and it had exactly ONE caller: the EXPERIMENT
+    # path. This door — the one every web action passes through — never read
+    # `scope.destructive_allowed` at all. CR1 run 18 put PUT and DELETE on
+    # /workshop/api/shop/orders/1 on the wire as `web:allow`, with zero escalations in the
+    # whole run, while a READ on the shell path escalated for human sign-off because that
+    # path risk-scores and this one never has. Executing both branches against the real
+    # scope returned ALLOW under `destructive_allowed` FALSE and TRUE alike: a fail-OPEN
+    # against SAFETY INVARIANT 2, not merely an asymmetry.
+    #
+    # THE METHOD, NOT THE URL-WORD RULE. The shell path also matches reset/drop/wipe in a
+    # URL because a shell command hides its method — `curl .../createdb` is a GET by shape
+    # and a catastrophe by effect. Here the method is EXPLICIT and is the better signal;
+    # applying the word rule would deny ordinary reconnaissance, since endpoint discovery
+    # legitimately GETs /identity/api/v2/user/reset-password.
+    #
+    # POST is deliberately excluded, the same call `_is_destructive_request` makes: POST
+    # CREATES, which is how setup steps reach an interesting state, and refusing every
+    # POST would make the rule meaningless.
+    # The OPERATOR is exempt, the same exemption the capability map already grants them:
+    # this flag exists so an AGENT cannot take a destructive action the operator did not
+    # authorise, and an operator acting directly IS that authorisation. Agents are not
+    # exempt, which is the whole point.
+    if (getattr(action, "method", None) or "GET").upper() in _DESTRUCTIVE_METHODS \
+            and not getattr(scope, "destructive_allowed", False) \
+            and (ident.role or "") != "operator":
+        return deny(f"{(action.method or '').upper()} is a state-changing method and this "
+                    f"engagement did not authorise destructive actions "
+                    f"(scope.destructive_allowed is false)", "hard:web-destructive")
 
     return Decision(verdict="ALLOW", action=desc, target=host, agent=agent,
                     reason=f"in-scope web {kind} on {host}", layer="web:allow",

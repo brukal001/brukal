@@ -50,7 +50,7 @@ def _session(cage):
     from brukal.blackboard import Blackboard
     from brukal.kali import FakeKali
     from brukal.web import GovernedBrowser
-    scope = load_scope("tests/fixtures/scope_fast.json")
+    scope = load_scope("tests/fixtures/scope_destructive.json")  # posts a negative quantity
     root = Path(tempfile.mkdtemp())
     audit = AuditLog(root / "a.jsonl")
     sess = AssistSession("127.0.0.1", Executor(Gate(scope), FakeKali(), audit),

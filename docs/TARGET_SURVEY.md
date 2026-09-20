@@ -1201,10 +1201,45 @@ destructive_allowed=True  -> verdict=ALLOW    layer=web:allow
 against SAFETY INVARIANT 2, not merely an asymmetry: an engagement that never authorised
 destructive actions would have had that DELETE executed having consulted no one.
 
-**Deliberately NOT fixed in this session.** The fix is a design change — it puts a risk
-layer on a path that has never had one, and it changes what future runs are comparable
-to. Per CLAUDE.md that is the maintainer's call, and the measurement it would sit on top
-of is already banked.
+**FIXED 2026-09-21**, on the maintainer's instruction. `check_web` now judges the METHOD
+last — after every other check, so it can only ADD a denial — and refuses `DELETE`/`PUT`/
+`PATCH` when `scope.destructive_allowed` is false. The original proof, re-run:
+
+```
+destructive_allowed=False -> DENY   hard:web-destructive
+destructive_allowed=True  -> ALLOW  web:allow
+```
+
+Three decisions are recorded rather than assumed:
+
+**The METHOD, not the URL-word rule.** The shell path also matches `reset`/`drop`/`wipe`
+in a URL, because a shell command hides its method — `curl .../createdb` is a GET by shape
+and a catastrophe by effect. On the web plane the method is EXPLICIT and is the better
+signal, and applying the word rule here would deny ordinary reconnaissance: endpoint
+discovery legitimately GETs `/identity/api/v2/user/reset-password`. Pinned by a test.
+
+**POST stays allowed**, the same call `_is_destructive_request` makes: POST creates, which
+is how setup steps reach an interesting state.
+
+**The operator is exempt**, matching the exemption the capability map already grants them.
+The flag exists so an AGENT cannot take a destructive action the operator did not
+authorise; an operator acting directly IS that authorisation. Agents are not exempt, which
+is the entire point.
+
+### What the suite said about it
+
+Five existing tests failed, and reading them was the useful part. `test_the_operator_is_
+unconstrained_on_the_web_path_too` was a design statement and produced the exemption
+above. The other three exercise genuinely destructive capabilities — a BFLA prover
+changing another account's password with PUT, request tampering, an order prover posting a
+negative quantity — and under a scope that never authorised destructive actions, refusing
+them is the NEW BEHAVIOUR WORKING, not a regression.
+
+Flipping the shared fixtures to authorise it broke two further tests that depend on those
+fixtures being non-destructive (`test_scope_authorisation_is_DISCLOSED`,
+`test_the_loop_seeds_BOTH_principals_once`) — which is the lesson: **a fixture's
+authorisation is part of what it tests.** Those three tests now use a dedicated
+`scope_destructive.json` that authorises exactly what they do.
 
 ---
 
