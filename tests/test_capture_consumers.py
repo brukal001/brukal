@@ -133,3 +133,32 @@ def test_no_credential_reaches_a_derived_experiment():
     import json as _json
     blob = _json.dumps([[h.control, h.variant, h.act] for h in hypotheses_from(_caps())])
     assert "PHPSESSID" not in blob and "Bearer" not in blob
+
+
+def test_captures_are_applied_even_when_the_surface_does_not_exist_yet(tmp_path):
+    """REGRESSION. The first wiring applied the capture in `run_auto` before the crawl had
+    created `session.surface`, so every real run died with
+
+        AttributeError: 'NoneType' object has no attribute 'api_routes'
+
+    and the whole feature was swallowed into a one-line warning — the surface was built
+    from guesses exactly as before. Parsing early is right (a bad path should be visible
+    at start-up); APPLYING early is not.
+
+    The fix splits the two: parse and hold at start-up, apply when the surface exists."""
+    from brukal.capture import hold_for_surface, drain_onto_surface
+
+    caps = _caps()
+
+    class _Session:
+        surface = None                      # exactly the state run_auto is in
+
+    s = _Session()
+    hold_for_surface(s, caps)               # must not raise with no surface
+    assert getattr(s, "_captured", None), "the captures were dropped, not held"
+
+    s.surface = AttackSurface(seed="http://172.20.0.2/")
+    learned = drain_onto_surface(s)
+    assert learned > 0
+    assert any("/setup.php" in r for r in s.surface.api_routes)
+    assert drain_onto_surface(s) == 0, "draining twice must not double-apply"

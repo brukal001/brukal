@@ -306,3 +306,31 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
             rationale=f"captured {c.method} {path} answered {c.status} "
                       f"({c.resp_bytes}B) for the operator's own session"))
     return out
+
+
+def hold_for_surface(session, caps) -> int:
+    """Keep parsed captures on the session until a surface exists to receive them.
+
+    Parsing at start-up is right: a bad path or an empty capture should be visible before
+    a run spends anything. APPLYING at start-up is not — `session.surface` is None until
+    the crawl builds it, and the first version of this wiring did exactly that, died with
+    `AttributeError: 'NoneType' object has no attribute 'api_routes'`, and had the whole
+    feature swallowed by a broad `except` into a one-line warning. The run then built its
+    surface from guesses precisely as before, which is the failure this module exists to
+    remove."""
+    session._captured = list(caps or [])
+    return len(session._captured)
+
+
+def drain_onto_surface(session) -> int:
+    """Fold held captures into the surface, once, as soon as there is one.
+
+    Idempotent: draining twice must not double-apply, because the surface is confirmed
+    repeatedly during a run and this is called from that path."""
+    caps = getattr(session, "_captured", None)
+    surface = getattr(session, "surface", None)
+    if not caps or surface is None:
+        return 0
+    learned = apply_to_surface(caps, surface)
+    session._captured = []
+    return learned

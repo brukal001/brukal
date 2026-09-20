@@ -1699,6 +1699,20 @@ class AssistSession:
             prev.soft_404 = prev.soft_404 or surface.soft_404
             surface = prev
         self.surface = surface
+        # CAPTURED TRAFFIC, folded in the moment a surface EXISTS to receive it.
+        # Held at start-up by `capture.hold_for_surface` because `self.surface`
+        # is None until this line runs — the first two attempts at this wiring
+        # applied it earlier and silently learned nothing, which is the same
+        # silent no-op shape as the audit.record and agent=probe bugs before it.
+        try:
+            from . import capture as _capture
+            _n = _capture.drain_onto_surface(self)
+            if _n:
+                self.note(f"[capture] {_n} route(s) learned from real traffic "
+                          f"— methods, parameters and auth shape included")
+        except Exception as exc:
+            self.note(f"[capture] could not be applied "
+                      f"({type(exc).__name__}: {str(exc)[:90]})")
         summ = surface.summary()
         head = summ.splitlines()[0]
         self.highlights.append(("site-map", head))
@@ -9736,10 +9750,12 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
             _caps, _rep = _capture.parse_har(
                 Path(capture_path).read_text(errors="replace"),
                 session.executor._gate.scope)
-            _learned = _capture.apply_to_surface(_caps, session.surface)
-            session._captured = _caps
+            # PARSE now (a bad path or an empty capture must be visible before the run
+            # spends anything), APPLY when the surface exists. `session.surface` is None
+            # until the crawl builds it.
+            _capture.hold_for_surface(session, _caps)
             line = (f"[capture] {Path(capture_path).name}: {_rep.summary()}; "
-                    f"{_learned} route(s) learned from real traffic")
+                    f"held for the surface")
             session.notes.append(line)
             print(f"  {line}")
             if not _caps:
