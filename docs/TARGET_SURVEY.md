@@ -2514,3 +2514,52 @@ also removed the 4 harness ones, and the model produced fewer overall that run. 
 variance on a 7B model is large and n=1 per arm; the MODEL-proposed `state_changed` count
 is 0/0/0, which is the number the prediction was about, but no claim is made here about
 proposal VOLUME.
+
+---
+
+# ★ THE FIRST BUSINESS-LOGIC QUESTION (2026-09-21, $0.00)
+
+Every experiment this project had ever run asked *"can someone else do this?"* — an
+AUTHORISATION question, answerable from a structural map. The reuse experiments ask
+*"can THIS VALUE be used twice?"*, which needs the grammar: knowing that
+`apply_coupon.coupon_code` is what `validate-coupon` issued, across two different services.
+
+```
+proposed: repeat_accepted 2, state_changed 4, a_denied_b_allowed 8, unauthenticated_exposure 1
+
+repeat_accepted outcomes:
+  not_confirmed      MEASURED        /workshop/api/shop/apply_coupon  coupon_code=TRAC075
+  both_sides_failed  TARGET-REFUSED  /workshop/api/shop/orders/return_order  order_id=9
+```
+
+## The comparator reported correct behaviour as a NON-finding, which is the whole point
+
+Verified by hand against the live container:
+
+```
+POST /workshop/api/shop/apply_coupon {"coupon_code":"TRAC075","amount":75}
+  -> 400 {"message":"TRAC075 Coupon code is already claimed by you!!"}
+```
+
+crAPI **does** enforce single-use, so `not_confirmed` is right. Wired to `status_differs`
+or `bodies_differ` — which confirm when two answers DIFFER — this would have been reported
+as a finding. Correct behaviour published as a vulnerability is worse than no finding at
+all, and it is what a naive implementation would have produced.
+
+## ★ THE TARGET NAMED THE SCOPE OF ITS OWN CHECK
+
+> "Coupon code is already claimed **by you**"
+
+That sentence says the claim is tracked **per user**. crAPI challenge 13 is *"redeem an
+already-claimed coupon"*, and the error is pointing straight at the shape that would do it:
+not the same account applying twice — which is refused, as measured — but **a coupon
+claimed by one account being applied by ANOTHER**.
+
+`reuse_experiments` deliberately uses the SAME principal, because reuse is about one
+account using a value twice. The next experiment is the conjunction nothing has tried:
+**a value the application issued to principal A, replayed by principal B.** Both halves now
+exist — `link_fields` supplies the value and its provenance, `_as_identity` supplies the
+second principal — and joining them is a small, well-motivated change rather than a guess.
+
+**That is the first time in this project that a target's own answer has specified the next
+experiment.** It is worth more than the verdict.
