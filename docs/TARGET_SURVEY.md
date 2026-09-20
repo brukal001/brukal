@@ -2253,3 +2253,44 @@ supply"*, so it looks at the error and cannot read this shape.
 This is the highest-value remaining fix in the replay chain: a target that tells you which
 field it rejected and why is handing over the answer, and every cross-account experiment in
 the series is blocked behind it.
+
+## GAP #27, part two — the reader is fixed; the ORDER is the blocker
+
+**The validation reader is done and tested.** `missing_fields` deliberately skips a field
+the request already carried; that is correct for a field the target wants ADDED and blind
+to one it HAS and will not accept. crAPI rejected `name` on a length rule, so the loop
+found nothing to add and gave up with *"its error named no field we could supply"*.
+
+`signup.rejected_fields()` now reads the fields the target REFUSED (Spring field errors and
+the common JSON `errors[]` shape), `signup.repair_value()` derives a better value from the
+constraint the target itself stated — *"size must be between 3 and 30"* — and the retry
+loop applies it. Repair is monotonic, so a still-refused value cannot spin the loop. Tested
+end to end against crAPI's exact 400 body: first POST refused on the value, second carries
+a repaired one and is accepted.
+
+**It did not fix the run, and the reason is ORDERING, measured:**
+
+```
+endpoint CONFIRMED by request: /identity/...   <- strategist steps 29-31
+signup attempts: GET /REGISTER                 <- long before that
+```
+
+`_establish_principals` runs EARLY and deliberately — the comment says so: the principals
+must get the rate budget before the resolution sweep spends it, because run 14 lost crAPI's
+identity oracle exactly that way. Mount and endpoint discovery run during the crawl, later.
+So at the moment signup picks a URL, `confirmed_routes` is EMPTY and only mined fragments
+exist — and `/REGISTER` is a mined fragment.
+
+**Two correct fixes cannot help each other because of when they run.** The narrowed
+pre-establishment resolution pass (GAP #4) exists for exactly this and resolved the right
+URL in one run and not the next, which is why the second principal works intermittently.
+
+**The next change is an ordering one, and it should be measured rather than assumed:** let
+establishment trigger the signup-relevant slice of endpoint discovery before it chooses,
+rather than depending on whether mining happened to produce a resolvable fragment. That is
+a deliberate architectural change to the sequence this project has twice paid to get right,
+and it deserves its own classification and its own before/after run — not a late edit.
+
+**Status: no replay experiment has confirmed a finding.** The chain is: capture → replay →
+cross-principal comparison → verdict. The first two links are proven working. The third is
+blocked behind a second account that fails to be created for a reason now fully understood.

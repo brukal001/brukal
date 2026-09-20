@@ -127,3 +127,88 @@ def synth_value(field: str, tag: str) -> str:
     if "url" in low or "site" in low:
         return "http://brukal.test/"
     return f"brk{tag}"
+
+
+# A Spring field error carries the field, the value it refused, and the human constraint:
+#   Field error in object 'signUpForm' on field 'name': rejected value [T];
+#   codes [Size.signUpForm.name,...]; default message [size must be between 3 and 30]
+_REJECTED = re.compile(
+    r"on field '([A-Za-z][A-Za-z0-9_.\-]{0,39})'[^\n]*?rejected value \[([^\]]*)\]"
+    r"(?:[^\n]*?default message \[([^\]]*)\])?", re.S)
+# Fallback for the common JSON shape: {"errors":[{"field":"name","message":"too short"}]}
+_REJECTED_JSON_KEYS = ("field", "name", "param", "parameter")
+
+
+def rejected_fields(body: str, already: set | None = None) -> list:
+    """(field, constraint) for fields the request SENT and the target REFUSED.
+
+    MISSING and INVALID are different refusals with different repairs, and only the first
+    was ever handled. `missing_fields` deliberately skips anything the request already
+    carried — right for a field the target wants ADDED, wrong for one it HAS and will not
+    accept. crAPI rejected `name` on a length rule, the field was in `already`, so the
+    harness found nothing it could add and gave up: ten `state_changed` experiments died
+    `second_unavailable` behind a value four characters too short, on an endpoint that
+    named the field AND the constraint.
+
+    Only fields we actually sent are returned, so the caller can never confuse a repair
+    with an addition and lose the ability to attribute the next refusal."""
+    text = body or ""
+    already = {a.lower() for a in (already or set())}
+    if not already:
+        return []
+    out, seen = [], set()
+
+    for m in _REJECTED.finditer(text):
+        field, _value, message = m.group(1), m.group(2), (m.group(3) or "")
+        low = field.lower()
+        if low in already and low not in seen and _NAME.match(field):
+            seen.add(low)
+            out.append((field, message or "rejected"))
+
+    if not out:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        errors = []
+        if isinstance(parsed, dict):
+            for key in ("errors", "details", "fieldErrors", "violations"):
+                val = parsed.get(key)
+                if isinstance(val, list):
+                    errors.extend(v for v in val if isinstance(v, dict))
+        for err in errors:
+            field = next((str(err[k]) for k in _REJECTED_JSON_KEYS if err.get(k)), "")
+            low = field.lower()
+            if field and low in already and low not in seen and _NAME.match(field):
+                seen.add(low)
+                out.append((field, str(err.get("message") or err.get("error") or "rejected")))
+    return out
+
+
+def repair_value(field: str, constraint: str, current: str = "") -> str:
+    """A better value for a field the target refused, from what it SAID was wrong.
+
+    Deterministic and monotonic: repairing an already-repaired value must not return the
+    same string, or the retry loop spins against an endpoint that keeps refusing — the
+    failure `missing_fields`' `already` rule exists to prevent."""
+    low = (constraint or "").lower()
+    cur = current or ""
+    grow = max(len(cur) + 4, 8)
+
+    # A length rule usually states its own bounds: "size must be between 3 and 30".
+    bounds = re.findall(r"\b(\d{1,3})\b", low)
+    if "size" in low or "length" in low or "short" in low or "between" in low:
+        lo = int(bounds[0]) if bounds else 8
+        hi = int(bounds[1]) if len(bounds) > 1 else max(lo + 8, 30)
+        want = min(max(lo + 4, grow), hi)
+        base = (cur or field or "brukal").strip() or "brukal"
+        out = (base + "brukaltester")[:want]
+        return out if out != cur else (out + "x")[:hi]
+    if "mail" in low or "mail" in field.lower():
+        return f"brk{abs(hash(cur + field)) % 10**8}@brukal.test"
+    if "digit" in low or "number" in low or "phone" in field.lower():
+        return str(9000000000 + (abs(hash(cur + field)) % 10**9))[:10]
+    if "blank" in low or "empty" in low or "null" in low or "required" in low:
+        return f"brukal{abs(hash(field)) % 1000}"
+    # Nothing readable: lengthen deterministically rather than guess a shape.
+    return (cur + "brukal")[:64] if cur else "brukaltester"

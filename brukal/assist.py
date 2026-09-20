@@ -6481,6 +6481,21 @@ class AssistSession:
                     break
                 wanted = signup.missing_fields(r.body or "", already=set(fields))
                 if not wanted:
+                    # MISSING and INVALID are different refusals. Nothing to ADD does not
+                    # mean nothing to fix: crAPI HAD `name` and would not accept that
+                    # value, said so by field and constraint, and this loop gave up
+                    # because `missing_fields` correctly skips a field we already sent.
+                    # Ten `state_changed` experiments died `second_unavailable` behind a
+                    # value four characters too short.
+                    repaired = signup.rejected_fields(r.body or "", already=set(fields))
+                    if repaired:
+                        for _f, _constraint in repaired:
+                            fields[_f] = signup.repair_value(
+                                _f, _constraint, current=str(fields.get(_f, "")))
+                        self.note(f"[experiment] signup at {url} refused "
+                                  f"{[f for f, _ in repaired]} by value; repairing from "
+                                  f"the constraint the target named and retrying")
+                        continue
                     self.signup_refusal = (
                         f"signup at {url} refused with {r.status} and its error named no "
                         f"field we could supply: {(r.body or '')[:160]}")
