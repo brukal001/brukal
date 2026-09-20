@@ -2254,7 +2254,46 @@ This is the highest-value remaining fix in the replay chain: a target that tells
 field it rejected and why is handing over the answer, and every cross-account experiment in
 the series is blocked behind it.
 
-## GAP #27, part two — the reader is fixed; the ORDER is the blocker
+## ⚠ GAP #27, part two — RETRACTED AND CORRECTED BELOW
+
+**The section that followed claimed the validation reader did not fix the run and blamed
+ORDERING. Both claims were wrong, and the correction is recorded here rather than by
+editing the mistake away.**
+
+What I did: grepped the vault for `second principal ...`, found "NOT established", and
+concluded the fix had failed. Those notes were from EARLIER attempts inside the SAME run.
+Reading the ledger in order shows what actually happened:
+
+```
+row  11  CRAWL fetched JS bundle
+row 193  MOUNT discovery probe            <- discovery ran BEFORE signup, not after
+row 319  POST /identity/api/auth/signup   <- the real endpoint WAS used
+row 566  POST /identity/api/auth/signup -> 400   <- refused on the value
+row 568  POST /identity/api/auth/signup -> 200   <- REPAIRED AND ACCEPTED
+```
+
+and the vault's later note: `second principal available: brk47e9d58e76@brukal.test`,
+`registered via JSON signup at http://172.20.0.12/identity/api/auth/signup`.
+
+**The reader worked. The second principal was created and USED** — `experiment_principal`
+records `second` on 3 requests — and `second_unavailable` went **20 → 10 → 0** across the
+three runs.
+
+**The lesson is mine and it is the one this file keeps recording about other things:** a
+grep for a failure string finds failures, including ones that were later overcome. The
+question "did it fail?" and the question "what happened?" have different answers, and only
+the second is answered by reading the ledger in order. I made the same class of error
+earlier this session reporting "0 endpoints confirmed" twice from the wrong vault path.
+
+### What was actually still true
+
+`state_changed` was proposed 0 times in that run — correctly, because auth endpoints are
+now excluded from replay and the harness made no other writes. That boundary stands and is
+unaffected by this correction.
+
+---
+
+## GAP #27, part two (the superseded analysis) — the reader is fixed; the ORDER is the blocker
 
 **The validation reader is done and tested.** `missing_fields` deliberately skips a field
 the request already carried; that is correct for a field the target wants ADDED and blind
