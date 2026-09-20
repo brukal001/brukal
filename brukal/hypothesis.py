@@ -57,6 +57,25 @@ _COMPARATORS = {
     "b_errors_a_does_not": (
         lambda a, b: (a.status == 200 and b.status is not None and b.status >= 500),
         "the variant drove the application into a server error the control did not"),
+    # REUSE, and the ONLY comparator whose confirmation means the reuse WORKED.
+    #
+    # Every other comparator answers this question backwards: `status_differs` and
+    # `bodies_differ` confirm when the two answers DIFFER, which is the application
+    # ENFORCING single-use — the safe outcome — and `b_errors_a_does_not` confirms when
+    # the second attempt errors, safe again. Wiring any of them to a reuse experiment
+    # would have manufactured a finding out of correct behaviour, which is worse than
+    # having no finding at all.
+    #
+    # It confirms when BOTH attempts were ACCEPTED: the application took the same
+    # state-changing request twice. It cannot know the value was single-use — plenty of
+    # operations are legitimately repeatable — so its bound is LOW and its claim says only
+    # what was shown. What makes it interesting is the CONJUNCTION with a link: the value
+    # came from the application's own response (see `capture.link_fields`) and was then
+    # accepted again.
+    "repeat_accepted": (
+        lambda a, b: bool(a.status and b.status
+                          and 200 <= a.status < 300 and 200 <= b.status < 300),
+        "the same state-changing request was accepted twice"),
     # A NEW EVIDENCE CLASS: the proof is a SIDE-EFFECT, not a reply. Every comparator
     # above reads a response differential, which is why four of crAPI's measurable
     # challenges — mass assignment (8, 9, 10) and coupon re-redemption (13) — were
@@ -292,6 +311,13 @@ _EVIDENCE_CLASS = {
     "b_errors_a_does_not": (
         "one request drove the application into a server error its control did not",
         "medium", False),
+    # LOW on purpose. Repetition is not proof that an operation is single-use, and this
+    # comparator sees only two requests. It says what happened; a human decides whether
+    # THAT operation should have refused the second one.
+    "repeat_accepted": (
+        "the same state-changing request, carrying a value the application itself had "
+        "returned, was accepted more than once",
+        "low", False),
     "a_denied_b_allowed": (
         "one principal was refused and a different principal was accepted for the same "
         "request",

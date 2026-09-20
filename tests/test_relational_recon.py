@@ -125,3 +125,48 @@ def test_no_links_no_section():
     from brukal.webmap import AttackSurface
     s = AttackSurface(seed="http://t/")
     assert "refer" not in s.summary().lower()
+
+
+def test_a_link_to_a_WRITE_becomes_a_reuse_experiment():
+    """The payoff. crAPI's coupon lifecycle crosses two services: validate-coupon hands
+    back a code, apply_coupon consumes it. The reuse question — was a consumed value
+    accepted AGAIN — is derivable from that link and from nothing else the harness had."""
+    from brukal.capture import reuse_experiments
+    links = [{"source_path": "/community/api/v2/coupon/validate-coupon",
+              "source_field": "coupon_code",
+              "consumer_path": "/workshop/api/shop/apply_coupon",
+              "consumer_field": "coupon_code", "value": "TRAC075",
+              "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST",
+                            url="http://t/workshop/api/shop/apply_coupon",
+                            body='{"coupon_code":"TRAC075","amount":75}', status=200)]
+    hyps = reuse_experiments(links, caps, base="http://t")
+    assert len(hyps) == 1
+    h = hyps[0]
+    assert h.comparator == "repeat_accepted"
+    assert h.control["url"] == h.variant["url"] == "http://t/workshop/api/shop/apply_coupon"
+    assert h.control["method"] == "POST" and h.variant["method"] == "POST"
+    assert "TRAC075" in (h.control["body"] or "")
+    assert h.control["as"] == h.variant["as"] == "self", (
+        "reuse is about the SAME principal using a value twice; changing principal asks "
+        "a different question entirely")
+
+
+def test_a_link_to_a_READ_is_not_a_reuse_experiment():
+    """BOUNDARY: reading something twice is not reuse. Only a state-changing consumer
+    can 'consume' anything."""
+    from brukal.capture import reuse_experiments
+    links = [{"source_path": "/a", "source_field": "id", "consumer_path": "/b",
+              "consumer_field": "order_id", "value": "9", "consumer_method": "GET"}]
+    assert reuse_experiments(links, [], base="http://t") == []
+
+
+def test_without_the_original_request_body_nothing_is_invented():
+    """FAIL CLOSED: the replay must send what the operator actually sent. With no captured
+    body for the consumer there is nothing faithful to replay, and guessing one would put
+    a request nobody made on the wire."""
+    from brukal.capture import reuse_experiments
+    links = [{"source_path": "/a", "source_field": "coupon_code",
+              "consumer_path": "/spend", "consumer_field": "coupon_code",
+              "value": "X9Y8Z7", "consumer_method": "POST"}]
+    assert reuse_experiments(links, [], base="http://t") == []

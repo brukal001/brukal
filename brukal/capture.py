@@ -544,3 +544,49 @@ def _parse_json(text):
         return json.loads(text)
     except Exception:
         return None
+
+
+def reuse_experiments(links, caps, base: str = "", max_hypotheses: int = 4) -> list:
+    """Was a value the application ITSELF handed back accepted a second time?
+
+    This is the question a structural map cannot pose. Knowing that
+    `apply_coupon.coupon_code` is whatever `validate-coupon` returned is what makes
+    "apply it again" a meaningful experiment rather than a random repeat — and crAPI's
+    coupon lifecycle crosses TWO SERVICES, so nothing short of the link would connect them.
+
+    SAME PRINCIPAL, deliberately. Reuse is about one account using a value twice; changing
+    the principal asks a different question (cross-account access) that the existing
+    comparators already cover.
+
+    FAIL CLOSED: the replay sends the body the OPERATOR actually sent, taken from the
+    capture. With no captured body there is nothing faithful to replay, and inventing one
+    would put a request nobody made on the wire."""
+    from .hypothesis import Hypothesis
+
+    by_path = {}
+    for c in (caps or []):
+        if c.is_write() and c.body:
+            by_path.setdefault(c.path(), c)
+
+    out = []
+    for link in (links or []):
+        if len(out) >= max_hypotheses:
+            break
+        if str(link.get("consumer_method", "")).upper() not in _WRITE_METHODS:
+            continue                       # reading twice is not reuse
+        original = by_path.get(link.get("consumer_path"))
+        if original is None:
+            continue                       # nothing faithful to replay
+        url = f"{base.rstrip('/')}{link['consumer_path']}"
+        spec = {"url": url, "method": original.method, "body": original.body, "as": "self"}
+        out.append(Hypothesis(
+            title=(f"{link['consumer_path']} accepted "
+                   f"{link['consumer_field']}={link['value']} which "
+                   f"{link['source_path']} issued — is it accepted again?"),
+            severity="medium", comparator="repeat_accepted",
+            control=dict(spec), variant=dict(spec),
+            rationale=(f"the application returned {link['source_field']}="
+                       f"{link['value']} from {link['source_path']} and then accepted it "
+                       f"at {link['consumer_path']}; if it accepts it repeatedly the "
+                       f"value was never consumed")))
+    return out
