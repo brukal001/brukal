@@ -166,3 +166,37 @@ def test_a_403_IS_captured_because_it_is_a_real_answer(tmp_path):
     b = GovernedBrowser(load_scope(SCOPE), _Cage(), AuditLog(tmp_path / "a.jsonl"))
     b.run(WebAction(kind="get", url=f"{BASE}/admin.php"), agent="recon")
     assert [c.path() for c in b.captured()] == ["/admin.php"]
+
+
+def test_an_experiments_OWN_requests_are_not_captured(tmp_path):
+    """MEASURED: self-capture recorded the requests EXPERIMENTS issue, those became new
+    experiments, and those issued more requests — a feedback loop that re-queued a
+    question the run had already asked and answered.
+
+    Capture exists to record what the target was asked OUTSIDE the experiment machinery:
+    recon, exploitation, the operator's session. An experiment's own dispatch is already
+    recorded as `experiment_result` and judged by a comparator; capturing it too turns the
+    ledger into a mirror pointed at itself."""
+    from brukal import Executor, Gate
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.kali import ExecResult
+    from brukal.web import WebAction as WA
+
+    scope = load_scope(SCOPE)
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.2", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, FakeWebCage(), audit))
+
+    s.browser.run(WA(kind="get", url=f"{BASE}/ordinary"), agent="recon")
+    assert len(s.browser.captured()) == 1
+
+    with s._as_identity("self", "control", f"{BASE}/experiment"):
+        s.browser.run(WA(kind="get", url=f"{BASE}/experiment"), agent="web")
+    paths = {c.path() for c in s.browser.captured()}
+    assert "/ordinary" in paths
+    assert "/experiment" not in paths, "the harness captured its own experiment traffic"

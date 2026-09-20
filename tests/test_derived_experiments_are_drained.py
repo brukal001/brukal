@@ -123,7 +123,17 @@ def test_the_LOOP_drains_what_a_command_observed(tmp_path):
     assert s.derived_hypotheses(), "the observation never reached the queue"
     loop.run()
     assert asked, "the loop ended with a well-evidenced question unasked"
-    assert s.derived_hypotheses() == []
+    # The OBSERVATION must be drained. The queue itself is no longer necessarily empty:
+    # cross-principal experiments derived from captured traffic are DEFERRED until the
+    # second principal exists rather than consumed and written off (see
+    # test_cross_principal_experiments_wait.py), so anything left must be waiting on a
+    # principal, never the foreign-record question this test is about.
+    assert {h.comparator for h in asked} == {"a_denied_b_allowed", "unauthenticated_exposure"}, (
+        "the foreign-record questions are what this test is about and they must be ASKED")
+    for h in s.derived_hypotheses():
+        names = {h.control.get("as"), h.variant.get("as"),
+                 (h.act or {}).get("as") if h.act else None}
+        assert "second" in names, f"something was left queued for no reason: {h.title}"
 
 
 def test_the_model_path_is_unchanged(tmp_path):

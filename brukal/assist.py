@@ -4251,6 +4251,7 @@ class AssistSession:
                 f"'{who}' would be issued as a stranger")
         self._record_principal(who, who, role, url)
         if who == "self" or browser is None:
+            setattr(self.browser, '_in_experiment', True) if self.browser else None
             yield
             return
         saved_cookies = dict(getattr(browser, "_cookies", {}) or {})
@@ -4261,8 +4262,15 @@ class AssistSession:
             elif who == "second":
                 browser._cookies = dict(second.get("cookies") or {})
                 browser.auth_header = second.get("auth", "")
+            setattr(self.browser, '_in_experiment', True) if self.browser else None
             yield
         finally:
+            # The experiment machinery's own dispatch is already recorded as
+            # `experiment_result` and judged by a comparator. Capturing it AGAIN fed
+            # it back as a new experiment, which issued more requests: a mirror
+            # pointed at itself. Cleared here, where every dispatch passes.
+            setattr(getattr(self, 'browser', None) or type('x', (), {})(),
+                    '_in_experiment', False)
             browser._cookies = saved_cookies
             browser.auth_header = saved_auth
 
@@ -4675,7 +4683,31 @@ class AssistSession:
             _pending = self.derived_hypotheses()
             if not _pending:
                 return 0
-            self._derived_hypotheses = []
+            # AN EXPERIMENT THAT CANNOT RUN YET MUST NOT BE SPENT. The loop drains this
+            # queue at the top of every turn; principals are established later, in
+            # REFLEX 0b. A cross-principal experiment drained before then was consumed,
+            # recorded `second_unavailable`, and never retried — which is HARNESS-LIMIT,
+            # true, and useless: the harness limit was the SCHEDULE, and the record made
+            # it look like a capability the engagement lacked.
+            #
+            # MEASURED on crAPI: the three `state_changed` experiments derived from a
+            # recorded human session ran at ledger rows 181/190/199 and were written off;
+            # the second principal was created at row 322 and used successfully at row
+            # 755. They were not impossible. They were early.
+            _ready, _waiting = [], []
+            _have_second = bool(getattr(self, "_second_identity", None))
+            for _h in _pending:
+                _named = {str((_h.control or {}).get("as", "")),
+                          str((_h.variant or {}).get("as", "")),
+                          str((_h.act or {}).get("as", "")) if _h.act else ""}
+                if "second" in _named and not _have_second:
+                    _waiting.append(_h)
+                else:
+                    _ready.append(_h)
+            self._derived_hypotheses = _waiting
+            if _waiting and not _ready:
+                return 0                   # nothing runnable this turn; nothing lost
+            _pending = _ready
             self.note(f"[experiment] asking {len(_pending)} experiment(s) derived from "
                       f"observed records (no model call)")
             self._record_experiment_round("derived", len(_pending[:max_run]))

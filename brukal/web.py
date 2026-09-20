@@ -676,6 +676,8 @@ class GovernedBrowser:
         return list(getattr(self, "_captured_self", []) or [])
 
     def _self_capture(self, action, result) -> None:
+        if getattr(self, "_in_experiment", False):
+            return                             # the experiment machinery records its own
         st = getattr(result, "status", None)
         if result is None or not st:
             return                             # never happened; not evidence
