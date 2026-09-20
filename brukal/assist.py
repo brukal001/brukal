@@ -4477,6 +4477,11 @@ class AssistSession:
                 _base = (getattr(self.surface, "seed", "")
                          or f"http://{self.target}/").rstrip("/")
                 _derived.extend(_capture.reuse_experiments(_links, caps, base=_base))
+                # And the question crAPI's own error pointed at: a value issued to ONE
+                # principal, submitted by ANOTHER. Both sides run as `second`, so the
+                # readiness rule holds these until that principal exists.
+                _derived.extend(
+                    _capture.foreign_value_experiments(_links, caps, base=_base))
         except Exception as exc:
             self.note(f"[capture] reuse experiments could not be derived "
                       f"({type(exc).__name__}: {str(exc)[:80]})")

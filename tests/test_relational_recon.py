@@ -206,3 +206,60 @@ def test_the_SESSION_queues_reuse_experiments(tmp_path):
     assert s.queue_self_capture_experiments() > 0
     assert any(h.comparator == "repeat_accepted" for h in s.derived_hypotheses()), (
         "the reuse experiment never reached the queue the loop drains")
+
+
+def test_a_value_issued_to_A_is_tried_by_B_against_a_bogus_control():
+    """crAPI named the scope of its own check — "already claimed BY YOU" — which says the
+    claim is tracked per user and points at the question nothing had asked: a value the
+    application issued to ONE principal, submitted by ANOTHER.
+
+    The naive form ("B submits A's value; accepted = finding") would report a legitimately
+    multi-user coupon as a vulnerability. So it is a DIFFERENTIAL: B submits a bogus value
+    of the same shape as the control, and A's real value as the variant. Confirmation means
+    the real value behaved differently FOR A PRINCIPAL IT WAS NOT ISSUED TO — which is the
+    claim, and nothing more."""
+    from brukal.capture import foreign_value_experiments
+    links = [{"source_path": "/community/api/v2/coupon/validate-coupon",
+              "source_field": "coupon_code",
+              "consumer_path": "/workshop/api/shop/apply_coupon",
+              "consumer_field": "coupon_code", "value": "TRAC075",
+              "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST",
+                            url="http://t/workshop/api/shop/apply_coupon",
+                            body='{"coupon_code":"TRAC075","amount":75}', status=200)]
+    hyps = foreign_value_experiments(links, caps, base="http://t")
+    assert len(hyps) == 1
+    h = hyps[0]
+    assert h.comparator == "status_differs"
+    assert h.control["as"] == "second" and h.variant["as"] == "second", (
+        "both sides must be the SAME principal; the VALUE is the one thing that changes")
+    assert "TRAC075" in h.variant["body"]
+    assert "TRAC075" not in h.control["body"], "the control must not carry the real value"
+    assert h.control["url"] == h.variant["url"]
+
+
+def test_the_bogus_control_keeps_the_shape_of_the_real_value():
+    """A control that is obviously malformed proves nothing — the app may reject it on
+    format. It has to differ only in BEING somebody's."""
+    from brukal.capture import foreign_value_experiments
+    import json as _json
+    links = [{"source_path": "/a", "source_field": "id", "consumer_path": "/spend",
+              "consumer_field": "order_id", "value": "9", "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST", url="http://t/spend",
+                            body='{"order_id":9}', status=200)]
+    h = foreign_value_experiments(links, caps, base="http://t")[0]
+    bogus = _json.loads(h.control["body"])["order_id"]
+    assert str(bogus).isdigit(), f"a numeric id got a non-numeric control: {bogus}"
+    assert str(bogus) != "9"
+
+
+def test_it_needs_a_second_principal_to_be_meaningful():
+    """Both sides run as `second`, so the deferral rule holds this until that principal
+    exists — the same guarantee that stopped state_changed experiments being spent early."""
+    from brukal.capture import foreign_value_experiments
+    links = [{"source_path": "/a", "source_field": "id", "consumer_path": "/spend",
+              "consumer_field": "order_id", "value": "9", "consumer_method": "POST"}]
+    caps = [CapturedRequest(method="POST", url="http://t/spend",
+                            body='{"order_id":9}', status=200)]
+    h = foreign_value_experiments(links, caps, base="http://t")[0]
+    assert {h.control["as"], h.variant["as"]} == {"second"}

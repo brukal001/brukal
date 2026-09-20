@@ -590,3 +590,63 @@ def reuse_experiments(links, caps, base: str = "", max_hypotheses: int = 4) -> l
                        f"at {link['consumer_path']}; if it accepts it repeatedly the "
                        f"value was never consumed")))
     return out
+
+
+def _bogus_like(value: str) -> str:
+    """A value of the SAME SHAPE that belongs to nobody.
+
+    A control that is obviously malformed proves nothing: the application may refuse it on
+    format and the comparison would be about parsing, not ownership. It has to differ only
+    in being somebody's."""
+    v = str(value)
+    if v.isdigit():
+        return str(int(v) + 90000)
+    import re as _re
+    return _re.sub(r"[A-Za-z]", "Z", _re.sub(r"[0-9]", "7", v)) or "ZZZ777"
+
+
+def foreign_value_experiments(links, caps, base: str = "", max_hypotheses: int = 4) -> list:
+    """A value the application issued to ONE principal, submitted by ANOTHER.
+
+    crAPI named the scope of its own check — "Coupon code is already claimed BY YOU" —
+    which says the claim is tracked per user and points at the question nothing had asked.
+
+    A DIFFERENTIAL, not an assertion. "B submits A's value; accepted means a finding" would
+    report a legitimately multi-user coupon as a vulnerability. So the control is a BOGUS
+    value of the same shape and the variant is the real one, both as the second principal:
+    confirmation means the real value behaved differently FOR A PRINCIPAL IT WAS NOT ISSUED
+    TO. That is the claim, and `status_differs` caps it at low, which is right — a human
+    decides whether that operation should have cared who was asking."""
+    from .hypothesis import Hypothesis
+
+    by_path = {}
+    for c in (caps or []):
+        if c.is_write() and c.body:
+            by_path.setdefault(c.path(), c)
+
+    out = []
+    for link in (links or []):
+        if len(out) >= max_hypotheses:
+            break
+        if str(link.get("consumer_method", "")).upper() not in _WRITE_METHODS:
+            continue
+        original = by_path.get(link.get("consumer_path"))
+        if original is None or not original.body:
+            continue
+        real, bogus = str(link["value"]), _bogus_like(link["value"])
+        if real not in original.body:
+            continue                       # cannot substitute faithfully; do not invent
+        url = f"{base.rstrip('/')}{link['consumer_path']}"
+        out.append(Hypothesis(
+            title=(f"{link['consumer_path']}: does a {link['consumer_field']} issued to "
+                   f"another account behave differently from one issued to nobody?"),
+            severity="medium", comparator="status_differs",
+            control={"url": url, "method": original.method, "as": "second",
+                     "body": original.body.replace(real, bogus)},
+            variant={"url": url, "method": original.method, "as": "second",
+                     "body": original.body},
+            rationale=(f"{link['source_path']} issued {link['source_field']}={real} to the "
+                       f"FIRST principal; the second principal submits a same-shaped value "
+                       f"belonging to nobody, then that one — a difference means the "
+                       f"application treated another account's reference as usable")))
+    return out
