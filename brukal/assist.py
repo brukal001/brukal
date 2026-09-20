@@ -4438,6 +4438,14 @@ class AssistSession:
 
         Queued onto `_derived_hypotheses`, which the loop already drains every turn at no
         model cost, so this needs no new scheduling."""
+        # ABLATION CONTROL. Arm C of a three-arm measurement: capture-enriched GROUNDING
+        # with the harness's derived experiments suppressed, so the model sees the better
+        # surface but no worked example of the construction. Without this, "the grounding
+        # named the write surface" and "the model copied an experiment it was shown" both
+        # predict the same result and neither can be credited.
+        import os as _os
+        if _os.environ.get("BRUKAL_NO_CAPTURE_REPLAY"):
+            return 0
         browser = getattr(self, "browser", None)
         if browser is None or not hasattr(browser, "captured"):
             return 0

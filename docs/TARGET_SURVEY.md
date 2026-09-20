@@ -2397,3 +2397,57 @@ became a false authorisation verdict — a comparison between two crashes says n
 who may do what. The floor stopped the wrong CLAIM while leaving the raw observation in the
 ledger, where it was then noticed. That is the distinction the whole attribution system
 exists for: *not judged* is not the same as *not recorded*.
+
+---
+
+# ★ THE A/B/C — A CLEAN NEGATIVE ON MY OWN HYPOTHESIS (2026-09-21, $0.00)
+
+After the chain completed, one run showed the local model proposing three `state_changed`
+experiments of its own — something no model had done in twenty runs. I logged it as a
+HYPOTHESIS needing an A/B rather than a result. This is that A/B, with the prediction and
+the confound both fixed before any arm ran.
+
+**Hypothesis:** capture-enriched grounding — which names methods, parameters and auth shape
+from real traffic — makes the MODEL propose `state_changed`.
+**Metric:** model-proposed only. Harness-derived experiments are titled "…observed in
+traffic…" by `hypotheses_from` and are excluded; the harness deriving an experiment proves
+nothing about the model.
+**Prediction:** A > 0, B = 0.
+
+| arm | grounding | derived experiments | proposals | `state_changed` | **model-proposed** |
+|---|---|---|---|---|---|
+| A | capture-enriched | on | 13 | 4 | **0** |
+| B | crawl only | on | 11 | 0 | **0** |
+| C | capture-enriched | **suppressed** | 6 | 0 | **0** |
+
+**PREDICTION FAILED. The hypothesis is not supported.** The three proposals that prompted
+it did not reproduce — a single occurrence, which is exactly why it was logged as a
+hypothesis and exactly what an A/B is for.
+
+Arm C rules out the alternative I raised when A came back zero: that the harness's derived
+proposals were CROWDING OUT the model's within the budget. With them suppressed the model
+had the room and still proposed none.
+
+## What this means for every claim made today
+
+Every gain is HARNESS-SIDE, and the wording matters:
+
+- the harness reads the target's own bundle and confirms the mounts by request
+- the harness derives the `state_changed` experiment from captured writes
+- the harness defers it until a second principal exists
+- the harness dispatches it as that principal, and a fixed comparator judges it
+
+**The model contributed none of it.** `state_changed` has now been proposed by a model in a
+live run ZERO times across three model families — claude-sonnet-5, deepseek-v4-pro and
+qwen2.5 — in twenty-three runs.
+
+So the honest claim is **"the harness stopped needing the model to imagine the
+experiment"**, NOT "better recon made the model better". The maintainer's thesis — recon is
+the lever — holds, and the mechanism is not the one I guessed: recon lets the HARNESS build
+the experiment, rather than lifting the model's proposals.
+
+**A note on arm C's total (6 proposals vs 13 and 11).** Suppressing derived experiments
+also removed the 4 harness ones, and the model produced fewer overall that run. Run-to-run
+variance on a 7B model is large and n=1 per arm; the MODEL-proposed `state_changed` count
+is 0/0/0, which is the number the prediction was about, but no claim is made here about
+proposal VOLUME.
