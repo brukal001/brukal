@@ -4467,7 +4467,22 @@ class AssistSession:
         seen = set(ever) | {(h.comparator, h.control.get("url"))
                             for h in self.derived_hypotheses()}
         queued = 0
-        for h in _capture.hypotheses_from(caps, max_hypotheses=max_new):
+        # REUSE EXPERIMENTS FIRST. They come from the relational links — a value the
+        # application itself handed back, accepted again — which is the only question here
+        # that a structural map cannot pose, and there are never many of them.
+        _derived = []
+        try:
+            _links = list(getattr(getattr(self, "surface", None), "field_links", []) or [])
+            if _links:
+                _base = (getattr(self.surface, "seed", "")
+                         or f"http://{self.target}/").rstrip("/")
+                _derived.extend(_capture.reuse_experiments(_links, caps, base=_base))
+        except Exception as exc:
+            self.note(f"[capture] reuse experiments could not be derived "
+                      f"({type(exc).__name__}: {str(exc)[:80]})")
+        _derived.extend(_capture.hypotheses_from(caps, max_hypotheses=max_new))
+
+        for h in _derived:
             key = (h.comparator, h.control.get("url"))
             if key in seen:
                 continue

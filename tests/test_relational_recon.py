@@ -170,3 +170,39 @@ def test_without_the_original_request_body_nothing_is_invented():
               "consumer_path": "/spend", "consumer_field": "coupon_code",
               "value": "X9Y8Z7", "consumer_method": "POST"}]
     assert reuse_experiments(links, [], base="http://t") == []
+
+
+def test_the_SESSION_queues_reuse_experiments(tmp_path):
+    """WIRING — the seventh capability-nothing-calls check in this session. reuse_
+    experiments() was complete, tested and demonstrated on real traffic, and no code path
+    called it. A tested function is not a used one."""
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.assist import AssistSession
+    from brukal.capture import CapturedRequest
+    from brukal.kali import ExecResult
+    from brukal.web import FakeWebCage, GovernedBrowser
+    from brukal.webmap import AttackSurface
+
+    scope = load_scope(Path(__file__).resolve().parent.parent / "scope.crapi.json")
+    audit = AuditLog(tmp_path / "a.jsonl")
+    ex = Executor(Gate(scope),
+                  type("K", (), {"run": lambda s, c: ExecResult(c, 0, "", "")})(),
+                  audit, approver=lambda d: True)
+    s = AssistSession("172.20.0.12", ex, StrategistAgent(type("M", (), {
+        "propose": lambda *a, **k: "[]", "last_stop_reason": "end_turn"})()),
+        browser=GovernedBrowser(scope, FakeWebCage(), audit))
+    s.surface = AttackSurface(seed="http://172.20.0.12/")
+    s.surface.field_links = [{
+        "source_path": "/community/api/v2/coupon/validate-coupon",
+        "source_field": "coupon_code",
+        "consumer_path": "/workshop/api/shop/apply_coupon",
+        "consumer_field": "coupon_code", "value": "TRAC075",
+        "consumer_method": "POST"}]
+    s._captured_for_replay = [CapturedRequest(
+        method="POST", url="http://172.20.0.12/workshop/api/shop/apply_coupon",
+        body='{"coupon_code":"TRAC075","amount":75}', status=200)]
+
+    assert s.queue_self_capture_experiments() > 0
+    assert any(h.comparator == "repeat_accepted" for h in s.derived_hypotheses()), (
+        "the reuse experiment never reached the queue the loop drains")
