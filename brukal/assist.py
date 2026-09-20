@@ -9257,7 +9257,7 @@ def _vault_for(vault_root, target: str) -> Path:
 
 
 def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
-                     vault_path, container, model, provider, base_url,
+                     vault_path, container, model, provider, base_url, lessons_path=None,
                      console, holder, hosts=(), login=None):
     """Shared setup for `solve` and `auto`: resolve the target, authorise scope,
     take the live-run sign-off, pick the brain, and build a grounded
@@ -9345,8 +9345,18 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     blackboard = Blackboard(vault_dir, session_scope)
     # Cross-session lessons live at the VAULT ROOT (shared across every target), so
     # Brukal carries what it learned from one box to the next.
+    #
+    # GAP #24: that only holds while the vault root is REUSED, and a measurement run must
+    # use a FRESH vault to be reproducible. Those two needs were the same flag, so 87 runs
+    # each started with an empty store and the whole corpus is 75 lessons -- 73 of them
+    # pitfalls, and the SAME THREE re-learned from scratch ("nuclei times out",
+    # "shell metacharacters are rejected"). The harness was re-discovering its own cage
+    # every run and carrying nothing about any application forward.
+    #
+    # `lessons_path` separates them: a fresh vault for a clean measurement, a persistent
+    # store for accumulated knowledge. Default is unchanged, so nothing existing moves.
     from .lessons import LessonStore
-    lessons = LessonStore(Path(vault_path) / "lessons.jsonl")
+    lessons = LessonStore(Path(lessons_path or vault_path) / "lessons.jsonl")
 
     # A GOVERNED BROWSER for WEB actions (same scope gate + audit). Fake cage in
     # test mode; else render via headless Chromium + craft requests, both in-cage.
@@ -9482,7 +9492,7 @@ def _preflight(session, console=None) -> bool:
 
 
 def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
-              audit_path="runs/audit.jsonl", vault_path="runs/vault",
+              audit_path="runs/audit.jsonl", vault_path="runs/vault", lessons_path=None,
               container="brukal-kali", model=None, provider=None, base_url=None,
               auto=None, hosts=(), login=None) -> int:
     # A rich console (menu UI + spinner-aware approver), or plain fallback.
@@ -9497,6 +9507,7 @@ def run_solve(target=None, *, fake=False, yes_authorised=False, scope_path="scop
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
+        lessons_path=lessons_path,
         console=console, holder=holder, hosts=hosts, login=login)
     if isinstance(prep, int):
         return prep
@@ -9602,7 +9613,7 @@ def _write_session_report(session, result, cage, audit, spend=""):
 
 
 def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope.json",
-             audit_path="runs/audit.jsonl", vault_path="runs/vault",
+             audit_path="runs/audit.jsonl", vault_path="runs/vault", lessons_path=None,
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
              full_send=False, mode=None, no_research=False,
@@ -9629,6 +9640,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
         target, fake=fake, yes_authorised=yes_authorised, scope_path=scope_path,
         audit_path=audit_path, vault_path=vault_path, container=container,
         model=model, provider=provider, base_url=base_url,
+        lessons_path=lessons_path,
         console=console, holder=holder, hosts=hosts, login=login)
     if isinstance(prep, int):
         return prep

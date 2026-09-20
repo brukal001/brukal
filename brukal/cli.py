@@ -261,6 +261,7 @@ def _cmd_auto(args) -> int:
     return run_auto(
         args.target, fake=args.fake, yes_authorised=args.yes_authorised,
         scope_path=scope_path, audit_path=args.audit, vault_path=args.vault,
+        lessons_path=getattr(args, "lessons", None),
         container=args.container, max_steps=args.max_steps, hosts=args.host or (),
         model=args.model, provider=args.provider, base_url=args.base_url,
         handoff_to_menu=not args.no_handoff, single_agent=args.single_agent,
@@ -590,6 +591,13 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--audit", default="runs/audit.jsonl")
     pa.add_argument("--vault", default="runs/vault",
                     help="Obsidian vault root for saved findings (per-target subfolder)")
+    # GAP #24. Lessons live at the vault root so they carry from one box to the next —
+    # but a MEASUREMENT run needs a fresh vault to be reproducible, and those were the
+    # same flag. 87 runs therefore each began with an empty store. This lets a series
+    # keep one persistent store while every run still gets its own clean vault.
+    pa.add_argument("--lessons", default=None,
+                    help="directory holding lessons.jsonl, kept ACROSS runs "
+                         "(default: the --vault root, i.e. per-run)")
     pa.add_argument("--container", default="brukal-kali")
     pa.add_argument("--host", action="append", metavar="VHOST",
                     help="authorise a web vhost at scope time (e.g. --host nexus.htb); "

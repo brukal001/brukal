@@ -2012,3 +2012,54 @@ probe.** It should be answered before another run is funded.
 **58× cheaper than run 18, and it moved the number run 18 could not.** The pre-flight
 discipline is what bought that: `deepseek-v4-flash` was rejected on 1 `state_changed` in 16
 calls for about a cent, before a run was launched.
+
+---
+
+# ⛔ GAP #24 — THE HARNESS HAS LEARNED NOTHING IN 87 RUNS, AND THE CAUSE IS A FLAG COLLISION
+
+**Class: GENUINE GAP, and the direct answer to "what about learning and adaptive?".
+Measured 2026-09-20 at $0.00.**
+
+`LessonStore` is documented as *"a two-tier, GROWING, retrievable store"*, `AssistSession`
+calls it *"cross-session"*, and the wiring comment says lessons live at the vault root
+*"so Brukal carries what it learned from one box to the next."* **The mechanism works** —
+a store pointed at a shared path does hand a later run what an earlier one verified, and
+there is now a test that proves it.
+
+**It has never been used.** The entire corpus across 87 vaults:
+
+```
+75 verified lessons — 73 pitfalls, 2 wins
+  pitfall | `nuclei` with broad options times out in the cage
+  pitfall | Shell metacharacters (| > < ; && `backticks` $()) are rejected
+```
+
+The same three lessons, re-learned from scratch, run after run. They are about **the
+harness's own cage**, not about any application. Nothing a run discovered about how to
+test a target has ever reached the run after it.
+
+## The cause is not a bug in the store. It is two needs sharing one flag.
+
+Lessons live at the `--vault` root. A **measurement** run must use a FRESH vault to be
+reproducible — `runs/vault-cr2a`, `runs/vault-local1`, `runs/vault-cm6` — and every fresh
+vault is an empty store. **Reproducibility and learning were the same switch, so choosing
+one silently discarded the other**, and no prediction in 24 gaps ever mentioned lessons, so
+nobody looked.
+
+`--lessons DIR` separates them: a fresh vault per run for a clean measurement, one
+persistent store for accumulated knowledge. The default is unchanged.
+
+## The static-name guard caught a live-only bug in this very fix
+
+Threading the parameter hit BOTH `_prepare_session` call sites, and `run_solve` has no
+`lessons_path` in scope — a `NameError` that raises **only when that branch runs, which
+for this project means during a live engagement.** `test_static_names.py` exists for
+exactly that class and caught it before it could cost a run.
+
+## What this does and does not buy
+
+It makes accumulation POSSIBLE. It does not prove accumulation HELPS, and that must not be
+claimed until measured: the honest test is two runs on the same target, the second reading
+the first's store, with the predictions fixed beforehand — and then the harder one, a run
+on a target the store has never seen, to check that what carries forward is knowledge
+rather than crAPI-shaped overfitting.
