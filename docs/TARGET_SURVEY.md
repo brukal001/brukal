@@ -2109,3 +2109,82 @@ person does not shorten it back), and ends with a verification step — `docker 
 brukal-kali nft list ruleset | grep daddr` — because the whole lesson here is **check,
 do not assume**. Tests assert the documentation cannot regress: no unnegated instruction
 to use `restart`, a command that really re-reads the mount, and the reason stated.
+
+---
+
+# ★★★ COLD TARGET 1 — DVWA (`audit_dvwa1.jsonl`, 2026-09-20, $0.00)
+
+**The first target in this project's history that was never used to build it.** 12
+commands, 16 model calls (qwen2.5, local, free), chain intact. Authorised by the
+maintainer for exactly this purpose.
+
+## The predictions, fixed in the scope before launch
+
+| # | prediction | result | |
+|---|---|---|---|
+| 1 | ZERO mounts, ZERO endpoints confirmed (no SPA bundle to read) | **0 and 0** | ✅ **MET** |
+| 2 | the crawl still finds the surface: ≥3 pages, ≥1 form | **1 page, 1 form** | ⛔ **FAILED (pages)** |
+| 3 | recall — deliberately NOT predicted, DVWA has no challenge ledger | — | — |
+| 4 | the kernel lock DROPS crAPI while this scope is mounted | `172.20.0.12 -> HTTP 000` | ✅ **MET** |
+
+**Prediction 1 is the good news and it matters:** GAPs #20/#21 had nothing to read here and
+confirmed **nothing**. The fail-closed paths did what they promise — *no fabricated
+surface was handed to the model.* A technique that invents endpoints on an unfamiliar app
+would be worse than useless, and this one goes quiet instead.
+
+## ⛔ GAP #26 — RECON IS A MEMORISED WISHLIST FROM THE LAST TWO TARGETS
+
+**This is the finding. It is the maintainer's own hypothesis — *"the most important thing
+that gives a model power is proper recon and footprinting; I don't think the harness is
+doing any good reconnaissance"* — and the cold run measures it exactly.**
+
+30 URLs were fetched. **Two are real DVWA paths. Nineteen are API-shaped guesses drawn
+from crAPI and Juice Shop:**
+
+```
+/api/v1/coupon/apply   /coupons        /swagger.json       /v3/api-docs
+/graphql  /gql  /graphql/console  /graphql/api  /v1/graphql  /api/openapi.json
+```
+
+`/coupons` and `/api/v1/coupon/apply` are **Juice Shop** concepts. The harness spent
+two-thirds of a cold engagement hunting the previous target's endpoints on a PHP
+application that has none of them.
+
+Meanwhile, what DVWA actually serves and the run **never requested once**:
+
+```
+200  /setup.php          <- reachable, unauthenticated, never asked for
+200  /instructions.php   <- reachable, unauthenticated, never asked for
+302  /vulnerabilities/sqli/  /xss_r/  /exec/  /upload/   <- the entire vuln surface
+```
+
+There is **no content discovery at all**. `ffuf`, `gobuster` and `feroxbuster` are named in
+the codebase and **not one has ever run** in any measured engagement. Recon is: one `nmap`
+over a fixed port list, `whatweb`, `nuclei -timeout 5` with no templates, `nikto -maxtime
+120`, then straight to exploitation. On crAPI that was survivable because the JS bundle
+carried the whole API (GAP #21). **DVWA has no bundle, so the same pipeline sees one login
+page and stops.**
+
+The corroboration is on the other side of the ledger: the ONE recon improvement made this
+session — reading the surface out of the target's own bundle — is the ONE thing that moved
+recall in seven runs (CR2 run 1, 1 → 2 of 14). **Recon is the lever, and it is nearly
+untouched.**
+
+## The second half of prediction 2's failure: no authenticated crawl
+
+DVWA 302-redirects every path to `/login.php`, so link-following legitimately finds one
+page. The harness holds login machinery (`--login-url`, principals, a cookie jar) but the
+CRAWL never uses it: it maps the surface as a stranger, and on any session-gated
+application a stranger sees the login page. crAPI hid this because its API answers
+unauthenticated.
+
+## What a cold target is worth
+
+Four measured defects came out of one free run against an unfamiliar app — GAP #25 (the
+documented scope change does nothing), GAP #26 (recon is a memorised wishlist), the
+unauthenticated-crawl limit, and a confirmation that the fail-closed paths hold. **Twenty
+runs against crAPI produced nothing of this kind**, because every one of them was scored
+against a target the harness had been shaped to fit.
+
+**No claim is made here that Brukal "works" on an unseen target. It did not.** It stayed
+honest, which is the minimum, and it found almost nothing, which is the result.
