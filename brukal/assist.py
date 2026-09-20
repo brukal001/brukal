@@ -4473,6 +4473,30 @@ class AssistSession:
                       f"traffic — each control already answered")
         return queued
 
+    def _partition_by_principal_readiness(self, pending):
+        """(runnable now, waiting on a principal).
+
+        An experiment that names a principal which does not exist YET must not be run,
+        must not be recorded as a miss, and must not be lost. MEASURED on crAPI: the
+        state_changed experiments derived from a recorded human session ran at ledger row
+        348 and were written off `second_unavailable`, while the second principal was
+        used successfully at row 717. They were not impossible; they were early, and
+        `second_unavailable` recorded a SCHEDULE problem as a missing capability.
+
+        Lives here, beside the queue, because BOTH drains use it — the derived-only pass
+        and the model round — and guarding one of two drains is not guarding."""
+        have = {"second": bool(getattr(self, "_second_identity", None))}
+        ready, waiting = [], []
+        for h in (pending or []):
+            named = {str((h.control or {}).get("as", "")),
+                     str((h.variant or {}).get("as", "")),
+                     str((h.act or {}).get("as", "")) if h.act else ""}
+            if any(not have.get(n, True) for n in named):
+                waiting.append(h)
+            else:
+                ready.append(h)
+        return ready, waiting
+
     def derived_hypotheses(self) -> list:
         """Experiments derived from OBSERVATIONS rather than proposed by the model.
 
@@ -4694,16 +4718,7 @@ class AssistSession:
             # recorded human session ran at ledger rows 181/190/199 and were written off;
             # the second principal was created at row 322 and used successfully at row
             # 755. They were not impossible. They were early.
-            _ready, _waiting = [], []
-            _have_second = bool(getattr(self, "_second_identity", None))
-            for _h in _pending:
-                _named = {str((_h.control or {}).get("as", "")),
-                          str((_h.variant or {}).get("as", "")),
-                          str((_h.act or {}).get("as", "")) if _h.act else ""}
-                if "second" in _named and not _have_second:
-                    _waiting.append(_h)
-                else:
-                    _ready.append(_h)
+            _ready, _waiting = self._partition_by_principal_readiness(_pending)
             self._derived_hypotheses = _waiting
             if _waiting and not _ready:
                 return 0                   # nothing runnable this turn; nothing lost
@@ -4878,9 +4893,13 @@ class AssistSession:
         # that get lost. Drained, so an experiment is proposed once; whatever the
         # comparator then says is the published answer.
         proposals = self.repair_proposals(proposals)
-        _derived = self.derived_hypotheses()
+        _derived, _defer = self._partition_by_principal_readiness(self.derived_hypotheses())
+        if _derived or _defer:
+            # The MODEL round drains this queue too. Guarding only the derived-only path
+            # meant the deferred experiments were picked up and spent here instead — the
+            # readiness rule belongs to the QUEUE, not to one consumer of it.
+            self._derived_hypotheses = _defer
         if _derived:
-            self._derived_hypotheses = []
             proposals = _derived + list(proposals)
             self.note(f"[experiment] {len(_derived)} experiment(s) derived from observed "
                       f"records, queued ahead of the model's proposals")

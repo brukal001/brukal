@@ -108,3 +108,29 @@ def test_experiments_that_need_nobody_are_NOT_held_up(tmp_path):
     s.run_hypotheses(derived_only=True)
     assert [h.comparator for h in ran] == ["unauthenticated_exposure"]
     assert len(s.derived_hypotheses()) == 1
+
+
+def test_the_MODEL_round_also_respects_readiness(tmp_path):
+    """MEASURED: deferral was added to the derived-only drain, and the experiments were
+    still spent — because `run_hypotheses()` (the MODEL round) ALSO drains the derived
+    queue:
+
+        _derived = self.derived_hypotheses()
+        if _derived:
+            self._derived_hypotheses = []      <- takes the deferred ones too
+            proposals = _derived + list(proposals)
+
+    Guarding one of two drains is not guarding. The readiness rule belongs to the QUEUE,
+    not to one consumer of it, or the next consumer added inherits the bug."""
+    s = _session(tmp_path)
+    s._derived_hypotheses = [_needs_second()]
+    ran = []
+    s._run_one_round = lambda props, outcomes, shapes=None: (ran.extend(props) or 0)
+    s.strategist = type("S", (), {"_llm": type("L", (), {
+        "propose": staticmethod(lambda *a, **k: "[]"),
+        "last_stop_reason": "end_turn", "last_block_kinds": []})()})()
+
+    s.run_hypotheses()                         # the MODEL path, not derived_only
+    assert not [h for h in ran if (h.act or {}).get("as") == "second"], (
+        "the model round spent an experiment whose principal does not exist")
+    assert s.derived_hypotheses(), "it was drained and lost by the model path"
