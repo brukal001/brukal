@@ -2333,3 +2333,67 @@ and it deserves its own classification and its own before/after run — not a la
 **Status: no replay experiment has confirmed a finding.** The chain is: capture → replay →
 cross-principal comparison → verdict. The first two links are proven working. The third is
 blocked behind a second account that fails to be created for a reason now fully understood.
+
+---
+
+# THE CHAIN COMPLETED (2026-09-21) — and what the 5xx floor was protecting
+
+## `second_unavailable` 4 → ZERO; every `state_changed` dispatched and judged
+
+The last break was the same shape as several before it: the readiness rule was attached to
+ONE consumer of the derived queue (the derived-only drain) while `run_hypotheses()` — the
+model round — drained the same queue unguarded. **Guarding one of two drains is not
+guarding.** It now lives beside the queue as `_partition_by_principal_readiness`, so the
+next consumer inherits the guarantee instead of the bug — exactly the fix
+`_is_destructive_request` still needs on the web path (GAP #15).
+
+```
+state_changed experiments: 7, every one dispatched
+  4 judged      stage=judged, attribution=MEASURED
+  3 unresolved  both_sides_failed (two 5xx)
+act dispatched AS THE SECOND PRINCIPAL 4 times:
+  POST /workshop/api/shop/orders · /orders/return_order
+  POST /community/api/v2/coupon/validate-coupon · /workshop/api/shop/apply_coupon
+```
+
+**capture a human session → derive from the writes → defer until a second principal exists
+→ dispatch the write AS that principal → comparator judges.** Every link was broken at some
+point, and every break was found by running it and reading the ledger IN ORDER.
+
+The verdict is `not_confirmed / MEASURED` — evidence about crAPI, not a finding. What
+changed is that the question was ASKED. `state_changed` was proposed ZERO times across
+twenty runs of both series, including with claude-sonnet-5 and deepseek-v4-pro.
+
+## An unengineered result worth testing properly
+
+The local 7B model proposed THREE `state_changed` experiments of its own — "Shop Orders -
+Cross Account Modify", "Coupon Validation - Cross Account Redeem", "Mechanic Service
+Requests - State Transition". No model had done that before today. The plausible cause is
+that the grounding now NAMES the write surface (methods, parameters and auth shape read
+from real traffic), so the construction stopped requiring imagination. **That is a
+hypothesis, not a result** — it needs an A/B with and without the capture-enriched
+grounding, which is free.
+
+## The 5xx floor did its job, and the observation survived it
+
+Three experiments came back `both_sides_failed`. Investigating those 500s by hand:
+
+```
+GET  /workshop/api/shop/orders   authenticated   -> 500  (Django "Server Error (500)")
+GET  /workshop/api/shop/orders   UNAUTHENTICATED -> 500
+PUT  /workshop/api/shop/orders                   -> 500
+DELETE / PATCH                                   -> 405   (handled correctly)
+POST /workshop/api/shop/orders                   -> 200   (the endpoint's real verb)
+stack trace / debug output                       -> none (145-byte body, DEBUG off)
+```
+
+A genuine unhandled server error, reachable PRE-AUTHENTICATION, on an endpoint whose
+`DELETE` and `PATCH` are handled properly. **Severity: LOW** — no data is disclosed, no
+trace leaks, and it is not one of crAPI's 18 documented challenges. It is a defect, not a
+vulnerability of consequence, and saying so plainly matters more than the find.
+
+**The point is what the floor did.** GAP #19's rule refuses to judge two 5xx, so this never
+became a false authorisation verdict — a comparison between two crashes says nothing about
+who may do what. The floor stopped the wrong CLAIM while leaving the raw observation in the
+ledger, where it was then noticed. That is the distinction the whole attribution system
+exists for: *not judged* is not the same as *not recorded*.
