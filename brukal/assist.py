@@ -4325,6 +4325,41 @@ class AssistSession:
     # from output, and output is unbounded.
     _DERIVED_MAX = 8
 
+    def queue_self_capture_experiments(self, max_new: int = 4) -> int:
+        """Turn requests BRUKAL ITSELF made into experiments, and queue them.
+
+        The replay consumer has existed since capture.py landed and could only ever be fed
+        by an operator handing over a HAR. Every request the governed browser makes is
+        already recorded at its own door; each one is an experiment whose CONTROL PROVABLY
+        WORKED — we issued it and the target answered. Re-issuing it as `second` or
+        `anonymous` is the cross-principal question the comparators were built to judge,
+        and a captured WRITE is the `state_changed` shape that no model in either series
+        has ever proposed.
+
+        Queued onto `_derived_hypotheses`, which the loop already drains every turn at no
+        model cost, so this needs no new scheduling."""
+        browser = getattr(self, "browser", None)
+        if browser is None or not hasattr(browser, "captured"):
+            return 0
+        caps = browser.captured()
+        if not caps:
+            return 0
+        from . import capture as _capture
+        seen = {(h.comparator, h.control.get("url")) for h in self.derived_hypotheses()}
+        queued = 0
+        for h in _capture.hypotheses_from(caps, max_hypotheses=max_new):
+            key = (h.comparator, h.control.get("url"))
+            if key in seen:
+                continue
+            seen.add(key)
+            self._derived_hypotheses = list(getattr(self, "_derived_hypotheses", []) or [])
+            self._derived_hypotheses.append(h)
+            queued += 1
+        if queued:
+            self.note(f"[capture] {queued} experiment(s) derived from Brukal's OWN "
+                      f"traffic — each control already answered")
+        return queued
+
     def derived_hypotheses(self) -> list:
         """Experiments derived from OBSERVATIONS rather than proposed by the model.
 

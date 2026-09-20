@@ -547,6 +547,14 @@ class GroundedLoop:
             # else's record. The reflex that consumes model proposals fires once, early,
             # and the agent explores afterwards, so CR1 run 3 ended with two of these
             # queued and unasked. Drained here, every turn, at no model cost.
+            # SELF-CAPTURE -> EXPERIMENTS. Every request Brukal has made is a control
+            # that already answered; re-issuing it as another principal is the question
+            # the comparators exist to judge. Queued before the drain below so they are
+            # consumed on the same turn, at no model cost.
+            try:
+                self.session.queue_self_capture_experiments()
+            except Exception as exc:
+                self._record_swallowed_experiment_error(exc)
             try:
                 if self.session.derived_hypotheses():
                     self.session.run_hypotheses(derived_only=True)

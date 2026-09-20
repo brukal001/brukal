@@ -653,4 +653,91 @@ class GovernedBrowser:
                                            "bytes": len(result.body or "")})
         if action.kind == "navigate" and result.status:
             self.current_url = action.url      # now interaction actions are in-scope
+        self._self_capture(action, result)
         return decision, result
+
+    # ---- SELF-CAPTURE ---------------------------------------------------- #
+    # Brukal recording its own traffic. `--capture` was consume-only: the operator ran
+    # Burp or mitmproxy, exported a HAR and handed it over, so the harness never saw a
+    # request it had not itself decided to make.
+    #
+    # This door is the right and only place: every web action already passes through
+    # `run`, so recording here needs no new plumbing and inherits the gate — a DENIED
+    # request returns before this line, which is what keeps a refused, out-of-scope host
+    # from entering a capture by the back door.
+    #
+    # The value is not surface enrichment (we already fetched these URLs); it is the
+    # REPLAY consumer. A request made as `self` becomes an experiment whose control
+    # provably worked, re-issued as `second` or `anonymous`. That machinery has existed
+    # since capture.py landed and had no way to be fed without an operator's file.
+    _SELF_CAPTURE_MAX = 25
+
+    def captured(self) -> list:
+        return list(getattr(self, "_captured_self", []) or [])
+
+    def _self_capture(self, action, result) -> None:
+        st = getattr(result, "status", None)
+        if result is None or not st:
+            return                             # never happened; not evidence
+        # AN ABSENCE IS NOT A CONTROL. Capturing anything with a status meant a 404
+        # became an experiment whose "control that provably worked" was the target saying
+        # NO SUCH THING — a live cold run produced 10 `both_sides_absent` outcomes that
+        # way. GAP #19's floor stops a 404/404 being FILED as evidence; this stops one
+        # being MANUFACTURED. 5xx goes too: the application broke rather than behaved.
+        #
+        # A 401/403 is KEPT deliberately — a refusal is not an absence. The resource
+        # exists and we were denied it, which is the most interesting control available:
+        # another principal may be allowed.
+        if st == 404 or st >= 500:
+            return
+        store = getattr(self, "_captured_self", None)
+        if store is None:
+            store = self._captured_self = []
+        if len(store) >= self._SELF_CAPTURE_MAX:
+            return
+        try:
+            from . import capture as _capture
+            rec = _capture._record(
+                getattr(action, "method", None) or "GET", action.url,
+                dict(getattr(action, "headers", None) or {}),
+                getattr(action, "body", None), result.status,
+                len(getattr(result, "body", "") or ""),
+                "", self._scope, _capture.IngestReport(), "self")
+        except Exception:
+            return                             # capture must never break a run
+        if rec is not None:
+            store.append(rec)
+
+    def write_har(self, path) -> int:
+        """Write what Brukal did as a HAR — importable into Burp or ZAP, and readable by
+        our own `parse_har`. A round-trip test asserts the writer and the reader agree,
+        because if they disagree the reader is the one carrying the scope and credential
+        guarantees."""
+        import json as _json
+        from pathlib import Path as _Path
+        caps = self.captured()
+        entries = []
+        for c in caps:
+            entry = {
+                "startedDateTime": "1970-01-01T00:00:00.000Z", "time": 0,
+                "request": {"method": c.method, "url": c.url, "httpVersion": "HTTP/1.1",
+                            "headers": [{"name": k, "value": v}
+                                        for k, v in (c.headers or {}).items()],
+                            "queryString": [], "cookies": [],
+                            "headersSize": -1, "bodySize": -1},
+                "response": {"status": c.status or 0, "statusText": "",
+                             "httpVersion": "HTTP/1.1", "headers": [], "cookies": [],
+                             "content": {"size": c.resp_bytes or 0,
+                                         "mimeType": c.content_type or "text/html"},
+                             "redirectURL": "", "headersSize": -1,
+                             "bodySize": c.resp_bytes or 0},
+                "cache": {}, "timings": {"send": 0, "wait": 0, "receive": 0}}
+            if c.body:
+                entry["request"]["postData"] = {
+                    "mimeType": "application/x-www-form-urlencoded", "text": c.body}
+            entries.append(entry)
+        doc = {"log": {"version": "1.2",
+                       "creator": {"name": "brukal", "version": "self-capture"},
+                       "entries": entries}}
+        _Path(path).write_text(_json.dumps(doc, indent=1))
+        return len(entries)
