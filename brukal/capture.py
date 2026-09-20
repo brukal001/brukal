@@ -64,6 +64,12 @@ class CapturedRequest:
     content_type: str = ""
     auth_kind: str = "none"          # bearer | cookie | apikey | none — SHAPE, not value
     source: str = "har"              # har | mitm
+    # The response BODY, redacted and truncated. Kept because a value the target HANDED
+    # BACK and the client later SENT is a reference, and that link is the only way to see
+    # the application's grammar — that `return_order.order_id` refers to what `orders`
+    # returned. Redacted because a response body is exactly where a discovered credential
+    # lives, which is why `redact.observe_response` exists at the web plane's own door.
+    response: str | None = None
 
     def path(self) -> str:
         return urlsplit(self.url).path or "/"
@@ -135,8 +141,11 @@ def _is_static(url: str, content_type: str) -> bool:
     return urlsplit(url).path.lower().endswith(_STATIC_SUFFIXES)
 
 
+_MAX_RESPONSE_KEPT = 4000
+
+
 def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
-            report, source):
+            report, source, response=None):
     """THE ONLY CONSTRUCTOR. Both guarantees are enforced here, once."""
     host = urlsplit(url).hostname
     # GUARANTEE 1 — the scope's own predicate, so ingest and the gate cannot disagree.
@@ -156,10 +165,17 @@ def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
     except Exception:
         safe_body = body
     report.ingested += 1
+    safe_response = None
+    if response:
+        try:
+            from . import redact
+            safe_response = redact.text(str(response))[:_MAX_RESPONSE_KEPT]
+        except Exception:
+            safe_response = str(response)[:_MAX_RESPONSE_KEPT]
     return CapturedRequest(
         method=str(method or "GET").upper(), url=url, headers=clean, body=safe_body,
         status=status, resp_bytes=resp_bytes, content_type=content_type or "",
-        auth_kind=kind, source=source)
+        auth_kind=kind, source=source, response=safe_response)
 
 
 def parse_har(text: str, scope, max_entries: int = 2000) -> tuple:
@@ -192,7 +208,8 @@ def parse_har(text: str, scope, max_entries: int = 2000) -> tuple:
             content = resp.get("content") or {}
             rec = _record(req.get("method"), url, headers, body,
                           resp.get("status"), content.get("size"),
-                          str(content.get("mimeType") or ""), scope, report, "har")
+                          str(content.get("mimeType") or ""), scope, report, "har",
+                          response=(content.get("text") or None))
         except Exception:
             report.dropped_malformed += 1
             continue
@@ -357,6 +374,14 @@ def drain_onto_surface(session) -> int:
     if not caps or surface is None:
         return 0
     learned = apply_to_surface(caps, surface)
+    # The GRAMMAR, alongside the nouns and verbs. Derived once, here, because this is
+    # where the captures and the surface are both in hand.
+    try:
+        links = link_fields(caps)
+        if links:
+            surface.field_links = list(getattr(surface, "field_links", []) or []) + links
+    except Exception:
+        pass
     # KEEP THEM FOR REPLAY. Consumer 1 (the surface) is done with these; consumer 2 is
     # not, and clearing the only reference meant an operator's HAR enriched the map and
     # produced no experiments. A recorded crAPI session with five real writes — a
@@ -421,3 +446,101 @@ def parse_curl(command: str, scope, status, resp_bytes: int = 0, source: str = "
         method = "POST" if body else "GET"
     return _record(method, url, headers, body, int(status), int(resp_bytes or 0),
                    "", scope, IngestReport(), source)
+
+
+# --------------------------------------------------------------------------- #
+# RELATIONAL RECON — the grammar, not just the nouns and verbs.
+# --------------------------------------------------------------------------- #
+#
+# From a captured session Brukal derives the services, the state-changing surface, the
+# auth model and the real parameter names. It does NOT know that `order_id` in
+# return_order refers to the `id` that `orders` returned, that the workflow is
+# browse -> buy -> return, or that a coupon code has a lifecycle. Nouns and verbs, no
+# grammar.
+#
+# That limit explains the results: every experiment derived so far is "same request,
+# different principal", which is all a structural map supports. The classes never reached
+# — coupon reuse, price tampering, workflow bypass — need the grammar. And the A/B/C
+# measurement showed the model will not supply it: zero `state_changed` proposals across
+# three model families in twenty-three runs.
+#
+# The link is derivable without a model. A value the target HANDED BACK and the client
+# later SENT is a reference, and the traffic shows it.
+
+# Values that collide by chance constantly. A link built on one is noise, and noise here
+# becomes a fabricated experiment aimed at a relationship the application does not have.
+_TRIVIAL = frozenset({"0", "1", "-1", "true", "false", "null", "none", "", "2"})
+
+# A SHORT value is only a reference when the field NAME says so. `order_id: 6` is a
+# reference; `quantity: 6` is a quantity, and linking it would invent a relationship the
+# application does not have. A long value (a code, a token, a uuid) needs no such help —
+# it does not collide by accident.
+_REFERENCE_NAME = ("_id", "id", "code", "token", "ref", "uuid", "guid", "key", "number")
+_LONG_ENOUGH_ALONE = 4
+
+
+def _is_reference(field: str, value: str) -> bool:
+    if value.lower() in _TRIVIAL or not value:
+        return False
+    if len(value) >= _LONG_ENOUGH_ALONE:
+        return True
+    low = (field or "").lower()
+    return any(low == n or low.endswith(n) for n in _REFERENCE_NAME)
+
+
+def _flatten(doc, prefix=""):
+    """(field, value) for every scalar in a JSON document, nested included."""
+    out = []
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            out.extend(_flatten(v, str(k)))
+    elif isinstance(doc, list):
+        for item in doc:
+            out.extend(_flatten(item, prefix))
+    elif doc is not None and not isinstance(doc, bool):
+        out.append((prefix, str(doc)))
+    return out
+
+
+def link_fields(caps, max_links: int = 24) -> list:
+    """References the application itself demonstrated: response gave it, request sent it.
+
+    CAUSAL BY CONSTRUCTION — a request can only consume a value from a response that came
+    BEFORE it. Reversing that would invent a dependency out of a coincidence.
+
+    Returns dicts of source_path / source_field / consumer_path / consumer_field / value,
+    which is enough to say "return_order.order_id is whatever orders.id returned" and to
+    build an experiment that REUSES a value the target has already spent."""
+    seen_values = {}          # value -> (path, field) of the response that first gave it
+    links, keyed = [], set()
+
+    for c in (caps or []):
+        # 1) does THIS request send a value some EARLIER response handed back?
+        for field, value in _flatten(_parse_json(c.body)):
+            if not _is_reference(field, value):
+                continue
+            origin = seen_values.get(value)
+            if origin and origin[0] != c.path():
+                key = (origin[0], origin[1], c.path(), field)
+                if key not in keyed:
+                    keyed.add(key)
+                    links.append({"source_path": origin[0], "source_field": origin[1],
+                                  "consumer_path": c.path(), "consumer_field": field,
+                                  "value": value, "consumer_method": c.method})
+                    if len(links) >= max_links:
+                        return links
+        # 2) then record what this response GAVE, for the requests that follow it.
+        for field, value in _flatten(_parse_json(c.response)):
+            if not _is_reference(field, value):
+                continue
+            seen_values.setdefault(value, (c.path(), field))
+    return links
+
+
+def _parse_json(text):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None

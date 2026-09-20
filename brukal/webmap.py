@@ -601,6 +601,9 @@ class AttackSurface:
     # runtime, which is why path-shaped mining never saw them and why every run before
     # this could learn only the prefix implied by the operator's login URL.
     confirmed_mounts: list = field(default_factory=list)
+    # References the application DEMONSTRATED: a value one response handed back and a
+    # later request sent. See `capture.link_fields`.
+    field_links: list = field(default_factory=list)
     # Leads, not facts: bare service segments and unrooted endpoint suffixes read out of
     # the application's own code, awaiting confirmation by request.
     mount_candidates: set = field(default_factory=set)
@@ -709,6 +712,20 @@ class AttackSurface:
                     paths.append(path)
             lines.append("  pages fetched (VERIFIED reachable): "
                          + ", ".join(sorted(paths)[:24]))
+        if getattr(self, "field_links", None):
+            # THE GRAMMAR. Everything else here is nouns and verbs — services, routes,
+            # methods, parameter names. These are the RELATIONSHIPS the application itself
+            # demonstrated in real traffic: a value it handed back and the client later
+            # sent. It is what tells you `return_order.order_id` is not an arbitrary
+            # number but whatever `orders` returned, and therefore what a reuse or a
+            # someone-else's-id experiment would even mean.
+            lines.append("  REFERENCES the app demonstrated (a value it handed back and "
+                         "a later request sent — these came from real traffic, not from "
+                         "guessing):")
+            for l in self.field_links[:10]:
+                lines.append(f"    {l.get('source_path')}.{l.get('source_field')} "
+                             f"-> {l.get('consumer_method', 'POST')} "
+                             f"{l.get('consumer_path')}.{l.get('consumer_field')}")
         if getattr(self, "confirmed_mounts", None):
             # Stated BEFORE the route lists, because it is the fact that makes an
             # unprefixed fragment actionable: `/orders` is not an endpoint, but this
