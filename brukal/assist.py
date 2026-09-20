@@ -9617,7 +9617,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              container="brukal-kali", model=None, provider=None, base_url=None,
              max_steps=20, handoff_to_menu=True, hosts=(), single_agent=False,
              full_send=False, mode=None, no_research=False,
-             packs_dir=None, source_dir=None, fail_on=None,
+             packs_dir=None, source_dir=None, capture_path=None, fail_on=None,
              max_cost=None, max_research=None, max_time=None, resume=True,
              login=None) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
@@ -9725,6 +9725,32 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     # it). The web door has no risk layer to escalate through, so that stays behind the
     # operator's explicit "unleash" rather than running by default.
     session.allow_intrusive = full
+    # CAPTURED TRAFFIC, if the operator handed over a HAR from Burp / ZAP / mitmproxy /
+    # DevTools. Ingested BEFORE the crawl so the surface the model first sees is built
+    # from requests that actually happened, not from the path wishlist that produced 19
+    # guesses out of 30 URLs on the first cold target. Scope-filtered and
+    # credential-stripped inside `capture.parse_har` — see brukal/capture.py.
+    if capture_path:
+        from . import capture as _capture
+        try:
+            _caps, _rep = _capture.parse_har(
+                Path(capture_path).read_text(errors="replace"),
+                session.executor._gate.scope)
+            _learned = _capture.apply_to_surface(_caps, session.surface)
+            session._captured = _caps
+            line = (f"[capture] {Path(capture_path).name}: {_rep.summary()}; "
+                    f"{_learned} route(s) learned from real traffic")
+            session.notes.append(line)
+            print(f"  {line}")
+            if not _caps:
+                print(f"  ⚠ --capture {capture_path} yielded no in-scope requests — "
+                      f"the surface is unchanged")
+        except FileNotFoundError:
+            print(f"  ⚠ --capture {capture_path} not found — ignored")
+        except Exception as exc:
+            print(f"  ⚠ --capture {capture_path} could not be read "
+                  f"({type(exc).__name__}: {str(exc)[:80]}) — ignored")
+
     # Source leads, if the operator pointed at the target's tree. Mined once, up front,
     # so a bad path is visible at start-up — and kept strictly as leads: they select what
     # the dynamic provers try, and never appear as findings on their own.

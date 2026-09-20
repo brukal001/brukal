@@ -199,3 +199,110 @@ def parse_har(text: str, scope, max_entries: int = 2000) -> tuple:
         if rec is not None:
             out.append(rec)
     return out, report
+
+
+# --------------------------------------------------------------------------- #
+# CONSUMER 1 — the application's shape, from traffic instead of guesses.
+# --------------------------------------------------------------------------- #
+
+def apply_to_surface(caps, surface) -> int:
+    """Fold captured traffic into the AttackSurface.
+
+    The cold run on DVWA mapped ONE page while `/setup.php` answered 200 unasked, because
+    the crawl follows links and DVWA redirects every path to a login page. A capture does
+    not care: it records what was actually reached, with the method that reached it and
+    the parameters it carried.
+
+    CANDIDATES, NOT CONFIRMED. Routes go into `api_routes` (the unverified tier), never
+    `confirmed_routes`. This codebase's law is that nothing derived is acted on until one
+    gated request has confirmed it against the target, and a capture is an observation
+    from the OPERATOR's session at an EARLIER time — the route may be gone, or may answer
+    differently to us. The capture's real contribution is that the method and parameters
+    are now known, so the one confirming request actually lands instead of guessing GET
+    at a POST-only endpoint."""
+    learned = 0
+    for c in caps:
+        path = c.path()
+        if path not in surface.api_routes:
+            surface.api_routes.append(path)
+            learned += 1
+        # The METHOD that actually worked. `route_methods` previously held only the
+        # "[not-GET]" marker inferred from a 405.
+        if c.method != "GET":
+            surface.route_methods[path] = c.method
+        names = c.param_names()
+        if names:
+            surface.params.setdefault(path, set()).update(names)
+        if c.is_write():
+            entry = (c.method, path)
+            if entry not in surface.write_operations:
+                surface.write_operations.append(entry)
+        # WHICH routes expect a credential, and by what mechanism — the app's own
+        # contract, observed rather than declared.
+        if c.auth_kind != "none":
+            entry = (c.method, path)
+            if entry not in surface.protected_routes:
+                surface.protected_routes.append(entry)
+    return learned
+
+
+# --------------------------------------------------------------------------- #
+# CONSUMER 2 — every captured request is an experiment whose control already works.
+# --------------------------------------------------------------------------- #
+
+_ID_IN_PATH = __import__("re").compile(r"/(\d+)(?:/|$)")
+
+
+def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> list:
+    """Turn captured traffic into experiments the comparators can judge.
+
+    THE FAILURE THIS TARGETS. `state_changed` was proposed ZERO times across every run of
+    both series, including one where the same model on the same prompt produced it in 4 of
+    4 offline calls. The model can build the construction and does not, in the live
+    grounding, reach for it. A captured write does not need to be imagined: the request
+    happened, the target accepted it, and its shape is known.
+
+    READ  -> control and variant are the same URL, differing only in WHO asks.
+    WRITE -> `state_changed`: the two sides are the SAME read and `act` is the captured
+             write performed between them. Exactly the shape the prompt describes and the
+             model never produced.
+
+    No captured credential travels with these: `as` selects the principal and the governed
+    browser attaches whatever that principal holds. A replay carrying the captured session
+    would re-issue the request as the SAME principal and prove nothing."""
+    from .hypothesis import Hypothesis
+
+    out = []
+    for c in caps:
+        if len(out) >= max_hypotheses:
+            break
+        url, path = c.url, c.path()
+        if c.is_write():
+            # The read that shows the effect. Best effort: the collection the write
+            # addresses, which is the same URL without its query.
+            read = url.split("?")[0]
+            out.append(Hypothesis(
+                title=f"{c.method} {path} observed in traffic — does it change another "
+                      f"account's state?",
+                severity=severity, comparator="state_changed",
+                control={"url": read, "method": "GET", "as": "self"},
+                variant={"url": read, "method": "GET", "as": "self"},
+                rationale=f"captured {c.method} {path} answered {c.status}; if the write "
+                          f"is accepted for a resource we do not own, the same read "
+                          f"changes around it",
+                setup=None,
+                act={"url": url, "method": c.method, "body": c.body, "as": "second"}))
+            continue
+        # A read. Who else can do it?
+        comparator = ("cross_account_resource" if _ID_IN_PATH.search(path)
+                      else ("unauthenticated_exposure" if c.auth_kind != "none"
+                            else "a_denied_b_allowed"))
+        variant_as = "anonymous" if comparator == "unauthenticated_exposure" else "second"
+        out.append(Hypothesis(
+            title=f"{path} observed in traffic — reachable by another principal?",
+            severity=severity, comparator=comparator,
+            control={"url": url, "method": c.method, "as": "self"},
+            variant={"url": url, "method": c.method, "as": variant_as},
+            rationale=f"captured {c.method} {path} answered {c.status} "
+                      f"({c.resp_bytes}B) for the operator's own session"))
+    return out

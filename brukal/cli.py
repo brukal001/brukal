@@ -268,6 +268,7 @@ def _cmd_auto(args) -> int:
         full_send=args.full_send, mode=getattr(args, "mode", None),
         packs_dir=getattr(args, "packs", None),
         source_dir=getattr(args, "source", None),
+        capture_path=getattr(args, "capture", None),
         fail_on=getattr(args, "fail_on", None),
         no_research=args.no_research,
         max_cost=getattr(args, "max_cost", None),
@@ -619,6 +620,10 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--single-agent", action="store_true",
                     help="classic single-strategist loop; default is multi-agent "
                          "(strategist plans, recon/exploit/verify specialists execute)")
+    pa.add_argument("--capture", default=None, metavar="HAR",
+                    help="a .har of real traffic (Burp / ZAP / mitmproxy / DevTools). "
+                         "Out-of-scope hosts and credentials are stripped at ingest; the "
+                         "surface is built from requests that actually happened")
     pa.add_argument("--source", default=None, metavar="DIR",
                     help="path to the target's source tree. Mines LEADS only (candidate "
                          "signing keys, debug flags, interpolated SQL) which still have "
