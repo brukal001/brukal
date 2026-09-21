@@ -10087,7 +10087,10 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
                         verifier=Verifier(target=getattr(session, "target", "")),
                         agents=getattr(session, "agents", None) if multi else None,
                         trust=getattr(session, "trust", None) if multi else None,
-                        kill=kill, budget=budget, on_checkpoint=_save_checkpoint)
+                        kill=kill, budget=budget, on_checkpoint=_save_checkpoint,
+                        # --full-send is a request to run WITHOUT a human, so a manual
+                        # suggestion must not end the engagement. See GroundedLoop.
+                        autonomous=bool(full_send))
     if budget.any_cap:
         _emit(console, f"  budget: {budget.status(cost=0, steps=0, fetches=0)}")
 

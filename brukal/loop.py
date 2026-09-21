@@ -178,7 +178,8 @@ class GroundedLoop:
     def __init__(self, session, *, max_steps: int = 20, max_stalls: int = 4,
                  max_similar: int = 4, max_coach: int = 3, observer=None, verifier=None,
                  agents=None, trust=None, kill=None, budget=None, on_checkpoint=None,
-                 hypothesis_every: int = 8, max_hypothesis_rounds: int = 6):
+                 hypothesis_every: int = 8, max_hypothesis_rounds: int = 6,
+                 autonomous: bool = False):
         self.session = session
         self._verifier = verifier             # optional Verifier: confirms 'solved'
         # Phase 3 robustness: a hard kill switch (stop now, close sessions), a per-
@@ -221,6 +222,12 @@ class GroundedLoop:
         # once.
         self.hypothesis_every = max(1, int(hypothesis_every))
         self.max_hypothesis_rounds = max(1, int(max_hypothesis_rounds))
+        # AUTONOMOUS: --full-send asked for a run without a human, so a step the model
+        # calls MANUAL is a note to the operator, not the end of the engagement. Measured:
+        # CR2 run 2 ended after FIVE shell commands of a seventy-step budget because one
+        # suggestion was manual, and recall is bounded by work done.
+        self.autonomous = bool(autonomous)
+        self._manual_streak = 0               # consecutive manual-only turns; 3 ends it
         self._hypothesis_rounds = 0           # MODEL rounds taken (the drain is not one)
         self._last_hypothesis_at = 0          # step index of the last model round
 
@@ -854,8 +861,20 @@ class GroundedLoop:
             # action -> either the operator's move (MANUAL) or nothing left to do.
             is_web = bool(suggestion.web and not suggestion.command)
             action = suggestion.command or suggestion.web
+            if action:
+                self._manual_streak = 0        # progress resets the patience counter
             if not action:
                 if suggestion.manual:
+                    # A manual step in an AUTONOMOUS run is a handoff NOTE, not an ending.
+                    # Interactive runs are unchanged: there it really is the operator's
+                    # move, and continuing would take intrusive actions nobody authorised.
+                    if self.autonomous and self._manual_streak < 2:
+                        self._manual_streak += 1
+                        note = getattr(self.session, "note", None)
+                        if note:
+                            note(f"[handoff] the model proposed a step for the operator "
+                                 f"and the run CONTINUED: {str(suggestion.manual)[:200]}")
+                        continue
                     return self._finish("manual", suggestion.manual)
                 # No action because the model never finished writing one is not the same
                 # ending as no action because there is nothing left to do. Reporting the
