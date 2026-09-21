@@ -2620,3 +2620,65 @@ perfectly.
 earlier — so its three experiments are `both_sides_failed` and remain unjudged. Two
 model-proposed experiments died `unresolved_reference` and one `second_unavailable`. The
 recall benchmark has not been re-run against a frontier model since any of this landed.
+
+---
+
+# CR2 RUN 2 — THE HARNESS WORK DID NOT MOVE RECALL. IT WENT DOWN.
+
+`deepseek/deepseek-v4-pro`, same model as CR2 run 1 so the two are comparable. 13 model
+calls, **$0.083**, chain intact. Predictions fixed in the scope before launch.
+
+| # | prediction | result | |
+|---|---|---|---|
+| 0 | model rounds ≥ 3; zero 80-byte responses | **2 rounds**; 0 broken | ⛔ FAILED (half met) |
+| 1 | `state_changed` dispatched AND judged > 0 | 1 of 4 judged | ✅ MET |
+| 2 | `both_sides_absent` = 0, unprefixed URLs = 0 | 0 and 0 | ✅ MET |
+| 3 | **recall > 2 of 14** | **1 of 14** | ⛔ **FAILED — it FELL** |
+
+**I predicted (3) would fail and said so before launching.** It did, and worse than
+predicted: recall went DOWN.
+
+## Why, without explaining it away
+
+|  | CR2 run 1 | CR2 run 2 |
+|---|---|---|
+| shell commands | 11 | **5** |
+| proposals | 14 | 11 |
+| judged | 9 | **5** |
+| confirmed | **2** | **1** |
+
+Both runs SELF-TERMINATED — "the next step is yours (intrusive/interactive exploitation)"
+— neither hit the 70-step budget. Run 2 simply did less: half the shell commands, 13 model
+calls against 20. Its one confirmation is the coupon experiment; run 1's two were the
+community-posts authentication gap and the dashboard IDOR, and run 2 never got to them.
+
+**n=1 per arm and self-termination timing varies**, which is a real caveat and NOT a
+defence. The measured fact is that a day of harness work did not improve the number, and
+on this run it coincided with a shorter run and one fewer confirmation.
+
+## What DID hold
+
+Everything built is working: the capture ingested clean (12 requests, 0 dropped), content
+discovery found `/robots.txt`, `/.env` and `/health` BY ASKING, `state_changed` was
+dispatched and judged, zero 404/404 waste, zero unprefixed URLs, zero broken-body requests,
+and the coupon confirmation reproduced on a second model with byte-identical evidence
+(30B control, 57B variant) — proving it is harness-derived and model-independent.
+
+## The attribution refused to blame anyone, correctly
+
+```
+misses: INCONCLUSIVE-UNDER-ASKED 8 · MEASURED-NOT-CONFIRMED 3 · PROPOSED-THEN-DISCARDED 1 · HARNESS-LIMIT 1
+model experiment rounds: 2  ⚠ FEWER THAN 3 — ATTRIBUTION CONFOUNDED
+```
+
+GAP #16's guard did exactly its job: with 2 model rounds it declines to call any miss the
+model's fault. Before that fix this run would have reported four MODEL-LIMITs and they
+would have been believed.
+
+## The honest conclusion
+
+**Recon and experiment construction improved measurably and independently. Recall did not
+follow.** crAPI's documented challenges mostly need a specific exploit, not a better map,
+and the A/B/C already showed the model will not supply the exploit. Claiming the harness
+work "improved the system" on the strength of everything except the number would be the
+overstatement this survey exists to prevent.
