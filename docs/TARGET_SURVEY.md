@@ -2563,3 +2563,60 @@ second principal — and joining them is a small, well-motivated change rather t
 
 **That is the first time in this project that a target's own answer has specified the next
 experiment.** It is worth more than the verdict.
+
+---
+
+# THE FIRST CONFIRMATION — AND WHY IT IS ALMOST CERTAINLY NOT A VULNERABILITY
+
+```
+** confirmed   status_differs   /workshop/api/shop/apply_coupon: does a coupon_code
+                                issued to another account behave differently from one
+                                issued to nobody?
+   stage=judged   attribution=MEASURED
+
+   control (second principal, bogus ZZZZ777) -> 400  30B  {"message":"Coupon not found"}
+   variant (second principal, real  TRAC075) -> 200  57B  {"credit":...,"successfully applied!"}
+```
+
+The chain ran end to end for the first time: **a human session captured → a relational
+link derived (`validate-coupon.coupon_code` -> `apply_coupon.coupon_code`, across TWO
+SERVICES) → a differential experiment built from it → dispatched as a second principal →
+judged CONFIRMED.**
+
+## It is probably correct behaviour, and that must be said first
+
+The claim the comparator is bounded to make is narrow and accurate: *"two requests
+differing in one value were answered with different status codes"*, severity cap **low**,
+`authz: False`. What actually happened is that a coupon code was accepted for an account it
+was not issued to.
+
+**crAPI's own error message says the claim is tracked PER USER** — *"already claimed by
+you"* — which means a code being usable by a second account is very likely the intended
+design, not a flaw. A promotional coupon usable once per customer is ordinary.
+
+So: the measurement is TRUE, the attribution is right, the severity bound stopped it being
+published as anything more, and a human reading it would say "that is how coupons work".
+**That is the system working**, not a finding. The value here is that the question was
+ASKED, correctly, from evidence — not that the answer was interesting.
+
+## Checking the sizes BEFORE the verdict is what made this trustworthy
+
+The previous run reported `not_confirmed` on this same experiment. That verdict was a
+FALSE NEGATIVE: both sides had answered 400 at **80 bytes**, which is crAPI's reply to an
+EMPTY body — the requests carried a JSON body with no `Content-Type` and the server never
+parsed them. Nothing in the outcome, the attribution or the test suite showed it.
+
+This run's sizes — **30B** for the bogus control and **57B** for the real variant — match
+the hand-measured answers exactly, which is how the verdict was known to be about the
+application rather than about our own request construction.
+
+**The rule this earns: read the evidence sizes before the verdict.** A comparator can only
+be as honest as the requests it judges, and `not_confirmed` hides a broken request
+perfectly.
+
+## What is still unfinished, plainly
+
+`return_order` answered **500** on every attempt — the unhandled error characterised
+earlier — so its three experiments are `both_sides_failed` and remain unjudged. Two
+model-proposed experiments died `unresolved_reference` and one `second_unavailable`. The
+recall benchmark has not been re-run against a frontier model since any of this landed.
