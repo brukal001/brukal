@@ -2682,3 +2682,68 @@ follow.** crAPI's documented challenges mostly need a specific exploit, not a be
 and the A/B/C already showed the model will not supply the exploit. Claiming the harness
 work "improved the system" on the strength of everything except the number would be the
 overstatement this survey exists to prevent.
+
+---
+
+# ★ THE THREE-RUN MEASUREMENT — RECALL PLATEAUS AT 2 OF 14
+
+Three identical runs, `deepseek/deepseek-v4-pro`, current build, ~$0.25 total. Predictions
+fixed in the scope before launch, including a CEILING, because a prediction that only
+guards the downside can be satisfied by any good news.
+
+| run | cmds | exit | model rounds | confirmed | recall |
+|---|---|---|---|---|---|
+| c1 | 7 | `done` — model said nothing left | 2 | 2 | 1/14 |
+| c2 | **24** | **killed by MY 3000s timeout, not the harness** | 5 | 5 | **2/14** |
+| c3 | 10 | `manual`, after the 3-strike limit | 2 | 1 | 1/14 |
+
+| # | prediction | result | |
+|---|---|---|---|
+| 0 | ≥2 of 3 exceed 20 cmds or stop ≠ manual | c1 `done`, c2 24 cmds | ✅ MET |
+| 1 | median recall > 1 | **1** | ⛔ FAILED |
+| 2 | median recall ≥ 2 | **1** | ⛔ FAILED |
+| 3 | median recall ≤ 3 | 1 | ✅ MET |
+
+## ⚠ THE AUDIT CAUGHT A FALSE CREDIT, EXACTLY AS THE STATED RISK PREDICTED
+
+c2 reported **3 of 14**. Auditing each credit against the experiment that earned it:
+
+```
+challenge 13  "Redeem an already-claimed coupon BY MODIFYING THE DATA"
+   credited by: /workshop/api/shop/apply_coupon: does a coupon_code issued to another...
+```
+
+That is the foreign-value experiment, which shows a coupon issued to A works for B —
+already established as almost certainly crAPI's INTENDED per-user design, and nothing to
+do with modifying data. **GAP #23 repeating**: the signature matches any confirmed
+experiment touching the coupon URLs, and only challenge 15 was ever narrowed. **c2's true
+recall is 2 of 14**, matching CR2 run 1 rather than exceeding it.
+
+Had the number been quoted unaudited, this session would have reported its first recall
+improvement and it would have been false.
+
+## Work done explains the variation — but not the ceiling
+
+```
+ 5 cmds -> 1/14      10 cmds -> 1/14      24 cmds -> 2/14
+ 7 cmds -> 1/14      14 cmds -> 2/14
+```
+
+More work buys more recall up to about 14 commands, then flattens. **No configuration
+tested has ever exceeded 2 of 14** — not Sonnet, not deepseek-v4-pro, not with capture,
+discovery, relational recon, replay or any combination built today.
+
+## Three doors out, and only one was fixed
+
+c1 left through `done`, c3 through `manual`, c2 was still running when an external timeout
+killed it. The manual fix works — c3's ledger shows **6 handoff notes**, six turns it would
+previously not have had — but the model then proposed three manual steps in a row and the
+3-strike limit ended it, as designed. **Fixing one exit moved the constraint to the next
+one.** The binding limit is not the budget: it is that the model stops having actions to
+propose at roughly a fifth of it.
+
+## The honest position
+
+Recon, experiment construction and evidence discipline improved measurably. **Recall did
+not.** It sits at 1–2 of 14 across every configuration, and the ceiling is set by the model
+running out of things to do, not by the quality of the map it is given.
