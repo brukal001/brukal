@@ -1487,6 +1487,7 @@ _REFUSED_BEFORE_DISPATCH = (
 _DISPATCHED_NOT_RESOLVED = (
     "both_sides_failed",        # two 5xx — the application broke, it did not behave
     "both_sides_absent",        # two 404s — the path does not exist; we aimed wrong
+    "both_sides_unreadable",    # two 405s — the path is not READABLE; we aimed wrong
     "no_answer",                # the gate or the limiter refused; nothing was observed
 )
 _JUDGED = ("not_confirmed", "confirmed")
@@ -1519,6 +1520,14 @@ _ATTRIBUTION = {
     # never had the chance to behave. Run 19 filed exactly this as MEASURED and it read
     # as a fact about crAPI (see test_two_404s_are_not_a_measurement.py).
     "both_sides_absent": "HARNESS-LIMIT",
+    # Two 405s are ours for the same reason, one status class over: the path exists but
+    # does not answer the METHOD we read it with, so the application never had the chance
+    # to behave. GAP #29 — a write to an action endpoint (`/orders/return_order`,
+    # `/apply_coupon`) was paired with a read of the action itself, both sides answered
+    # 405, and it was filed `not_confirmed`: a FALSE NEGATIVE on `state_changed`, the one
+    # comparator that has never confirmed in either series. Aiming is ours; attributing a
+    # wrong aim to the target files our defect as their fact.
+    "both_sides_unreadable": "HARNESS-LIMIT",
     # Ours. The request never went out, or went out and we could not use what came back.
     "errored": "HARNESS-LIMIT",             # never reached the target
     "no_answer": "HARNESS-LIMIT",           # our gate or our limiter refused it

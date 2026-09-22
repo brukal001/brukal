@@ -285,6 +285,88 @@ def _worth_replaying(path: str) -> bool:
     return not any(n in low for n in _NOT_WORTH_REPLAYING)
 
 
+def _norm(url: str) -> str:
+    """A URL reduced to the thing a READ addresses: scheme, host, path. No query."""
+    from urllib.parse import urlsplit, urlunsplit
+    s = urlsplit(url or "")
+    path = (s.path or "/").rstrip("/") or "/"
+    return urlunsplit((s.scheme, s.netloc, path, "", ""))
+
+
+def _segs(url: str) -> list:
+    from urllib.parse import urlsplit
+    return [x for x in (urlsplit(url or "").path or "").split("/") if x]
+
+
+def _shared(a: list, b: list) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _read_that_shows(c, readable: set) -> tuple:
+    """The read whose ANSWER CHANGES when this write is accepted (GAP #29).
+
+    Returns `(url, how)`, where `how` is None when the read is the write's own URL.
+
+    THE DEFECT THIS REPLACES was `url.split("?")[0]` — the write's own URL minus its
+    query. Right for a COLLECTION write and wrong for an ACTION endpoint, which is not
+    readable at all. Measured on crAPI:
+
+        not confirmed [state_changed]: POST /workshop/api/shop/orders/return_order
+            -- control HTTP 405 (40B) vs variant HTTP 405 (40B)
+
+    Two 405s recorded as a judged negative read as "the write changed nothing". The
+    experiment never observed the resource the write touches; `/apply_coupon` is the same
+    shape. It is not one bad row: `state_changed` has never confirmed in either model
+    series, and crAPI's state-changing challenges live on exactly these endpoints.
+
+    GROUNDED, NOT GUESSED, AND CHECKED AGAINST THE REAL CAPTURE. The first version of this
+    walked the write's path UPWARD looking for an ancestor the session had read. Run
+    against the actual crAPI HAR it changed nothing: the session never read
+    `/workshop/api/shop/orders` itself, it read `/orders/all` and `/orders/9` — DESCENDANTS
+    of the collection, not ancestors of the write. A rule that is correct in the abstract
+    and inert on the data it was written for is not a fix.
+
+    So the read is chosen by SHARED PREFIX against every GET the session actually made:
+    the candidate must share all but the write's last segment, and the nearest wins. Ties
+    prefer a listing over a single item (`/orders/all` over `/orders/9`), because a change
+    to any resource shows up in a list and only a change to one shows up in that one.
+
+    WHAT THIS DOES NOT SOLVE, stated rather than papered over. When an action's effect
+    lands OUTSIDE its own path, no path rule can find it: crAPI's `/workshop/api/shop/-
+    apply_coupon` adds credit that shows on `/identity/api/v2/user/dashboard`, which shares
+    nothing with the write. The rule picks the nearest sibling under `/workshop/api/shop`
+    instead — a real read and a narrow, honest measurement, not the right one. Such a read
+    is marked in the rationale so a reader knows it was a sibling rather than the resource,
+    and inferring the affected collection from segment names ('orders is a plural noun, so
+    it is a collection') is deliberately NOT done: that is a guess about English, which is
+    GAP #26's memorised wishlist in a new place."""
+    want = _segs(c.url)
+    if not want:
+        return _norm(c.url), None
+    floor = len(want) - 1
+    best, best_key = None, None
+    for cand in readable:
+        cs = _segs(cand)
+        n = _shared(want, cs)
+        if n < floor:
+            continue
+        # nearest first; then a listing before a single item; then the shorter path
+        key = (-n, 1 if (cs and cs[-1].isdigit()) else 0, len(cs))
+        if best_key is None or key < best_key:
+            best, best_key = cand, key
+    if best is None:
+        return _norm(c.url), None
+    how = "the collection this write addresses" if _shared(want, _segs(best)) >= len(want) \
+        else "the nearest read the session made under the same parent — a SIBLING of the " \
+             "action, so a change landing elsewhere would not show here"
+    return best, how
+
+
 def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> list:
     """Turn captured traffic into experiments the comparators can judge.
 
@@ -312,6 +394,12 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
     # only source of `state_changed`, the comparator no model in either series proposed.
     ordered = sorted(caps, key=lambda c: 0 if c.is_write() else 1)
 
+    # WHAT THIS SESSION COULD ACTUALLY READ. Used to aim a write's effect-read up its own
+    # path (GAP #29). A GET that 404'd or 405'd is evidence AGAINST that read, so only
+    # answers below 400 count.
+    readable = {_norm(c.url) for c in caps
+                if (c.method or "").upper() == "GET" and 0 < (c.status or 0) < 400}
+
     out = []
     for c in ordered:
         if len(out) >= max_hypotheses:
@@ -320,9 +408,9 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
         if not _worth_replaying(path):
             continue
         if c.is_write():
-            # The read that shows the effect. Best effort: the collection the write
-            # addresses, which is the same URL without its query.
-            read = url.split("?")[0]
+            # The read that shows the effect: the nearest ancestor of the write's own path
+            # that this session read successfully. See `_read_that_shows` (GAP #29).
+            read, how = _read_that_shows(c, readable)
             out.append(Hypothesis(
                 title=f"{c.method} {path} observed in traffic — does it change another "
                       f"account's state?",
@@ -331,7 +419,8 @@ def hypotheses_from(caps, max_hypotheses: int = 6, severity: str = "medium") -> 
                 variant={"url": read, "method": "GET", "as": "self"},
                 rationale=f"captured {c.method} {path} answered {c.status}; if the write "
                           f"is accepted for a resource we do not own, the same read "
-                          f"changes around it",
+                          f"changes around it"
+                          + (f" — read chosen as {how}" if how else ""),
                 setup=None,
                 act={"url": url, "method": c.method, "body": c.body, "as": "second",
                      "headers": _content_type_for(c.body)}))

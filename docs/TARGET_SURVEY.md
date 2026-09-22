@@ -2808,7 +2808,7 @@ contributes nothing to the hard comparator, so the honest prediction is that uti
 rises and recall may not follow. That is the next run's question, and it should be fixed as
 a prediction before launch, ceiling included.
 
-## ⛔ GAP #29 — a write to an ACTION endpoint has no read that shows its effect (open)
+## ✅ GAP #29 — a write to an ACTION endpoint has no read that shows its effect (fixed)
 
 Found while reading the CR2 run notes for GAP #28, not yet fixed.
 
@@ -2828,6 +2828,46 @@ touches. The same shape covers `/apply_coupon`. This matters more than one row, 
 `state_changed` is the comparator that has never confirmed in either model series, and
 these action endpoints are where crAPI's state-changing challenges live.
 
-The fix is to walk UP the path to the nearest readable collection (`/orders/return_order`
-→ `/orders`) rather than strip the query, and to record `both_sides_absent` — which already
-exists for exactly this — when neither side is readable, instead of `not_confirmed`.
+### Fixed, in two halves — and the proposed fix was wrong
+
+**(a) Aim better.** The read is now chosen from what the session ACTUALLY READ, by shared
+prefix against every captured GET: the candidate must share all but the write's last
+segment, nearest wins, and ties prefer a listing over a single item.
+
+**The fix proposed above — "walk UP the path to the nearest readable collection" — was
+wrong, and passed every hand-written test before the capture disproved it.** Run against
+the real crAPI HAR it changed nothing: the session never reads `/workshop/api/shop/orders`
+itself. It reads `/orders/all` and `/orders/9` — **descendants** of the collection, not
+ancestors of the write, so an upward walk finds nothing and falls back to the old
+behaviour. A rule correct in the abstract and inert on the data it was written for is not
+a fix; only running it against the capture showed that. `test_ON_THE_REAL_CAPTURE_…` is now
+the guard.
+
+Measured on the recorded traffic, before → after:
+
+| captured write | read before | read now |
+|---|---|---|
+| `POST /workshop/api/shop/orders` | `/shop/orders` (never read; 500 live) | `/shop/orders/all` ✅ |
+| `POST /shop/orders/return_order` | itself → **405/405** | `/shop/orders/all` ✅ |
+| `POST /community/…/validate-coupon` | itself | itself → now **floored**, not judged ✅ |
+| `POST /shop/apply_coupon` | itself → **405/405** | `/shop/products` ⚠ sibling |
+
+**(b) Fail honestly.** New outcome `both_sides_unreadable` (two 405s), declared in
+`_DISPATCHED_NOT_RESOLVED` and bounded **HARNESS-LIMIT** in the same edit — a wrong aim is
+ours, and attributing it to the target files our defect as their fact. This is the half
+that must not be left to the aim being right.
+
+### What is NOT solved, stated rather than papered over
+
+When an action's effect lands **outside its own path**, no path rule can find it.
+`apply_coupon` adds credit that shows on `/identity/api/v2/user/dashboard`, which shares
+nothing with the write; the rule picks the nearest sibling under `/workshop/api/shop`
+instead. That is a real read and a narrow, honest measurement — not the right one — and it
+is marked as a SIBLING in the hypothesis rationale so a reader is not told the affected
+resource was observed. Inferring the collection from segment names ("`orders` is a plural
+noun, so it is a collection") is deliberately **not** done: that is a guess about English,
+which is GAP #26's memorised wishlist in a new place.
+
+**Still unmeasured:** whether either half converts into a confirmed `state_changed`. One
+false negative removed is not a finding, and the live 500 on `return_order` may reassert
+itself. That is the next run's question.

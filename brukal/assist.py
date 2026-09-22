@@ -5322,6 +5322,26 @@ class AssistSession:
                                 f"a result) {h.title}: control and variant both HTTP 404 "
                                 f"— fix the URL, the mount prefix is probably missing")
                 continue
+            # THE SAME FLOOR AGAIN, ONE STATUS CLASS OVER (GAP #29). Two 405s mean the
+            # URL exists but is not READABLE by the method we asked with, so there is no
+            # answer for the comparator to read a change out of. Measured on crAPI: the
+            # write `POST /workshop/api/shop/orders/return_order` was paired with a read
+            # of the action endpoint itself, both sides answered 405 (40B), and it was
+            # recorded `not_confirmed` — indistinguishable in a report from "the write
+            # changed nothing". `_read_that_shows` now aims at the collection the session
+            # actually read; this floor is what stops a remaining wrong aim from being
+            # filed as a judged negative, which is the part that must not be left to the
+            # aim being right.
+            if (_as or 0) == 405 and (_bs or 0) == 405:
+                self._record_experiment_outcome(h, "both_sides_unreadable")
+                self.note(f"[experiment] BOTH SIDES UNREADABLE (405/405), not judged: "
+                          f"{h.title} — the read is not allowed on this URL, so nothing "
+                          f"was observed that a write could have changed")
+                outcomes.append(f"BOTH SIDES UNREADABLE (experiment NOT judged, this is "
+                                f"not a result) {h.title}: control and variant both HTTP "
+                                f"405 — read the COLLECTION the write addresses, not the "
+                                f"action endpoint itself")
+                continue
             if (_as or 0) >= 500 and (_bs or 0) >= 500:
                 self._record_experiment_outcome(h, "both_sides_failed")
                 self.note(f"[experiment] BOTH SIDES FAILED ({_as}/{_bs}), not "

@@ -45,13 +45,14 @@ ALL_TERMINALS = tuple(_REFUSED_BEFORE_DISPATCH) + tuple(_DISPATCHED_NOT_RESOLVED
 
 def test_the_recorded_terminals_are_all_attributed_and_this_test_notices_a_new_one():
     """A terminal added without an attribution is the failure mode this guards — and it
-    has already caught TWO: `refused_by_operator` was added on 2026-09-18 when destructive
-    experiments started escalating to the operator instead of being silently skipped, and
+    has already caught THREE: `refused_by_operator` was added on 2026-09-18 when destructive
+    experiments started escalating to the operator instead of being silently skipped,
     `both_sides_absent` on 2026-09-19 when a 404/404 comparison stopped being filed as a
-    measurement. Each failed this count until the attribution table was updated — which
-    is the whole point: a terminal must not enter the vocabulary without someone deciding,
-    in writing, whose limit it represents."""
-    assert len(ALL_TERMINALS) == 12, ALL_TERMINALS
+    measurement, and `both_sides_unreadable` on 2026-09-22 (GAP #29) when two 405s stopped
+    being filed as the write having changed nothing. Each failed this count until the
+    attribution table was updated — which is the whole point: a terminal must not enter the
+    vocabulary without someone deciding, in writing, whose limit it represents."""
+    assert len(ALL_TERMINALS) == 13, ALL_TERMINALS
 
 
 @pytest.mark.parametrize("outcome", ALL_TERMINALS)
@@ -66,6 +67,9 @@ def test_every_terminal_maps_to_exactly_one_attribution(outcome):
     ("both_sides_failed", "TARGET-REFUSED"),
     # Ours: the request never went out, or went out and we could not use it.
     ("errored", "HARNESS-LIMIT"),
+    # A wrong AIM is ours: 405/405 means the URL is not readable by the method we asked
+    # with, so the application never had the chance to behave (GAP #29).
+    ("both_sides_unreadable", "HARNESS-LIMIT"),
     ("no_answer", "HARNESS-LIMIT"),
     ("not_authenticated", "HARNESS-LIMIT"),
     ("second_unavailable", "HARNESS-LIMIT"),
