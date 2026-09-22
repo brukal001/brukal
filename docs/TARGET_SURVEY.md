@@ -2871,3 +2871,47 @@ which is GAP #26's memorised wishlist in a new place.
 **Still unmeasured:** whether either half converts into a confirmed `state_changed`. One
 false negative removed is not a finding, and the live 500 on `return_order` may reassert
 itself. That is the next run's question.
+
+---
+
+# CR3 — PRE-REGISTRATION, written 2026-09-22 BEFORE run 1 finished
+
+Scope files are gitignored (`.gitignore:15 scope.*.json`), so predictions written only
+into `_model_note` are not a committed record. **A prediction that cannot be shown to
+predate its result is not a prediction.** These are the CR3 predictions, committed while
+run 1 was still executing and before any result was read.
+
+Three runs, `deepseek/deepseek-v4-pro`, identical config, `--max-cost 1.00` each.
+Comparable with the CR2 run 1–3 series; never with the CR1 sonnet series.
+
+**What changed since CR2 — exactly two fixes:**
+- **GAP #28** — a run ends when the WORK ends, not when the model runs out of ideas.
+- **GAP #29** — a captured write is paired with a read that can show its effect.
+
+| # | prediction | rationale |
+|---|---|---|
+| 0 | **median shell commands > 14** | direct test of #28; 14 was CR2's best non-killed run |
+| 1 | **≥1 `state_changed` dispatched at `/orders/all`, AND zero `not_confirmed` on a control that answered 405** | direct test of #29 |
+| 2 | **median recall ≥ 2 of 14** | the real question. CR2 predicted this and FAILED at a median of 1 |
+| 3 | **CEILING: median recall ≤ 3 of 14** | a prediction that only guards the downside can be satisfied by any good news |
+
+**I expect 0 and 1 to hold and 2 to be the coin-flip.** No configuration ever tested — no
+model, no amount of recon, capture, discovery or replay — has exceeded 2 of 14, and the
+A/B/C showed the model contributes nothing to the hard comparator. More work may simply
+buy more of the same work.
+
+**Stated risks.**
+(a) Challenge credits are matched by URL signature and GAP #23 has now produced **two**
+false credits (challenges 13 and 15); only 15 was narrowed. **Any rise must be audited
+challenge-by-challenge against the experiment that earned it before the number is
+quoted** — CR2's headline 3/14 was really 2/14.
+(b) `return_order` answered **500** live in CR2, and the free pre-flight for this build
+reproduced it (`both_sides_failed / TARGET-REFUSED`). A correct read of a write the server
+rejects measures a working application, so the newly-correct aim may buy nothing.
+(c) Longer runs cost more **by design** — that is the fix working, not a fault.
+(d) Three runs is the minimum for a median and remains a small sample.
+
+**Free pre-flight first, 2026-09-22, $0.00** (local `qwen2.5`, 12 steps): `/orders/all`
+dispatched 15 times, `both_sides_unreadable` recorded HARNESS-LIMIT on `validate-coupon`
+(a `not_confirmed` false negative in CR2), one `[handoff]` note, and the run spent its full
+budget instead of exiting early. The plumbing was verified before any money was spent.
