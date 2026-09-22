@@ -1,0 +1,198 @@
+[
+  {
+    "title": "Anonymous access to authenticated user dashboard",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/dashboard",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/dashboard",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "A stranger should be refused the dashboard; if anonymous receives the same user dashboard as the authenticated account, the endpoint lacks authentication."
+  },
+  {
+    "title": "Anonymous access to all shop orders",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "The orders/all route likely returns order data tied to the session; if anonymous can read it, order data is exposed without authentication."
+  },
+  {
+    "title": "BOLA: read another account's order by id",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "The second account must not be able to fetch the first account's order by id; success proves the order detail endpoint has no ownership check."
+  },
+  {
+    "title": "BOLA: read another account's video by id",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/identity/api/v2/user/videos",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "The second account should be denied access to the first account's video; success proves video IDs are globally enumerable without ownership validation."
+  },
+  {
+    "title": "Cross-account coupon application to another account's order",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/apply_coupon",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"order_id\":{{setup.0.0.id}},\"coupon_code\":\"SUMMER35\"}",
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/apply_coupon",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"order_id\":{{setup.0.0.id}},\"coupon_code\":\"SUMMER35\"}",
+      "as": "self"
+    },
+    "rationale": "Only the order owner should be allowed to apply a coupon; if the second account can apply a coupon to the first account's order, the endpoint lacks order ownership validation."
+  },
+  {
+    "title": "Cross-account order return",
+    "severity": "critical",
+    "comparator": "state_changed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"order_id\":\"{{setup.0.0.order_id}}\",\"reason\":\"security-audit cross-account return\"}",
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "A second account must not be able to return the first account's order; if the order state changes after the second account's POST, the return endpoint lacks ownership validation."
+  },
+  {
+    "title": "Coupon mass assignment changes discount amount",
+    "severity": "high",
+    "comparator": "bodies_differ",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"coupon_code\":\"SUMMER35\"}",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"coupon_code\":\"SUMMER35\",\"amount\":100}",
+      "as": "self"
+    },
+    "rationale": "The server should derive the discount from the coupon record; if adding a client-supplied amount changes the returned discount, the coupon validator is vulnerable to mass assignment."
+  }
+]

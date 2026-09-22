@@ -1,0 +1,82 @@
+```
+[
+  {
+    "title": "IDOR on order detail",
+    "severity": "high",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "second"
+    },
+    "rationale": "If the second user can access an order belonging to the first user, the endpoint lacks proper authorization."
+  },
+  {
+    "title": "Unauthenticated access to order detail",
+    "severity": "critical",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "anonymous"
+    },
+    "rationale": "If an unauthenticated user can access another user's order, it is a critical access control bypass."
+  },
+  {
+    "title": "Mass order data exposure via /all endpoint",
+    "severity": "high",
+    "comparator": "bodies_differ",
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "second"
+    },
+    "rationale": "If two different users receive identical lists of orders, the endpoint does not filter by user, exposing all orders."
+  },
+  {
+    "title": "Unauthenticated access to order listing",
+    "severity": "critical",
+    "comparator": "a_denied_b_allowed",
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "anonymous"
+    },
+    "rationale": "If an unauthenticated user can list all orders, it exposes potentially sensitive business data."
+  }
+]
+```

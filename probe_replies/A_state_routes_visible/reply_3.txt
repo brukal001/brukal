@@ -1,0 +1,129 @@
+```json
+[
+  {
+    "title": "Cross-account order fetch without authorization",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "If a second account can read the first account's order by ID, the API fails to enforce object-level authorization."
+  },
+  {
+    "title": "Unauthenticated access to user videos",
+    "severity": "high",
+    "comparator": "unauthenticated_exposure",
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "If both responses reveal the same videos, the endpoint is exposing private user data without authentication."
+  },
+  {
+    "title": "Vehicle list exposes other users' vehicles",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "Different users receiving identical vehicle lists would indicate a tenant/account isolation failure."
+  },
+  {
+    "title": "Coupon validation allows reuse across accounts",
+    "severity": "high",
+    "comparator": "state_changed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+        "method": "POST",
+        "headers": {},
+        "body": "{\"CouponName\": \"TESTPASS\"}",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.OrderId}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.OrderId}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+      "method": "POST",
+      "headers": {},
+      "body": "{\"CouponName\": \"TESTPASS\"}",
+      "as": "second"
+    },
+    "rationale": "If a coupon assigned to one account is accepted by a different account, the coupon is not bound to its owner."
+  },
+  {
+    "title": "Order total manipulated via price override",
+    "severity": "critical",
+    "comparator": "bodies_differ",
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/1",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/1?price=0.01",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "If the response total changes with a price query parameter, the server trusts client-side pricing."
+  }
+]
+```

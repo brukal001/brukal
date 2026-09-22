@@ -1,0 +1,120 @@
+[
+  {
+    "title": "Cross-account order access",
+    "severity": "high",
+    "comparator": "b_errors_a_does_not",
+    "setup": [
+      {"url": "http://172.20.0.12/workshop/api/shop/orders/all", "method": "GET", "as": "self"}
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "second"
+    },
+    "rationale": "If the second user can access an order that belongs to the first user, it indicates a missing authorization check on order details."
+  },
+  {
+    "title": "Cross-account video access",
+    "severity": "high",
+    "comparator": "b_errors_a_does_not",
+    "setup": [
+      {"url": "http://172.20.0.12/identity/api/v2/user/videos", "method": "GET", "as": "self"}
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "as": "second"
+    },
+    "rationale": "If the second user can view a video belonging to the first user, it is an IDOR vulnerability."
+  },
+  {
+    "title": "Unauthorized order return",
+    "severity": "high",
+    "comparator": "b_errors_a_does_not",
+    "setup": [
+      {"url": "http://172.20.0.12/workshop/api/shop/orders/all", "method": "GET", "as": "self"}
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "as": "self",
+      "body": {"orderId": {{setup.0.0.id}}}
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "as": "second",
+      "body": {"orderId": {{setup.0.0.id}}}
+    },
+    "rationale": "If the second user can initiate a return on an order belonging to the first user, it is a critical authorization bypass."
+  },
+  {
+    "title": "Coupon validation reveals valid codes",
+    "severity": "medium",
+    "comparator": "bodies_differ",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+      "method": "POST",
+      "as": "self",
+      "body": {"couponCode": "DISCOUNT10"}
+    },
+    "variant": {
+      "url": "http://172.20.0.12/community/api/v2/coupon/validate-coupon",
+      "method": "POST",
+      "as": "self",
+      "body": {"couponCode": "INVALID123"}
+    },
+    "rationale": "If the response differs between a likely valid and an invalid coupon code, it allows enumeration of valid coupon codes."
+  },
+  {
+    "title": "Forgot password user enumeration",
+    "severity": "medium",
+    "comparator": "bodies_differ",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/auth/forget-password",
+      "method": "POST",
+      "as": "self",
+      "body": {"email": "test@example.com"}
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/auth/forget-password",
+      "method": "POST",
+      "as": "self",
+      "body": {"email": "nonexistent@example.com"}
+    },
+    "rationale": "If the response differs, it reveals whether an email is registered, allowing user enumeration."
+  },
+  {
+    "title": "Apply coupon to another user's order",
+    "severity": "high",
+    "comparator": "b_errors_a_does_not",
+    "setup": [
+      {"url": "http://172.20.0.12/workshop/api/shop/orders/all", "method": "GET", "as": "self"}
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/apply_coupon",
+      "method": "POST",
+      "as": "self",
+      "body": {"orderId": {{setup.0.0.id}}, "couponCode": "TEST10"}
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/apply_coupon",
+      "method": "POST",
+      "as": "second",
+      "body": {"orderId": {{setup.0.0.id}}, "couponCode": "TEST10"}
+    },
+    "rationale": "If the second user can apply a coupon to an order belonging to the first user, it is a cross-account authorization flaw."
+  }
+]

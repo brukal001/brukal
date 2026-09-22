@@ -1,0 +1,194 @@
+[
+  {
+    "title": "IDOR read another user's order",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "A second account receiving the same order detail would prove order IDs are not scoped to their owner."
+  },
+  {
+    "title": "IDOR read another user's private video",
+    "severity": "medium",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/identity/api/v2/user/videos",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "If another account can fetch self's video by direct id, user video references are not properly authorized."
+  },
+  {
+    "title": "Cross-account order return",
+    "severity": "high",
+    "comparator": "state_changed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"order_id\": {{setup.0.0.id}}}",
+      "as": "second"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "rationale": "If the order status changes after a second account returns it, the state transition lacks ownership enforcement."
+  },
+  {
+    "title": "Password reset email enumeration",
+    "severity": "medium",
+    "comparator": "bodies_differ",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/identity/api/v2/user/dashboard",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/auth/forget-password",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\":\"{{setup.0.email}}\"}",
+      "as": "anonymous"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/auth/forget-password",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"email\":\"nonexistent-{{setup.0.email}}\"}",
+      "as": "anonymous"
+    },
+    "rationale": "A different response for a registered versus unregistered email would leak which accounts exist."
+  },
+  {
+    "title": "Anonymous access to order list",
+    "severity": "high",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "If an anonymous stranger receives order data, the order list endpoint is exposed without authentication."
+  },
+  {
+    "title": "Anonymous access to user videos",
+    "severity": "medium",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "If an anonymous stranger receives private video metadata, this endpoint lacks authentication."
+  },
+  {
+    "title": "Anonymous access to vehicle list",
+    "severity": "medium",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "If vehicle records are readable without a session, personal vehicle data is exposed."
+  }
+]

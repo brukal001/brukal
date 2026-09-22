@@ -2747,3 +2747,87 @@ propose at roughly a fifth of it.
 Recon, experiment construction and evidence discipline improved measurably. **Recall did
 not.** It sits at 1–2 of 14 across every configuration, and the ceiling is set by the model
 running out of things to do, not by the quality of the map it is given.
+
+---
+
+## ✅ GAP #28 — RUNS SPEND A FIFTH OF THEIR BUDGET, THROUGH THREE DOORS (fixed)
+
+**Measured**, budget utilisation against a 70-step allowance:
+
+| run  | shell cmds | stop reason | recall |
+|------|-----------|-------------|--------|
+| cr2b |  5 | `manual` | 1/14 |
+| c1   |  7 | `done`   | 1/14 |
+| c3   | 10 | `manual` | 1/14 |
+| cr2a | 14 | `manual` | 2/14 |
+| c2   | 24 | killed by an EXTERNAL timeout, still working | 2/14 |
+
+Every run but one ended **voluntarily** at roughly a fifth of its budget. Recall tracks work
+done, so this is not a side issue — it is the ceiling on every number the series reports.
+
+**Fixing one door moved the constraint to the next.** The `manual` exit was fixed before
+CR2 run 3; c1 then left through `done` at 7 commands, and c3 through `manual` anyway once
+its handoff patience ran out. Three doors, and a fix that closes one only relocates the
+problem — which is why both now call the same check.
+
+### What the pending work actually was — measured, after a wrong first answer
+
+The first version of the fix asserted that **derived experiments sat queued** at the exit,
+and a unit test agreed. Both were wrong. Reading the three runs' notes shows every derived
+experiment had run: the loop drains that queue at the top of every turn. The test only
+passed its premise because `run_hypotheses` returns 0 when `browser is None`, so the
+fixture could neither fill the queue nor drain it, and happily agreed with the hypothesis
+it was written to confirm. **GAP #12's lesson for the third time: a unit fixture that
+cannot express the condition is not evidence about the condition.**
+
+The real leftover is **the model's own experiment rounds**.
+`_maybe_ask_the_model_for_experiments` is gated on an 8-step cadence under a ceiling of 6
+rounds. All three runs announced exactly **one** round, because a run that stops at 7 steps
+never reaches the second cadence. One to five rounds were unspent at every exit — and an
+exit is precisely the moment the cadence was waiting for.
+
+### The fix
+
+`_work_left_before_ending()` in `loop.py`, called by both the `done` and the `manual`
+doors. If the run is autonomous, principals are established, rounds remain and there is a
+probeable surface, it spends one round and the loop continues; otherwise the run ends, and
+`done` keeps its honest meaning.
+
+**It is not "keep looping."** Ignoring the model's stop would spend budget on nothing. This
+spends it only while work remains. **Termination is by construction, not by patience:**
+every override consumes one of the six rounds, so the door can be held at most
+`max_hypothesis_rounds` times and then closes for good — there is no streak counter to get
+wrong. `truncated` and `unreadable` stay distinct, since those are failures to READ an
+intended action, not claims that work has run out. Interactive runs are unchanged.
+
+`tests/test_a_run_ends_when_work_ends.py` — 5 tests, including the ceiling bound and the
+interactive-unchanged case.
+
+**Not yet measured:** whether more work converts into recall. The A/B/C says the model
+contributes nothing to the hard comparator, so the honest prediction is that utilisation
+rises and recall may not follow. That is the next run's question, and it should be fixed as
+a prediction before launch, ceiling included.
+
+## ⛔ GAP #29 — a write to an ACTION endpoint has no read that shows its effect (open)
+
+Found while reading the CR2 run notes for GAP #28, not yet fixed.
+
+`hypotheses_from` builds a `state_changed` experiment by pairing the captured write with
+"the read that shows the effect", derived as the same URL without its query. That is right
+for a **collection** write (`POST /workshop/api/shop/orders` → `GET .../orders`) and wrong
+for an **action** endpoint, which is not readable:
+
+```
+[experiment] not confirmed [state_changed]: POST /workshop/api/shop/orders/return_order …
+             — control HTTP 405 (40B) vs variant HTTP 405 (40B)
+```
+
+Two 405s are recorded as `not_confirmed`, which reads as "the write did not change
+anything". It is a **false negative**: the experiment never observed the resource the write
+touches. The same shape covers `/apply_coupon`. This matters more than one row, because
+`state_changed` is the comparator that has never confirmed in either model series, and
+these action endpoints are where crAPI's state-changing challenges live.
+
+The fix is to walk UP the path to the nearest readable collection (`/orders/return_order`
+→ `/orders`) rather than strip the query, and to record `both_sides_absent` — which already
+exists for exactly this — when neither side is readable, instead of `not_confirmed`.

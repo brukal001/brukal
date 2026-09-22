@@ -1,0 +1,57 @@
+[
+  {
+    "title": "IDOR on workshop order by ID",
+    "severity": "critical",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "as": "second"
+    },
+    "rationale": "If a second user can access an order that belongs to the first user, it proves an IDOR vulnerability in the orders endpoint."
+  },
+  {
+    "title": "Unauthenticated exposure of all orders",
+    "severity": "high",
+    "comparator": "unauthenticated_exposure",
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "as": "anonymous"
+    },
+    "rationale": "If anonymous users can retrieve the list of all orders, it indicates a lack of authentication requirement on a sensitive endpoint."
+  },
+  {
+    "title": "Unauthenticated exposure of user videos",
+    "severity": "medium",
+    "comparator": "unauthenticated_exposure",
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "as": "anonymous"
+    },
+    "rationale": "If anonymous users can access the list of user videos, it reveals personal content and breaches privacy."
+  }
+]

@@ -61,7 +61,7 @@ services:
       # The kernel guarantee is only worth what the operator's belief about it is worth.
       # After recreating, CHECK, do not assume:
       #     docker exec brukal-kali nft list ruleset | grep daddr
-      - ../scope.dvwa.json:/scope.json:ro
+      - ../scope.crapi.json:/scope.json:ro
     environment:
       # Egress lock on by default (fail-closed). Set to 0 only on a kernel without
       # nftables support — you then fall back to the software gate alone.

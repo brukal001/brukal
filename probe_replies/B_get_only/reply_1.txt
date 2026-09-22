@@ -1,0 +1,73 @@
+[
+  {
+    "title": "Cross-account order access via IDOR",
+    "severity": "critical",
+    "comparator": "a_denied_b_allowed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/identity/api/v2/user/dashboard",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.orders.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "If the second user can retrieve the first user's order detail, the endpoint lacks proper object-level authorization."
+  },
+  {
+    "title": "Unauthenticated access to all orders",
+    "severity": "high",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "If an anonymous request returns the same order list as an authenticated request, the endpoint exposes sensitive data without authentication."
+  },
+  {
+    "title": "Cross-account user video list exposure",
+    "severity": "high",
+    "comparator": "bodies_differ",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "If the video lists are identical (bodies do not differ), then the endpoint leaks another user's private video metadata, indicating missing authorization."
+  }
+]

@@ -316,6 +316,58 @@ class GroundedLoop:
                 note("[experiment] second principal NOT established — no signup door on "
                      "this target; cross-account experiments will be recorded NOT RUN")
 
+    def _work_left_before_ending(self) -> str | None:
+        """Do the pending work an ending would have skipped; say what it was, or None.
+
+        WHY THIS EXISTS. Measured budget utilisation against a 70-step allowance:
+
+            cr2b   5 cmds  stop=manual  |  c1   7 cmds  stop=done  |  c3  10 cmds  stop=manual
+            cr2a  14 cmds  stop=manual  |  c2  24 cmds  killed by an EXTERNAL timeout
+
+        Every run but one ended VOLUNTARILY at a fifth of its budget, through one of two
+        doors. Fixing only `manual` moved the constraint to `done` — which is why both
+        doors call this, and why fixing one of them was never going to be the fix.
+
+        WHAT THE PENDING WORK IS, read from the runs rather than assumed. The first
+        attempt asserted that derived experiments sat queued at the exit; the notes say
+        otherwise — the loop drains that queue at the top of every turn and all three runs
+        had drained it. The leftover is the model's OWN experiment rounds:
+        `_maybe_ask_the_model_for_experiments` is gated on an 8-step cadence under a
+        ceiling of 6, and all three runs announced exactly ONE round, because a run that
+        stops at 7 steps never reaches the second cadence. One to five rounds were unspent
+        at every exit, and an exit is precisely the moment the cadence was waiting for.
+
+        THIS IS NOT "KEEP LOOPING". Ignoring the model's stop would spend budget on
+        nothing; this spends it only while work remains, and the run still ends the moment
+        it does not — which is the honest meaning of `done`. Termination is by
+        construction rather than by patience: every override CONSUMES one of the six
+        rounds, so the door can be held at most `max_hypothesis_rounds` times and then
+        closes for good. There is no streak counter here to get wrong.
+
+        The autonomous gate is the same one the manual handoff uses. Interactively, the
+        operator's stop is the operator's, and continuing would take intrusive actions
+        nobody authorised."""
+        if not self.autonomous:
+            return None
+        if not self._confirmed_done:
+            return None            # round one is REFLEX 0b's, with its ordering
+        if self._hypothesis_rounds >= self.max_hypothesis_rounds:
+            return None
+        try:
+            if not self.session.probeable_surface():
+                return None        # nothing to aim an experiment at; ending is honest
+        except Exception:
+            return None            # fail-closed: an unreadable surface ends the run
+        self._hypothesis_rounds += 1
+        self._last_hypothesis_at = len(self.steps)
+        try:
+            found = self.session.run_hypotheses()
+        except Exception as exc:
+            self._record_swallowed_experiment_error(exc)
+            return None
+        return (f"round {self._hypothesis_rounds} of {self.max_hypothesis_rounds}, "
+                f"{found} confirmed")
+
     def _maybe_ask_the_model_for_experiments(self) -> None:
         """Ask the model for experiments AGAIN, on a bounded cadence (GAP #18).
 
@@ -875,6 +927,16 @@ class GroundedLoop:
                             note(f"[handoff] the model proposed a step for the operator "
                                  f"and the run CONTINUED: {str(suggestion.manual)[:200]}")
                         continue
+                    # Out of patience with handoffs is not out of WORK. cr2a and cr2b left
+                    # here at 14 and 5 commands of 70 with model rounds unspent.
+                    did = self._work_left_before_ending()
+                    if did is not None:
+                        self._manual_streak = 0
+                        note = getattr(self.session, "note", None)
+                        if note:
+                            note(f"[handoff] the model had only operator steps left, so "
+                                 f"the run spent a pending experiment round: {did}")
+                        continue
                     return self._finish("manual", suggestion.manual)
                 # No action because the model never finished writing one is not the same
                 # ending as no action because there is nothing left to do. Reporting the
@@ -890,6 +952,18 @@ class GroundedLoop:
                 if suggestion.unreadable:
                     return self._finish("unreadable", suggestion.goal or
                                         (suggestion.rationale or "").strip()[:160])
+                # THE THIRD DOOR. `truncated` and `unreadable` above are failures to
+                # READ an intended action and must stay distinct; this one is the model
+                # saying there is nothing left. That is a claim about the MODEL's ideas,
+                # not about the engagement's work — c1 made it at 7 commands of 70 with
+                # five experiment rounds unspent. Check before believing it.
+                did = self._work_left_before_ending()
+                if did is not None:
+                    note = getattr(self.session, "note", None)
+                    if note:
+                        note(f"[handoff] the model reported nothing left to do, so the "
+                             f"run spent a pending experiment round instead: {did}")
+                    continue
                 return self._finish("done", suggestion.goal or
                                     (suggestion.rationale or "").strip()[:160])
 

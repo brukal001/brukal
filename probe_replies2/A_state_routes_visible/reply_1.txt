@@ -1,0 +1,202 @@
+[
+  {
+    "title": "Anonymous order list exposure",
+    "severity": "high",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "Orders are sensitive; an unauthenticated visitor should not receive the same order data as the account owner."
+  },
+  {
+    "title": "Anonymous vehicle list exposure",
+    "severity": "medium",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/vehicle/vehicles",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "Vehicle records are personal; an unauthenticated visitor should not receive them."
+  },
+  {
+    "title": "Anonymous user video list exposure",
+    "severity": "medium",
+    "comparator": "unauthenticated_exposure",
+    "setup": [],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "anonymous"
+    },
+    "rationale": "User videos are private; unauthenticated access should be refused."
+  },
+  {
+    "title": "Cross-account order read by id",
+    "severity": "high",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "A second account must not be able to read the same order object simply by using its id."
+  },
+  {
+    "title": "Cross-account video read by id",
+    "severity": "medium",
+    "comparator": "cross_account_resource",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/identity/api/v2/user/videos",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/identity/api/v2/user/videos/{{setup.0.0.id}}",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "second"
+    },
+    "rationale": "User video detail should be scoped to the owning account."
+  },
+  {
+    "title": "Second account can return self's order",
+    "severity": "high",
+    "comparator": "state_changed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "headers": {},
+      "body": "{\"orderId\":\"{{setup.0.0.id}}\"}",
+      "as": "second"
+    },
+    "rationale": "If the self order list changes after a second account submits a return, order ownership is not enforced on state transitions."
+  },
+  {
+    "title": "Order can be returned twice",
+    "severity": "high",
+    "comparator": "state_changed",
+    "setup": [
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+        "method": "GET",
+        "headers": {},
+        "body": "",
+        "as": "self"
+      },
+      {
+        "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+        "method": "POST",
+        "headers": {},
+        "body": "{\"orderId\":\"{{setup.0.0.id}}\"}",
+        "as": "self"
+      }
+    ],
+    "control": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "variant": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/all",
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "as": "self"
+    },
+    "act": {
+      "url": "http://172.20.0.12/workshop/api/shop/orders/return_order",
+      "method": "POST",
+      "headers": {},
+      "body": "{\"orderId\":\"{{setup.0.0.id}}\"}",
+      "as": "self"
+    },
+    "rationale": "A second return on the same order should be rejected; if the order state changes again, the server permits duplicate returns/refunds."
+  }
+]
