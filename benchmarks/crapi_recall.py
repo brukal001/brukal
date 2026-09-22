@@ -25,6 +25,68 @@ from collections import Counter
 
 # id, title, the path fragments that ARE this challenge's surface, and whether anything in
 # this deployment could reach it at all.
+# --------------------------------------------------------------------------- #
+# GATES — a URL says WHERE an experiment looked; a gate says whether what it found is
+# the thing the challenge describes. GAP #23, fourth instance.
+# --------------------------------------------------------------------------- #
+#
+# This scorer has now mis-credited four times, always the same way: it matched a
+# challenge by URL substring alone, so ANY confirmed experiment touching the endpoint
+# credited the challenge whatever it actually showed.
+#
+#   CR2 c1  ch15 JWT forgery      <- a dashboard IDOR that merely read the dashboard
+#   CR2 c2  ch13 coupon SQLi      <- the foreign-value coupon experiment
+#   CR3 r1  ch13 the same again   <- never narrowed after c2, so it recurred
+#   CR3 r1  ch3  password reset   <- "account enumeration via forget-password"
+#   CR3 r1  ch14 no-auth endpoint <- a cross_account_resource (AUTHENTICATED) confirmation
+#
+# CR3 run 1 printed 4 of 14, double a ceiling no configuration had ever passed. Three of
+# the four credits were false.
+#
+# ONE-DIRECTIONAL BY CONSTRUCTION: gates only ever REMOVE credit. No signature here is
+# widened or added, even where a finding would arguably qualify under a broader reading —
+# a scorer that gains recall from its own correction is not evidence.
+
+def _text(e) -> str:
+    return f"{e.get('title','')} {e.get('comparator','')} {' '.join(e.get('urls') or [])}".lower()
+
+
+def _gate_password_reset(e) -> bool:
+    """ch3 wants ANOTHER USER'S PASSWORD RESET, not the discovery that they exist.
+    `forget-password` is hit by account enumeration, which is a different, lesser
+    finding."""
+    s = _text(e)
+    if "enumerat" in s:
+        return False
+    return any(k in s for k in ("check-otp", "login-with-token", "reset", "state_changed"))
+
+
+def _gate_coupon_sqli(e) -> bool:
+    """ch13 is a SQL INJECTION that modifies the database. Reusing a coupon issued to
+    someone else is crAPI's per-user coupon design, and is already recorded as almost
+    certainly intended."""
+    return any(k in _text(e) for k in ("sql", "injection", "union", "1=1", "--", "sleep("))
+
+
+def _gate_unauthenticated(e) -> bool:
+    """ch14 is a MISSING AUTHENTICATION check. A cross-account IDOR is an authenticated
+    caller reading another caller's record — broken authorisation, a different failure."""
+    s = _text(e)
+    if "cross_account_resource" in s:
+        return False
+    return ("unauthenticated_exposure" in s or "no credentials" in s
+            or "unauthenticated" in s or "anonymous" in s)
+
+
+def _credits(challenge, experiment) -> bool:
+    """Does this experiment credit this challenge? URL match AND the gate, if any."""
+    sigs = challenge[3]
+    gate = challenge[5] if len(challenge) > 5 else None
+    if not any(any(s in (u or "") for s in sigs) for u in (experiment.get("urls") or [])):
+        return False
+    return True if gate is None else bool(gate(experiment))
+
+
 CHALLENGES = [
     (1,  "Access details of another user's vehicle", "BOLA",
      ("/identity/api/v2/vehicle/", "/vehicle/location", "/vehicle/resend_email"), None),
@@ -32,7 +94,8 @@ CHALLENGES = [
      ("/workshop/api/mechanic/mechanic_report", "/merchant/contact_mechanic"), None),
     (3,  "Reset the password of a different user", "Broken user auth",
      ("/identity/api/auth/forget-password", "/identity/api/auth/v3/check-otp",
-      "/identity/api/auth/v2/check-otp", "/identity/api/auth/v4.0/user/login-with-token"), None),
+      "/identity/api/auth/v2/check-otp", "/identity/api/auth/v4.0/user/login-with-token"),
+     None, _gate_password_reset),
     # crAPI's own wording is "find an API endpoint that leaks sensitive information of
     # OTHER USERS". /workshop/api/shop/orders/{id} returns another tenant's email, phone
     # and order to an unauthenticated caller -- that is precisely this challenge, and the
@@ -67,10 +130,11 @@ CHALLENGES = [
     (12, "Free coupons without knowing the coupon code", "NoSQL injection",
      ("/community/api/v2/coupon/validate-coupon", "/identity/api/v2/coupon/validate-coupon"), None),
     (13, "Redeem an already-claimed coupon by modifying the database", "SQL injection",
-     ("/community/api/v2/coupon/validate-coupon", "/workshop/api/shop/apply_coupon"), None),
+     ("/community/api/v2/coupon/validate-coupon", "/workshop/api/shop/apply_coupon"),
+     None, _gate_coupon_sqli),
     (14, "An endpoint that performs no authentication check", "Unauthenticated access",
      ("/identity/api/v2/user/dashboard", "/community/api/v2/community/posts",
-      "/workshop/api/shop/products"), None),
+      "/workshop/api/shop/products"), None, _gate_unauthenticated),
     # NARROWED 2026-09-20 (GAP #23). These were `/identity/api/auth/login` and
     # `/identity/api/v2/user/dashboard` — URLs that ANY ordinary authenticated finding
     # touches. CR2 run 1 confirmed two experiments and this file reported THREE
@@ -134,6 +198,7 @@ def group_experiments(rows) -> list:
         elif kind == "experiment_outcome":
             out.append({"outcome": data.get("outcome", ""),
                         "title": data.get("title", ""),
+                        "comparator": data.get("comparator", ""),
                         "attribution": data.get("attribution", ""),
                         "urls": list(buf)})
             buf = []
@@ -181,12 +246,17 @@ def measure(path) -> dict:
     confounded = model_rounds < _MIN_ROUNDS_FOR_A_MODEL_VERDICT
 
     results = []
-    for cid, title, cat, sigs, unreachable in CHALLENGES:
+    for challenge in CHALLENGES:
+        cid, title, cat, sigs, unreachable = challenge[:5]
         def _any(urls):
             return any(any(s in (u or "") for s in sigs) for u in urls)
+        # A CREDIT NEEDS THE CHALLENGE'S OWN EVIDENCE, not merely its URL: each confirmed
+        # experiment is put through the challenge's gate (GAP #23, fourth instance).
+        _confirms = any(_credits(challenge, e) for e in experiments
+                        if e["outcome"] == "confirmed")
         if unreachable:
             state, attribution = "UNREACHABLE", None
-        elif _any(confirmed_urls):
+        elif _confirms:
             state, attribution = "FOUND", None
         elif _any(attempted_urls):
             state, attribution = "MISS", "MEASURED-NOT-CONFIRMED"

@@ -67,11 +67,32 @@ def test_a_dashboard_IDOR_does_not_credit_JWT_FORGERY(tmp_path):
         "reading a dashboard was credited as forging a token")
 
 
-def test_the_dashboard_STILL_credits_the_challenges_it_really_proves(tmp_path):
-    """POSITIVE CONTROL, and the boundary that matters: narrowing challenge 15 must not
-    silently cost the credits that confirmation legitimately earns. Challenge 14 — an
-    endpoint performing no authentication check — is proved by exactly this."""
+def test_a_cross_account_IDOR_does_not_credit_NO_AUTHENTICATION_CHECK_either(tmp_path):
+    """CORRECTED 2026-09-22, and this test previously asserted the OPPOSITE.
+
+    It used to read: "Challenge 14 — an endpoint performing no authentication check — is
+    proved by exactly this", and it credited a `cross_account_resource` dashboard
+    confirmation. That claim is wrong, and the comparator's own definition is what settles
+    it: `_cross_account_resource` requires BOTH SIDES ALLOWED between members of
+    `_REGISTERED_PRINCIPALS = ("self", "second")`, and the module states that `anonymous`
+    "can never be the recorded owner of anything". It is an authenticated-vs-authenticated
+    comparison BY CONSTRUCTION. It shows a broken AUTHORISATION check; challenge 14 is a
+    missing AUTHENTICATION one, and the two are different failures.
+
+    The narrowing that introduced this test fixed challenge 15 and left 14 holding the
+    same wrong credit — which is why CR3 run 1 reported it again. A positive control is
+    only as good as the claim it encodes."""
     m = measure(_ledger(tmp_path, _rounds() + _confirmed([DASH], "cross_account_resource")))
+    assert _of(m, 14)["state"] != "FOUND", (
+        "an authenticated cross-account read was credited as an endpoint with no "
+        "authentication check")
+
+
+def test_challenge_14_is_STILL_creditable_by_the_evidence_it_describes(tmp_path):
+    """THE OTHER HALF, which is what the overturned test was for: narrowing must not make
+    a challenge unreachable. An UNAUTHENTICATED read of the same endpoint credits it."""
+    m = measure(_ledger(tmp_path, _rounds() + _confirmed(
+        [DASH], "unauthenticated_exposure", "Dashboard readable with NO credentials")))
     assert _of(m, 14)["state"] == "FOUND"
 
 

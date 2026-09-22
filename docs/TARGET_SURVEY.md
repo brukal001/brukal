@@ -2915,3 +2915,76 @@ rejects measures a working application, so the newly-correct aim may buy nothing
 dispatched 15 times, `both_sides_unreadable` recorded HARNESS-LIMIT on `validate-coupon`
 (a `not_confirmed` false negative in CR2), one `[handoff]` note, and the run spent its full
 budget instead of exiting early. The plumbing was verified before any money was spent.
+
+---
+
+## ⛔ GAP #30 — THE SCORER CREDITED BY URL, AND THE MEASURED HISTORY WAS WRONG (fixed)
+
+`benchmarks/crapi_recall.py` matched a challenge by **URL substring alone**, so any
+confirmed experiment touching a challenge's endpoint credited that challenge whatever it
+actually showed. This is GAP #23's **fourth** instance, and the first three were each
+treated as a one-off narrowing rather than as a defect in how credit is decided.
+
+| run | challenge | credited by | |
+|---|---|---|---|
+| CR2 c1 | 15 "Forge a valid JWT" | a dashboard IDOR that merely READ the dashboard (`alg` appears 0× in that ledger) | narrowed 2026-09-20 |
+| CR2 c2 | 13 "Redeem a claimed coupon **by modifying the database**" (SQLi) | the foreign-value coupon experiment | ⛔ never narrowed |
+| CR3 r1 | 13 | the same experiment again | ⛔ **it recurred** |
+| CR3 r1 | 3 "Reset the password of a **different user**" | "Account enumeration via forget-password" | ⛔ |
+| CR3 r1 | 14 "An endpoint that performs **no authentication check**" | a `cross_account_resource` confirmation | ⛔ |
+
+**CR3 run 1 printed 4 of 14 — double a ceiling no configuration had ever passed. Three of
+the four credits were false.** Quoting it would have been this project's first reported
+breakthrough and an artifact of its own scorer.
+
+### The fix — gates, and why they only ever subtract
+
+A challenge may carry a **gate**: a predicate on the confirming experiment, not just on its
+URL. The URL says WHERE an experiment looked; the gate says whether what it found is the
+thing the challenge describes. `_credits(challenge, experiment)` is now the single place a
+credit is decided, and `measure()` walks confirmed EXPERIMENTS through it rather than a
+flattened list of URLs.
+
+**One-directional by construction: gates only REMOVE credit.** No signature was widened or
+added, even where a finding would arguably qualify under a broader reading — CR3 r1's
+unauthenticated read of another tenant's order genuinely *is* an endpoint with no
+authentication check, and crediting challenge 14 for it would mean loosening the scorer in
+the same edit that tightens it. **A scorer that gains recall from its own correction is not
+evidence.** It stays a MISS.
+
+### A prior positive control was asserting the wrong thing
+
+`test_the_dashboard_STILL_credits_the_challenges_it_really_proves` explicitly claimed
+"Challenge 14 — an endpoint performing no authentication check — is proved by exactly
+this", crediting a `cross_account_resource` dashboard confirmation. **That claim is wrong,
+and the comparator's own definition settles it:** `_cross_account_resource` requires BOTH
+SIDES ALLOWED between `_REGISTERED_PRINCIPALS = ("self", "second")`, and the module states
+that `anonymous` "can never be the recorded owner of anything". It is an
+authenticated-vs-authenticated comparison by construction — a broken **authorisation**
+check, where challenge 14 is a missing **authentication** one.
+
+The 2026-09-20 narrowing fixed challenge 15 and left 14 holding the same wrong credit,
+which is why CR3 r1 reported it again. **A positive control is only as good as the claim it
+encodes.** Replaced with one that credits 14 from an `unauthenticated_exposure`, so the
+challenge stays reachable.
+
+### RE-SCORED HISTORY — every stored audit, the same corrected scorer
+
+| run | as reported at the time | corrected |
+|---|---|---|
+| CR2 c1 | 1/14 | **0/14** |
+| CR2 c2 | 2/14 *(already audited down from 3)* | **1/14** |
+| CR2 c3 | 1/14 | **0/14** |
+| CR3 r1 | 4/14 | **1/14** |
+
+**This retracts a claim made repeatedly in this document and in the session notes: "recall
+sits at 1–2 of 14 across every configuration".** That range was computed by an
+over-crediting scorer. The real historical ceiling is **1 of 14**, reached once by CR2 c2
+and once by CR3 r1.
+
+The direction of the error is the point. Every instance of this defect has inflated the
+number, never deflated it, and each was found only by auditing a rise rather than by the
+scorer catching itself. The gate moves that check from a habit into the code.
+
+`tests/test_a_credit_needs_the_challenges_own_evidence.py` — 5 tests, including the
+positive control that each gated challenge remains creditable by its own real evidence.
