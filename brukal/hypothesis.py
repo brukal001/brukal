@@ -133,6 +133,16 @@ _COMPARATORS = {
         lambda a, b, p=None, ctx=None: _shared_private_response(a, b, ctx),
         "two distinct authenticated principals received the same substantive response to "
         "a request an unauthenticated caller was refused"),
+    # COMPOSED — the model builds the predicate itself, from the closed grammar in
+    # `predicate_grammar` (trusted observables + combinators), and the CODE still
+    # evaluates it. The generalisation the whole comparator set could not reach one
+    # hand-written detector at a time, bounded to LOW because a predicate the model
+    # designed is an observation a human weighs, not a named impact. The AST reaches
+    # `_composed` through ctx (see `judge`); a missing or unsafe tree fails closed.
+    "composed": (
+        lambda a, b, p=None, ctx=None: _composed(a, b, ctx),
+        "a predicate the model composed from the closed grammar of trusted observables "
+        "held over the two responses"),
 }
 
 # Comparators that need the recorded ownership map, not just the two responses. An
@@ -141,7 +151,8 @@ _COMPARATORS = {
 # from "this predicate raised TypeError on line 3", and a comparator that silently
 # degraded to a two-argument call would be judging on less than it was given.
 _CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed", "oob_callback",
-                        "unauthenticated_exposure", "shared_private_response",)
+                        "unauthenticated_exposure", "shared_private_response",
+                        "composed",)
 
 # Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
 # recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
@@ -345,6 +356,28 @@ def _shared_private_response(a, b, ctx=None) -> bool:
         return False
     return _norm(getattr(a, "body", "")) == _norm(getattr(b, "body", ""))
 
+
+def _composed(a, b, ctx=None) -> bool:
+    """Evaluate a model-COMPOSED predicate over the two responses.
+
+    The predicate is an AST the model built from the closed grammar in
+    `predicate_grammar`; it rides on the hypothesis and reaches here through `ctx`. This
+    is the generalisation the module exists for — the model reaches a flaw shape nobody
+    enumerated — held to the same two rules as everything else: the CODE evaluates it (no
+    model text runs; the grammar is a closed allowlist), and its verdict can never claim
+    more than LOW (`_EVIDENCE_CLASS`), because a predicate the model designed is an
+    observation for a human to weigh, not a named impact. FAILS CLOSED on a missing or
+    unsafe tree — `evaluate` raises `UnsafePredicate` for anything outside the grammar and
+    that is caught here as a non-confirmation."""
+    from . import predicate_grammar as _pg
+    ast = (ctx or {}).get("predicate_ast")
+    if ast is None:
+        return False
+    try:
+        return bool(_pg.evaluate(ast, a, b, ctx or {}))
+    except Exception:
+        return False
+
 # WHO a request is issued as. A closed set, for exactly the reason the comparators are
 # one: the model names a principal, deterministic code decides what that means. Without
 # this the model held a single session, so `a_denied_b_allowed` — the comparator built
@@ -432,6 +465,15 @@ _EVIDENCE_CLASS = {
         "a request an unauthenticated caller was refused, so the endpoint authenticates "
         "but does not isolate data per principal",
         "medium", False),
+    # LOW, and it FAILS CLOSED on the claim. A composed predicate can express a shape as
+    # serious as any named comparator, but it was DESIGNED by the model, so the code will
+    # not let the model's own construction earn its own severity. A composed confirmation
+    # is a lead a human reads and, if it matches a named class, re-files under that class's
+    # bound. This is 2c: the composition never inherits an unearned HIGH.
+    "composed": (
+        "a predicate the model composed from trusted observables held; it is an "
+        "observation a human must interpret, not a named impact",
+        "low", False),
 }
 
 _SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -451,6 +493,8 @@ _HEADLINE = {
         "Unauthenticated retrieval of another party's record at {v}",
     "shared_private_response":
         "Same private response served to two different principals at {v}",
+    "composed":
+        "A model-composed predicate held for {v}",
 }
 
 
@@ -935,11 +979,15 @@ class Hypothesis:
     the comparator still decides everything on the control/variant pair alone."""
 
     __slots__ = ("title", "severity", "comparator", "setup", "control", "variant",
-                 "rationale", "act")
+                 "rationale", "act", "predicate")
 
     def __init__(self, title, severity, comparator, control, variant, rationale="",
-                 setup=None, act=None):
+                 setup=None, act=None, predicate=None):
         self.title = title
+        # The COMPOSED predicate: a validated AST from `predicate_grammar`, present only
+        # for the `composed` comparator and None everywhere else. It rides here because
+        # the closed set holds a fixed function per name and this one is model-built.
+        self.predicate = predicate
         # The request performed BETWEEN the two reads of a `state_changed` experiment.
         # `setup` cannot express this: it always runs before both sides, so by the time
         # the control runs the action has already happened and both reads see one world.
@@ -1111,7 +1159,19 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
             _drop("unusable_control_or_variant", item)
             continue
         act = _clean_request(item.get("act"))
-        if control == variant and act is None:
+        # A COMPOSED predicate may legitimately judge a single response (a header check, a
+        # status class), so identical control/variant is a valid shape for it and only it;
+        # its AST, not the two-request differential, carries the question.
+        predicate_ast = None
+        if comparator == "composed":
+            predicate_ast = item.get("predicate")
+            try:
+                from . import predicate_grammar as _pg
+                _pg.compile_predicate(predicate_ast)
+            except Exception:
+                _drop("unsafe_or_missing_predicate", item)
+                continue                   # an unsafe or absent tree is refused, not run
+        if control == variant and act is None and comparator != "composed":
             # The shape the prompt's own `setup` wording invites: the model expressed
             # the state change as a setup step, so the two judged sides are identical
             # and there is nothing to perform between them.
@@ -1128,7 +1188,8 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
         setup = [r for r in (_clean_request(x) for x in (item.get("setup") or [])[:3])
                  if r is not None]
         out.append(Hypothesis(title, severity, comparator, control, variant,
-                              str(item.get("rationale", ""))[:300], setup, act))
+                              str(item.get("rationale", ""))[:300], setup, act,
+                              predicate=predicate_ast))
     return out
 
 
@@ -1145,6 +1206,11 @@ def judge(hypothesis, control_result, variant_result, profile=None, context=None
     if entry is None:
         return False, ""
     predicate, meaning = entry
+    if hypothesis.comparator == "composed":
+        # The AST rides on the hypothesis, not in the closed set; hand it to the
+        # interpreter through context so `_composed` stays a pure function of (a, b, ctx).
+        # A missing or unsafe tree fails closed inside `_composed`.
+        context = {**(context or {}), "predicate_ast": getattr(hypothesis, "predicate", None)}
     try:
         if hypothesis.comparator in _CONTEXT_COMPARATORS:
             # Named explicitly, never sniffed: a context comparator that fell through to a
@@ -1411,8 +1477,16 @@ def coverage_proposals(confirmed_routes, existing, base: str = "",
 
 
 def comparator_names() -> tuple:
-    """The closed set, for the prompt. The model must pick from these by name."""
-    return tuple(sorted(_COMPARATORS))
+    """The closed set OFFERED TO THE MODEL, for the prompt. The model must pick from these
+    by name.
+
+    `composed` is deliberately WITHHELD until the prompt documents its grammar
+    (`predicate_grammar`): a comparator the model is shown but not taught to fill would be
+    proposed with no AST and dropped, spending a model call to learn nothing. It remains a
+    fully valid, judged comparator — `parse` and `judge` accept a well-formed composed
+    hypothesis today — it is only not yet ADVERTISED, which is the boundary between this
+    milestone (evaluate + bound) and the next (teach the model to emit trees)."""
+    return tuple(name for name in sorted(_COMPARATORS) if name != "composed")
 
 
 REFINE_PROMPT = """Your previous experiments were executed. Results below.
