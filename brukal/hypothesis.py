@@ -712,6 +712,37 @@ SETUP_REF_SYNTAX = (
     "request is sent. Reference ONLY a field the response actually carries: an "
     "unresolvable reference aborts the experiment rather than being sent as text.")
 
+# Appended to the prompt AFTER .format(), so its JSON braces need no escaping. Teaches the
+# model to build a `composed` predicate from the closed grammar in `predicate_grammar`.
+COMPOSED_SYNTAX = (
+    'When a flaw\'s shape is not named by any comparator above, use comparator "composed" '
+    "and add a `predicate`: a small tree deterministic code evaluates over the two "
+    "responses. You choose WHAT to measure; the code decides IF it holds, and a composed "
+    "confirmation is always capped LOW — a lead a human reviews — so reach for it only "
+    "when nothing above fits.\n"
+    "\n"
+    "A predicate node is exactly one of:\n"
+    '  {"lit": <string|number|bool>}\n'
+    '  {"obs": <name>, "of": "a"|"b", "arg": <string>}   a reading of control (a) or variant (b)\n'
+    '  {"op": <name>, "args": [<node>, ...]}\n'
+    "\n"
+    "observables returning a value: status, body_len, header (needs \"arg\"=header name) "
+    "— all need \"of\". observables returning a boolean: substantive, denied, succeeded "
+    "(need \"of\"); bodies_equal, ctx_flag (needs \"arg\") — no \"of\". ctx_flag names one "
+    "of: anon_refused, distinct_principals, oob_hit, unauth_foreign, baseline_stable, acted.\n"
+    "operators: and, or (2+ args), not (1 arg), eq, ne, gt, ge, lt, le, ratio_gt (3 args "
+    "x,y,k meaning x > y*k), contains (2 args: haystack, needle).\n"
+    "\n"
+    "Example — the variant returned more than twice the control's body, both 200:\n"
+    '  {"comparator":"composed","predicate":'
+    '{"op":"and","args":['
+    '{"obs":"succeeded","of":"a"},{"obs":"succeeded","of":"b"},'
+    '{"op":"ratio_gt","args":[{"obs":"body_len","of":"b"},{"obs":"body_len","of":"a"},{"lit":2}]}]}}\n'
+    "\n"
+    "The whole predicate must evaluate to true or false. Anything outside this grammar — "
+    "an unknown name, a malformed node, a tree too deep — is refused and the experiment "
+    "discarded, so stay within the names above.")
+
 
 def _lookup(body, path: str, ref: str):
     """Walk a dotted path into a setup response body. Deterministic, no eval.
@@ -1478,15 +1509,10 @@ def coverage_proposals(confirmed_routes, existing, base: str = "",
 
 def comparator_names() -> tuple:
     """The closed set OFFERED TO THE MODEL, for the prompt. The model must pick from these
-    by name.
-
-    `composed` is deliberately WITHHELD until the prompt documents its grammar
-    (`predicate_grammar`): a comparator the model is shown but not taught to fill would be
-    proposed with no AST and dropped, spending a model call to learn nothing. It remains a
-    fully valid, judged comparator — `parse` and `judge` accept a well-formed composed
-    hypothesis today — it is only not yet ADVERTISED, which is the boundary between this
-    milestone (evaluate + bound) and the next (teach the model to emit trees)."""
-    return tuple(name for name in sorted(_COMPARATORS) if name != "composed")
+    by name. `composed` is included now that the prompt documents its grammar
+    (`COMPOSED_SYNTAX`), so a proposal that names it also knows how to fill its
+    `predicate`."""
+    return tuple(sorted(_COMPARATORS))
 
 
 REFINE_PROMPT = """Your previous experiments were executed. Results below.
@@ -1621,7 +1647,7 @@ def refine_prompt(destructive_allowed: bool = False, comparators: str = "") -> s
     return REFINE_PROMPT.format(
         comparators=comparators or ", ".join(comparator_names()),
         destructive=(DESTRUCTIVE_PERMITTED if destructive_allowed
-                     else DESTRUCTIVE_FORBIDDEN))
+                     else DESTRUCTIVE_FORBIDDEN)) + "\n\n" + COMPOSED_SYNTAX
 
 
 def experiment_prompt(destructive_allowed: bool = False, comparators: str = "") -> str:
@@ -1632,7 +1658,7 @@ def experiment_prompt(destructive_allowed: bool = False, comparators: str = "") 
     return PROMPT.format(
         comparators=comparators or ", ".join(comparator_names()),
         destructive=(DESTRUCTIVE_PERMITTED if destructive_allowed
-                     else DESTRUCTIVE_FORBIDDEN))
+                     else DESTRUCTIVE_FORBIDDEN)) + "\n\n" + COMPOSED_SYNTAX
 
 
 # --------------------------------------------------------------------------- #

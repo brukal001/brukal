@@ -142,9 +142,13 @@ def test_composed_is_registered_with_a_bound_and_as_a_context_comparator():
     assert set(hyp._COMPARATORS) == set(hyp._EVIDENCE_CLASS)
 
 
-def test_composed_is_judged_but_not_yet_advertised_to_the_model():
-    # The boundary between this milestone (evaluate + bound) and the next (teach the model
-    # to emit trees): composed is a valid comparator but must not appear in the prompt
-    # menu until the grammar is documented there, or the model proposes it blindly.
-    assert "composed" not in hyp.comparator_names()
-    assert "composed" not in hyp.experiment_prompt()
+def test_composed_is_advertised_and_its_grammar_is_documented_to_the_model():
+    # The emission milestone: composed is now offered in the menu AND the prompt documents
+    # its grammar, so a proposal that names it also knows how to fill its `predicate`.
+    assert "composed" in hyp.comparator_names()
+    for build in (hyp.experiment_prompt, hyp.refine_prompt):
+        prompt = build()
+        assert "composed" in prompt
+        assert '"predicate"' in prompt          # the field
+        assert '"obs"' in prompt and '"op"' in prompt   # the grammar node kinds
+        assert "ratio_gt" in prompt             # a documented operator

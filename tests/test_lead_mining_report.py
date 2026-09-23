@@ -103,3 +103,26 @@ def test_leads_from_a_missing_file_is_empty_not_an_error():
 def test_format_report_of_nothing_is_explicit():
     assert "nothing" in lm.format_report([]).lower() or \
         "no recurring" in lm.format_report([]).lower()
+
+
+def test_the_drafts_cli_command_prints_a_report(tmp_path, capsys):
+    from types import SimpleNamespace
+    from brukal.cli import _cmd_drafts
+    p = tmp_path / "a.jsonl"
+    p.write_text("\n".join(
+        json.dumps({"kind": "reproducible_lead_facts", "data": {
+            "endpoint": f"http://t/api/orders/{i}", "status_baseline": 200,
+            "status_varied": 200, "size_baseline": 100, "size_varied": 500,
+            "comparator": "status_differs"}}) for i in (1, 2)) + "\n")
+    rc = _cmd_drafts(SimpleNamespace(audit=str(p)))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "REVIEW REQUIRED" in out and "/api/orders" in out and "draft_" in out
+
+
+def test_the_drafts_cli_command_on_a_missing_audit_is_clean(tmp_path, capsys):
+    from types import SimpleNamespace
+    from brukal.cli import _cmd_drafts
+    rc = _cmd_drafts(SimpleNamespace(audit=str(tmp_path / "nope.jsonl")))
+    assert rc == 0
+    assert "no recurring" in capsys.readouterr().out.lower()

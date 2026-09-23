@@ -471,6 +471,17 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_drafts(args) -> int:
+    """Mine an engagement's reproducible leads into DRAFT comparators for review (Idea #4).
+
+    Offline and read-only: it reads the audit, clusters recurring reproducible leads, and
+    prints a human-review sheet. It registers nothing and runs no predicate — a maintainer
+    alone turns any draft into a real comparator."""
+    from brukal import lead_mining as lm
+    print(lm.format_report(lm.mine(lm.leads_from_audit(args.audit))))
+    return 0
+
+
 def _cmd_skills(args) -> int:
     if args.action == "add":
         if not args.source:
@@ -745,6 +756,12 @@ def main(argv: list[str] | None = None) -> int:
     pv = sub.add_parser("verify", help="verify the audit chain and exit")
     pv.add_argument("--audit", default="runs/audit.jsonl")
     pv.set_defaults(func=_cmd_verify)
+
+    pd = sub.add_parser(
+        "drafts", help="mine reproducible leads into draft comparators for review")
+    pd.add_argument("--audit", default="runs/audit.jsonl",
+                    help="the engagement audit to mine (default: runs/audit.jsonl)")
+    pd.set_defaults(func=_cmd_drafts)
 
     ps = sub.add_parser("skills", help="list / search / add offensive skill packs")
     ps.add_argument("action", nargs="?", default="list",
