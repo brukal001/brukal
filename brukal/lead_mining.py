@@ -17,6 +17,7 @@ truth on its own.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -192,3 +193,59 @@ def mine(leads, min_support: int = MIN_SUPPORT) -> list:
     into a real comparator."""
     drafts = [draft_comparator(c) for c in cluster(leads, min_support)]
     return [d for d in drafts if d is not None]
+
+
+def leads_from_audit(path) -> list:
+    """Read the structured reproducible-lead facts an engagement recorded, as `Lead`s.
+
+    Offline and forgiving: it reads the JSONL audit, keeps the `reproducible_lead_facts`
+    entries, and skips anything malformed rather than failing the whole report. A missing
+    or unreadable file is an empty list, not an error."""
+    out: list = []
+    try:
+        fh = open(path, encoding="utf-8")
+    except OSError:
+        return out
+    with fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict) or rec.get("kind") != "reproducible_lead_facts":
+                continue
+            data = rec.get("data") or {}
+            try:
+                out.append(Lead(
+                    endpoint=str(data.get("endpoint", "")),
+                    status_baseline=int(data.get("status_baseline") or 0),
+                    status_varied=int(data.get("status_varied") or 0),
+                    size_baseline=int(data.get("size_baseline") or 0),
+                    size_varied=int(data.get("size_varied") or 0),
+                    comparator=str(data.get("comparator", ""))))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def format_report(drafts) -> str:
+    """A human review sheet for a list of `DraftComparator`s — plain text, deterministic,
+    no I/O. An empty list gives a one-line 'nothing to draft' so a blank report is never
+    ambiguous. The header states, on the page, that nothing here is registered or runs."""
+    if not drafts:
+        return "No recurring reproducible-lead patterns to draft.\n"
+    lines = [
+        f"# {len(drafts)} draft comparator(s) proposed from reproducible leads",
+        "# REVIEW REQUIRED — nothing here is registered or runs until a maintainer writes",
+        "# it into the closed set by hand. Suggested bounds are never above LOW.",
+        ""]
+    for d in drafts:
+        lines += [
+            f"## {d.name}   (support: {d.support}, suggested severity: {d.severity})",
+            f"family: {d.family}   shape: {d.shape}",
+            f"rationale: {d.rationale}",
+            f"predicate (closed grammar): {json.dumps(d.predicate)}",
+            "",
+            d.test_stub,
+            ""]
+    return "\n".join(lines)

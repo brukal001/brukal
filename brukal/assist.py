@@ -5091,6 +5091,19 @@ class AssistSession:
         if not keep:
             return False
         self._record_experiment_outcome(h, "reproducible_lead")
+        # Structured facts for the OFFLINE miner (Idea #4b): the shape a later run reads to
+        # cluster recurring leads into draft comparators. Prose is for a human; this is for
+        # the machine, so the report never has to parse a sentence.
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is not None:
+            audit.append("reproducible_lead_facts", {
+                "endpoint": h.variant.get("url", ""),
+                "comparator": h.comparator,
+                "status_baseline": getattr(a, "status", None),
+                "status_varied": getattr(b, "status", None),
+                "size_baseline": len(_rep._fingerprint(a)[1]),
+                "size_varied": len(_rep._fingerprint(b)[1]),
+            })
         self.note(f"[experiment] REPRODUCIBLE LEAD [{h.comparator}]: {h.title} — {reason}")
         self.findings.add(Finding(
             title=(f"Reproducible input-dependent behaviour at {h.variant['url']} "
@@ -5099,6 +5112,21 @@ class AssistSession:
             target=h.variant["url"], param="", evidence_class="",
             agent_claim=h.title, agent_severity=(h.severity or ""), evidence=reason))
         return True
+
+    def mined_lead_report(self) -> str:
+        """The offline drafts report for THIS engagement's reproducible leads (Idea #4b).
+
+        Reads the leads recorded during the run, mines the recurring shapes into DRAFT
+        comparators, and returns a human-review sheet. Pure read + format: it registers
+        nothing, runs no predicate, and persists nothing — a maintainer alone turns any
+        draft into a real comparator. A run with no audit or no leads yields the report's
+        explicit 'nothing to draft' line, never a crash."""
+        from . import lead_mining as _lm
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        path = getattr(audit, "path", None)
+        if path is None:
+            return _lm.format_report([])
+        return _lm.format_report(_lm.mine(_lm.leads_from_audit(path)))
 
     def _destructive_authorised(self) -> bool:
         """What the SCOPE authorised for this engagement — never the model's choice."""
