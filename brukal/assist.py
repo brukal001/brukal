@@ -5021,6 +5021,32 @@ class AssistSession:
         except Exception:
             return False
 
+    def _anon_refused_for(self, control_template, setup_results) -> bool:
+        """Whether an UNAUTHENTICATED caller issuing this experiment's own request is
+        REFUSED — the load-bearing guard for `shared_private_response`.
+
+        A public endpoint returns the same body to everyone; only when the anonymous
+        caller is DENIED is an identical response to two authenticated principals a leak
+        rather than a public page. Established the same way as the identity oracle's
+        anonymous control: re-resolve the request, dispatch it as `anonymous`, and read
+        `_denied`. FAILS CLOSED — if the probe cannot be resolved, is refused by the gate,
+        or errors, the answer is False and nothing is confirmed."""
+        from . import hypothesis as _hyp
+        from .web import WebAction
+        try:
+            spec = _hyp.resolve_setup_refs(dict(control_template), setup_results)
+        except Exception:
+            return False
+        spec.pop("as", None)
+        try:
+            with self._as_identity("anonymous", "anon-probe", spec.get("url", "")):
+                _decision, result = self.browser.run(WebAction("request", **spec))
+        except Exception:
+            return False
+        if result is None:
+            return False
+        return bool(_hyp._denied(result, getattr(self, "profile", None)))
+
     def _destructive_authorised(self) -> bool:
         """What the SCOPE authorised for this engagement — never the model's choice."""
         gate = getattr(getattr(self, "executor", None), "_gate", None)
@@ -5358,6 +5384,17 @@ class AssistSession:
             # `vspec` is the RESOLVED variant request — references substituted, `as`
             # already popped — so the comparator sees what was actually addressed rather
             # than the template the model wrote.
+            # ISOLATION facts for `shared_private_response`. `_distinct_principals` is
+            # cheap and always computed; the anonymous PROBE runs ONLY for that comparator
+            # (it costs a real request) and only when the two sides are distinct registered
+            # principals, and it fails closed — no probe, or a probe that is not refused,
+            # means no confirmation.
+            _distinct_principals = bool(
+                _c_as in _hyp._REGISTERED_PRINCIPALS
+                and _v_as in _hyp._REGISTERED_PRINCIPALS and _c_as != _v_as)
+            _anon_refused = bool(
+                h.comparator == "shared_private_response" and _distinct_principals
+                and self._anon_refused_for(h.control, setup_results))
             _ctx = {"ownership": self.principal_identifiers(), "variant_as": _v_as,
                     "variant_spec": vspec, "profile": getattr(self, "profile", None),
                     # Only a stable baseline and a performed action let `state_changed`
@@ -5370,7 +5407,12 @@ class AssistSession:
                     # Did a caller with NO credentials retrieve somebody else's record?
                     # Established from the side actually dispatched as `anonymous`, not
                     # from what the proposal said it would do.
-                    "unauth_foreign": self._unauth_foreign(_c_as, a)}
+                    "unauth_foreign": self._unauth_foreign(_c_as, a),
+                    # ISOLATION (shared_private_response): are the two sides distinct
+                    # registered principals, and was an UNAUTHENTICATED caller of the same
+                    # request refused? Facts about what the ENGINE dispatched, not a body.
+                    "distinct_principals": _distinct_principals,
+                    "anon_refused": _anon_refused}
             holds, meaning = _hyp.judge(h, a, b, getattr(self, "profile", None), _ctx)
             # SHOW THE MATCH, not just its verdict — and record it whether or not the
             # comparator held. An ownership claim a reader cannot check is the thing this

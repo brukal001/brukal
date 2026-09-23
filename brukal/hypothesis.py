@@ -123,6 +123,16 @@ _COMPARATORS = {
         lambda a, b, p=None, ctx=None: _cross_account_resource(a, b, ctx),
         "the variant reached a resource the ledger records as owned by a different "
         "registered principal"),
+    # ISOLATION, the both-allowed-AND-equal shape. Every access-control comparator above
+    # confirms on a DIFFERENCE (a refusal, a size jump, a differing body) or needs the
+    # ledger to name an owner. None can see the failure where two distinct principals are
+    # handed the SAME private record — authentication enforced, per-principal isolation
+    # absent. `distinct_principals` and `anon_refused` are engine facts; see
+    # `_shared_private_response`.
+    "shared_private_response": (
+        lambda a, b, p=None, ctx=None: _shared_private_response(a, b, ctx),
+        "two distinct authenticated principals received the same substantive response to "
+        "a request an unauthenticated caller was refused"),
 }
 
 # Comparators that need the recorded ownership map, not just the two responses. An
@@ -131,7 +141,7 @@ _COMPARATORS = {
 # from "this predicate raised TypeError on line 3", and a comparator that silently
 # degraded to a two-argument call would be judging on less than it was given.
 _CONTEXT_COMPARATORS = ("cross_account_resource", "state_changed", "oob_callback",
-                        "unauthenticated_exposure",)
+                        "unauthenticated_exposure", "shared_private_response",)
 
 # Which principals are ACCOUNTS. `anonymous` is the absence of one, so it can never be the
 # recorded owner of anything — the restated milestone (2026-09-14) turns on exactly this
@@ -277,6 +287,64 @@ def _cross_account_resource(a, b, ctx=None) -> bool:
                             ctx.get("ownership"), ctx.get("variant_as", ""))
     return bool(ev["owner"])
 
+
+def _shared_private_response(a, b, ctx=None) -> bool:
+    """Two DIFFERENT authenticated principals were handed the SAME substantive response
+    to a request an UNAUTHENTICATED caller was refused — the endpoint authenticates but
+    does not isolate data per principal.
+
+    THE GAP THIS CLOSES. The closed set could prove a cross-account read only when the
+    ownership ledger named an owner (`cross_account_resource`) or when the anonymous side
+    itself leaked (`unauthenticated_exposure`). Neither fires on the isolation failure
+    where every logged-in user is handed the SAME private record: both sides are ALLOWED
+    (so `a_denied_b_allowed` refuses it), the bodies are EQUAL (so `bodies_differ` and
+    `b_reveals_more` refuse it), and no owner is on the ledger (so `cross_account_resource`
+    refuses it). It is the both-allowed-AND-equal shape, and until this existed nothing in
+    the set could ask it.
+
+    A METAMORPHIC RELATION, NOT A SIGNATURE. It names no vulnerability class. It asserts an
+    invariant a per-principal endpoint must satisfy — distinct principals must not receive
+    identical private answers — and reports the violation. Every fact it reads is
+    established by the ENGINE (which identities it dispatched as, and what the anonymous
+    probe returned), never by the model and never by trusting a body alone.
+
+    The conditions here are the ones expressible from the two responses plus engine facts;
+    `judge` adds the request-shape guards (same URL, a read method, and a body that is more
+    than our own echoed input) that need the hypothesis. Anything missing FAILS CLOSED:
+
+    1. `distinct_principals` — the two sides were genuinely different recorded identities.
+       Two reads from one session say nothing about isolation. The engine sets it from the
+       identities it dispatched as; the proposal cannot.
+
+    2. `anon_refused` — an unauthenticated caller issuing the SAME request was DENIED.
+       This is the load-bearing guard against the PUBLIC-ENDPOINT false positive: a page
+       that returns the same body to everyone is not a leak, and if anonymous is served
+       too this is False and nothing is confirmed. Established by dispatching the probe
+       through `_as_identity('anonymous')` and reading `_denied`, the same discipline the
+       identity oracle uses for its anonymous control.
+
+    3. Both sides SUCCEEDED (2xx) and are SUBSTANTIVE against the learned MISSING baseline.
+       'Allowed' has to mean something, and two identical 'nothing here' templates are not
+       a shared private record.
+
+    4. The bodies are EQUAL once whitespace is normalised.
+
+    The bound is MEDIUM and `authz=False`: it proves the endpoint does not isolate per
+    principal, not WHOSE record was exposed nor that the shared resource ought to have been
+    isolated — a human decides that, which is why it is not the ledger-grounded
+    cross-account HIGH."""
+    ctx = ctx or {}
+    if not ctx.get("distinct_principals"):
+        return False
+    if not ctx.get("anon_refused"):
+        return False
+    if not (_succeeded(a) and _succeeded(b)):
+        return False
+    profile = ctx.get("profile")
+    if not (_substantive(a, profile) and _substantive(b, profile)):
+        return False
+    return _norm(getattr(a, "body", "")) == _norm(getattr(b, "body", ""))
+
 # WHO a request is issued as. A closed set, for exactly the reason the comparators are
 # one: the model names a principal, deterministic code decides what that means. Without
 # this the model held a single session, so `a_denied_b_allowed` — the comparator built
@@ -354,6 +422,16 @@ _EVIDENCE_CLASS = {
         "one principal read or wrote a resource the ledger records as owned by a "
         "different registered principal",
         "high", True),
+    # MEDIUM, and authz=False on purpose. It proves the endpoint does not isolate data per
+    # principal — a real access-control weakness — but NOT whose record was exposed, nor
+    # that the shared resource was one that ought to have been isolated. That last judgement
+    # is a human's, so this stays below the ledger-grounded cross-account HIGH rather than
+    # inheriting an authorization claim it has not earned.
+    "shared_private_response": (
+        "two different authenticated principals received the same substantive response to "
+        "a request an unauthenticated caller was refused, so the endpoint authenticates "
+        "but does not isolate data per principal",
+        "medium", False),
 }
 
 _SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -371,6 +449,8 @@ _HEADLINE = {
     "b_errors_a_does_not": "Server error from {v}, not from {c}",
     "unauthenticated_exposure":
         "Unauthenticated retrieval of another party's record at {v}",
+    "shared_private_response":
+        "Same private response served to two different principals at {v}",
 }
 
 
@@ -1091,6 +1171,24 @@ def judge(hypothesis, control_result, variant_result, profile=None, context=None
         submitted = _submitted_values(hypothesis)
         if _strip(control_result.body, submitted) == _strip(variant_result.body,
                                                             submitted):
+            return False, ""
+    if hypothesis.comparator == "shared_private_response":
+        # The relation is meaningful only when the two principals issued the SAME read, and
+        # these guards live in trusted code so a mis-set engine flag cannot make it fire on
+        # the wrong shape:
+        #   - SAME url on both sides — two different requests answering alike prove nothing;
+        #   - a READ method — this is about reading a stored record, and a write or an echo
+        #     endpoint is out of scope, which also empties the request of a body it could
+        #     hand straight back;
+        #   - and, once the values WE submitted are stripped, the shared body must have
+        #     something LEFT — otherwise the identical response is merely our own input
+        #     echoed to both callers, not a shared private record.
+        c, v = hypothesis.control or {}, hypothesis.variant or {}
+        if c.get("url") != v.get("url"):
+            return False, ""
+        if str(c.get("method", "GET")).upper() not in ("GET", "HEAD"):
+            return False, ""
+        if not _strip(control_result.body or "", _submitted_values(hypothesis)):
             return False, ""
     return True, meaning
 
