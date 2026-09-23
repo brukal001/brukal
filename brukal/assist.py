@@ -5047,6 +5047,59 @@ class AssistSession:
             return False
         return bool(_hyp._denied(result, getattr(self, "profile", None)))
 
+    def _keep_reproducible_lead(self, h, a, b, setup_results) -> bool:
+        """When a comparator confirmed nothing but the controlled input STABLY changes the
+        answer, record an INFO lead instead of discarding the result (Idea #3).
+
+        Deterministic and FAIL-CLOSED: it re-reads the control ONCE to establish a stable
+        baseline (endpoints drift on their own) and keeps a lead only when
+        `reproducibility.input_dependent` holds. The lead is INFO, `confirmed=False`, and
+        carries no comparator (`evidence_class=""`) — a question for a human, never a
+        proved impact, and the model is nowhere in the decision. Returns True when a lead
+        was kept, so the caller skips the plain not_confirmed record; any error re-reading,
+        or an unstable baseline, returns False and the result is recorded not_confirmed as
+        before.
+
+        The re-read is skipped unless the two sides already differ — identical answers
+        cannot be an input-dependent effect, so the extra request is only spent where it
+        could pay."""
+        from . import hypothesis as _hyp
+        from . import reproducibility as _rep
+        from .web import WebAction
+        from .findings import Finding
+        # Only genuinely UNNAMED signal. Both sides must have SUCCEEDED and returned real
+        # content, so the shapes a named comparator already owns — a refusal
+        # (`a_denied_b_allowed`), a server error (`b_errors_a_does_not`), a status-class
+        # split (`status_differs`) — cannot pose as an unnamed lead. What remains is a
+        # reproducible CONTENT difference between two successful reads, which is the case
+        # #3 is for.
+        profile = getattr(self, "profile", None)
+        if not (_hyp._succeeded(a) and _hyp._succeeded(b)):
+            return False
+        if not (_hyp._substantive(a, profile) and _hyp._substantive(b, profile)):
+            return False
+        if _rep._fingerprint(a) == _rep._fingerprint(b):
+            return False
+        try:
+            spec = _hyp.resolve_setup_refs(dict(h.control), setup_results)
+            with self._as_identity(spec.pop("as", "self"), "control",
+                                   spec.get("url", "")):
+                _decision, a2 = self.browser.run(WebAction("request", **spec))
+        except Exception:
+            return False
+        keep, reason = _rep.reproducible_lead([a, a2], [b])
+        if not keep:
+            return False
+        self._record_experiment_outcome(h, "reproducible_lead")
+        self.note(f"[experiment] REPRODUCIBLE LEAD [{h.comparator}]: {h.title} — {reason}")
+        self.findings.add(Finding(
+            title=(f"Reproducible input-dependent behaviour at {h.variant['url']} "
+                   f"— INFO lead, no comparator"),
+            severity=_rep.LEAD_SEVERITY, category="logic", confirmed=False,
+            target=h.variant["url"], param="", evidence_class="",
+            agent_claim=h.title, agent_severity=(h.severity or ""), evidence=reason))
+        return True
+
     def _destructive_authorised(self) -> bool:
         """What the SCOPE authorised for this engagement — never the model's choice."""
         gate = getattr(getattr(self, "executor", None), "_gate", None)
@@ -5430,6 +5483,13 @@ class AssistSession:
                 if getattr(a, "status", None) is None and getattr(b, "status", None) is None:
                     self._record_experiment_outcome(h, "no_answer")
                     self.note(f"[experiment] NO ANSWER from the target: {h.title}")
+                    continue
+                # KEEP REPRODUCIBLE SIGNAL (Idea #3). The comparator named nothing, but if
+                # the controlled input STABLY changes the answer this is a lead, not noise,
+                # and discarding it also lets the repeat-suppressor lock this endpoint out
+                # of a later round. Costs one extra control read, only when the two sides
+                # already differ; fails closed to the plain not_confirmed record below.
+                if self._keep_reproducible_lead(h, a, b, setup_results):
                     continue
                 self._record_experiment_outcome(h, "not_confirmed")
                 self.note(f"[experiment] not confirmed [{h.comparator}]: {h.title} — "

@@ -49,10 +49,13 @@ def test_the_recorded_terminals_are_all_attributed_and_this_test_notices_a_new_o
     experiments started escalating to the operator instead of being silently skipped,
     `both_sides_absent` on 2026-09-19 when a 404/404 comparison stopped being filed as a
     measurement, and `both_sides_unreadable` on 2026-09-22 (GAP #29) when two 405s stopped
-    being filed as the write having changed nothing. Each failed this count until the
-    attribution table was updated — which is the whole point: a terminal must not enter the
-    vocabulary without someone deciding, in writing, whose limit it represents."""
-    assert len(ALL_TERMINALS) == 13, ALL_TERMINALS
+    being filed as the write having changed nothing, and `reproducible_lead` on 2026-09-24
+    (Idea #3) when a not_confirmed result whose controlled input STABLY changes the answer
+    started being kept as an INFO lead — a MEASUREMENT, so attributed MEASURED. Each failed
+    this count until the attribution table was updated — which is the whole point: a
+    terminal must not enter the vocabulary without someone deciding, in writing, whose
+    limit it represents."""
+    assert len(ALL_TERMINALS) == 14, ALL_TERMINALS
 
 
 @pytest.mark.parametrize("outcome", ALL_TERMINALS)

@@ -1662,7 +1662,7 @@ _DISPATCHED_NOT_RESOLVED = (
     "both_sides_unreadable",    # two 405s — the path is not READABLE; we aimed wrong
     "no_answer",                # the gate or the limiter refused; nothing was observed
 )
-_JUDGED = ("not_confirmed", "confirmed")
+_JUDGED = ("not_confirmed", "confirmed", "reproducible_lead")
 
 
 # --------------------------------------------------------------------------- #
@@ -1714,6 +1714,11 @@ _ATTRIBUTION = {
     # A measurement happened.
     "not_confirmed": "MEASURED",
     "confirmed": "MEASURED",
+    # No comparator named it, but the controlled input STABLY changed the answer — a
+    # reproducible effect kept as an INFO lead rather than discarded (Idea #3). It is a
+    # measurement: the reproducibility gate read the baseline twice and the varied side
+    # once and the effect held.
+    "reproducible_lead": "MEASURED",
 }
 
 # Two of these are arguable, and the argument is recorded rather than hidden:
