@@ -67,6 +67,13 @@ class Scope:
     # by the code with nobody asked. Capability is not traded for tidiness: where Brukal
     # needs authorisation it asks for it, and the record shows who answered.
     destructive_allowed: bool = False
+    # PER-PROGRAM comparator SELECTION (an allowlist, never a denylist). When non-empty,
+    # only these comparators are offered to the model and accepted from it — a subset of
+    # the closed set, intersected with it fail-closed (an unknown name is dropped, never
+    # invented). Empty (the default) means ALL comparators are active. This tunes Brukal to
+    # a program's rules — enable the aggressive checks a program invites, drop the ones it
+    # excludes — WITHOUT widening beyond the trusted set or touching any severity bound.
+    comparators: frozenset = frozenset()
 
     def is_authorized(self) -> bool:
         """True if the scope file itself asserts authorization (a non-empty statement)."""
@@ -166,7 +173,8 @@ class Scope:
                      authorization=self.authorization,
                      expires=self.expires,
                      tls_verify=self.tls_verify,
-                     destructive_allowed=self.destructive_allowed)
+                     destructive_allowed=self.destructive_allowed,
+                     comparators=self.comparators)
 
     def tool_allowed(self, tool: str) -> bool:
         """True if the tool passes the ALLOWLIST layer. `"*"` in the allowlist means
@@ -221,6 +229,13 @@ def load_scope(path: str | Path) -> Scope:
         # Only an explicit `true` opts in. Anything else — absent, misspelled, a string —
         # leaves it off, because an unparseable authorisation is not an authorisation.
         destructive_allowed=data.get("destructive_allowed", False) is True,
+        # PER-PROGRAM comparator selection. A list of comparator names; anything not a
+        # non-empty string is ignored, and the intersection with the closed set happens at
+        # use (see hypothesis.active_comparators), so a name that is not a real comparator
+        # simply never activates. Absent/empty => all comparators active (the default).
+        comparators=frozenset(
+            c.strip() for c in data.get("comparators", []) or []
+            if isinstance(c, str) and c.strip()),
     )
 
 

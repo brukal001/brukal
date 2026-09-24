@@ -4826,8 +4826,15 @@ class AssistSession:
                 _lines.append(f"  - {_who} ({_label}): {_rendered}")
             ids_note = ("\n\n" + _hyp.PRINCIPAL_IDS_HEADER + "\n"
                         + redact.text("\n".join(_lines)))
+        # PER-PROGRAM comparator selection: offer the model only the comparators this
+        # program enabled (all, unless the scope restricts them), and refuse any other at
+        # parse time. Computed once here and reused for the refine round below.
+        _active = _hyp.active_comparators(
+            getattr(getattr(self, "executor", None), "_gate", None)
+            and self.executor._gate.scope)
         prompt = _hyp.experiment_prompt(
-            destructive_allowed=self._destructive_authorised())
+            destructive_allowed=self._destructive_authorised(),
+            comparators=", ".join(_active))
         try:
             # The BASE URL, not the bare IP. The first live run handed the model
             # "172.20.0.2" while the application was on :3000, so every proposed URL
@@ -4897,7 +4904,7 @@ class AssistSession:
         # the entries pushed out.
         shapes: list = []
         _drops: list = []
-        proposals = _hyp.parse(reply, drops=_drops)
+        proposals = _hyp.parse(reply, drops=_drops, allowed=_active)
         self._record_proposal_drops(_drops)
         # Record the attempt BEFORE the early return. The first live run asked the model,
         # got a truncated reply, parsed nothing, and left no trace at all — the coverage
@@ -4983,7 +4990,8 @@ class AssistSession:
                                         f"{len(shapes)} setup responses listed]")
                 reply2 = llm.propose(
                     _hyp.refine_prompt(
-                        destructive_allowed=self._destructive_authorised()),
+                        destructive_allowed=self._destructive_authorised(),
+                        comparators=", ".join(_active)),
                     f"Authorised target base URL: {base}{auth}\n\n"
                     f"Attack surface:\n{grounding}{shape_block}"
                     f"\n\nResults of your last round:\n"
@@ -4992,7 +5000,7 @@ class AssistSession:
             except Exception:
                 break
             _drops2: list = []
-            proposals = _hyp.parse(reply2, drops=_drops2)
+            proposals = _hyp.parse(reply2, drops=_drops2, allowed=_active)
             self._record_proposal_drops(_drops2, round_name="refine")
             if proposals:
                 self._covered("Model-proposed experiments", probes=len(proposals),

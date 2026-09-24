@@ -1099,7 +1099,7 @@ def _clean_request(raw) -> dict | None:
 
 
 def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
-          drops: list | None = None) -> list:
+          drops: list | None = None, allowed=None) -> list:
     """Hypotheses from a model reply. Malformed entries are skipped, never guessed at.
 
     Accepts a JSON array, optionally inside a ```json fence, because that is what models
@@ -1180,6 +1180,12 @@ def parse(text: str, max_hypotheses: int = _MAX_HYPOTHESES,
         if comparator not in _COMPARATORS:
             _drop("unknown_comparator", item)
             continue                       # unknown comparison: refuse, do not default
+        if allowed is not None and comparator not in allowed:
+            # A VALID comparator this PROGRAM did not enable (per-program selection). Refuse
+            # it the same way — the model was offered only the enabled set, and honouring an
+            # unlisted one would ignore the program's own restriction.
+            _drop("comparator_not_enabled_for_program", item)
+            continue
         title = str(item.get("title", "")).strip()
         if not title or len(title) > 140:
             _drop("bad_title", item)
@@ -1507,12 +1513,30 @@ def coverage_proposals(confirmed_routes, existing, base: str = "",
     return out
 
 
-def comparator_names() -> tuple:
-    """The closed set OFFERED TO THE MODEL, for the prompt. The model must pick from these
-    by name. `composed` is included now that the prompt documents its grammar
-    (`COMPOSED_SYNTAX`), so a proposal that names it also knows how to fill its
-    `predicate`."""
-    return tuple(sorted(_COMPARATORS))
+def active_comparators(scope=None) -> tuple:
+    """The comparators ENABLED for this program — a subset of the closed set.
+
+    A program may restrict the set through its scope's `comparators` allowlist: only names
+    it lists AND that exist in the closed set are active; an unknown name is DROPPED
+    (fail-closed — a typo never invents a comparator, and a program can never WIDEN beyond
+    the trusted set). No list, or no scope, means ALL are active (the default). Restricting
+    lets a program tune Brukal to its own rules — enable the aggressive access-control
+    checks where IDOR is in scope and high-value, drop the ones the rules exclude — while
+    the closed set and every severity bound stay exactly as they are. This is the SAFE form
+    of 'per-program comparators': selection within a fail-closed set, never a denylist that
+    forbids less."""
+    requested = frozenset(getattr(scope, "comparators", None) or ())
+    if not requested:
+        return tuple(sorted(_COMPARATORS))
+    return tuple(name for name in sorted(_COMPARATORS) if name in requested)
+
+
+def comparator_names(scope=None) -> tuple:
+    """The closed set OFFERED TO THE MODEL, for the prompt — filtered to the comparators
+    ENABLED for this program (`active_comparators`). `composed` is offered now that the
+    prompt documents its grammar (`COMPOSED_SYNTAX`), so a proposal that names it also
+    knows how to fill its `predicate`."""
+    return active_comparators(scope)
 
 
 REFINE_PROMPT = """Your previous experiments were executed. Results below.
