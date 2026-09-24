@@ -149,6 +149,19 @@ def test_signup_candidate_is_derived_from_the_operator_login_url():
     assert "http://127.0.0.1:5000/identity/api/auth/signup" in cands, cands
 
 
+def test_signup_derivation_survives_an_empty_per_principal_login_url():
+    """RELIABILITY (2026-09-25). `_login_url` is per-principal and reads empty during
+    `_separate_identity` — which made second-principal establishment INTERMITTENT
+    ('available' AND 'NOT established' in one run). The SESSION-LEVEL operator URL keeps
+    the derivation reliable no matter which principal is active."""
+    cage = _SpaCage()
+    sess = _session(cage, routes=())
+    sess._operator_login_url = "http://127.0.0.1:5000/identity/api/auth/login"
+    sess._login_url = ""                          # per-principal value gone (separate identity)
+    cands = sess._json_signup_candidates()
+    assert "http://127.0.0.1:5000/identity/api/auth/signup" in cands, cands
+
+
 # -- 1. the capability itself --------------------------------------------------------
 
 def test_a_second_principal_is_established_on_a_form_less_target():

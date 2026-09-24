@@ -488,6 +488,12 @@ class AssistSession:
         self.source_leads: list = []
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
+        # The operator's login URL, captured SESSION-LEVEL. `_login_url` is per-principal
+        # and reads empty during `_separate_identity` or when a fresh principal is active,
+        # which is why second-principal establishment was INTERMITTENT — the signup
+        # candidate derived from it sometimes vanished. This holds the operator's own
+        # login URL for the whole engagement so the derivation is reliable.
+        self._operator_login_url = ""
         self._cors_checked = False     # the CORS question is per-host, asked once
         self._headers_checked = False  # hygiene sweep runs once per host
         self._graphql_checked = False  # introspection sweep runs once per engagement
@@ -1794,6 +1800,11 @@ class AssistSession:
         # the login page, and every cross-account proof needs somewhere to authenticate
         # a second principal.
         self._login_url = login_url
+        # Capture the FIRST login URL session-wide (set-once): in the auto flow that is the
+        # operator's own --login-url, applied before any second-principal login. Kept beside
+        # the per-principal value so `_json_signup_candidates` can always reach it.
+        if login_url and not self._operator_login_url:
+            self._operator_login_url = login_url
 
         strategy = {"basic": BasicAuth(), "json": JsonAuth(),
                     "form": FormAuth()}.get(lt)
@@ -6661,7 +6672,8 @@ class AssistSession:
         # mount had been named. This does not depend on crawl timing and is not a
         # speculative POST at an arbitrary route: it is the documented sibling of a route
         # the operator authorised, and it is still gated and in-scope like every request.
-        login_url = getattr(self, "_login_url", "") or ""
+        login_url = (getattr(self, "_operator_login_url", "")
+                     or getattr(self, "_login_url", "") or "")
         if login_url:
             from urllib.parse import urlsplit as _urlsplit
             _sp = _urlsplit(login_url)
@@ -7523,6 +7535,12 @@ class AssistSession:
         problem; this is the same fix for the same cause."""
         if getattr(self, "_login_url", ""):
             return self._login_url
+        # SESSION-LEVEL fallback. `_login_url` is per-principal and reads empty during
+        # `_separate_identity`, where the second principal is proved by login — so without
+        # this the proof called login("") and establishment failed intermittently even
+        # after signup answered 200. The operator's URL is the same for every principal.
+        if getattr(self, "_operator_login_url", ""):
+            return self._operator_login_url
         surface = getattr(self, "surface", None)
         if surface is None:
             return ""
