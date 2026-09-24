@@ -6653,6 +6653,31 @@ class AssistSession:
             return []
         base = getattr(surface, "seed", "") or f"http://{self.target}/"
         seen, out = set(), []
+        # DERIVED FROM THE OPERATOR'S LOGIN ENDPOINT, first and unconditionally. The
+        # operator named where auth lives (--login-url); its signup sibling is the SAME
+        # authorised surface, and on an API/SPA the crawl often never surfaces a signup
+        # route at all — which lost a live crAPI run its entire second principal (every
+        # cross-account experiment recorded `second_unavailable`) even though the auth
+        # mount had been named. This does not depend on crawl timing and is not a
+        # speculative POST at an arbitrary route: it is the documented sibling of a route
+        # the operator authorised, and it is still gated and in-scope like every request.
+        login_url = getattr(self, "_login_url", "") or ""
+        if login_url:
+            from urllib.parse import urlsplit as _urlsplit
+            _sp = _urlsplit(login_url)
+            _segs = [seg for seg in _sp.path.split("/") if seg]
+            if _segs and _segs[-1].lower() in (
+                    "login", "signin", "log-in", "sign-in", "authenticate", "session"):
+                # Only the `signup` sibling — a login mount's registration sibling is
+                # `signup` on every API this is aimed at (crAPI, Juice Shop). A speculative
+                # `register` sibling would more often 404 than exist, and a 404 candidate
+                # tried here would clobber the far more useful "registered but could not log
+                # in" refusal from a real endpoint. The crawl still surfaces a `/register`
+                # for the apps that use it.
+                _cand = f"{_sp.scheme}://{_sp.netloc}/" + "/".join(_segs[:-1] + ["signup"])
+                if _cand not in seen:
+                    seen.add(_cand)
+                    out.append(_cand)
         # CONFIRMED ROUTES FIRST. A live crAPI run lost its second principal — and with it
         # ten `state_changed` experiments, recorded `second_unavailable` — by posting at
         # `/REGISTER`, an unprefixed mined fragment, while `/identity/api/auth/signup` had

@@ -136,6 +136,19 @@ def _audit(sess, kind=None):
     return out
 
 
+def test_signup_candidate_is_derived_from_the_operator_login_url():
+    """THE crAPI REGRESSION (2026-09-25). On an API/SPA the crawl may never surface a
+    signup route, so the second principal was lost — every cross-account experiment
+    recorded `second_unavailable` — even though the operator NAMED the auth mount via
+    --login-url. The signup sibling of that login URL is a reliable, authorised candidate
+    that does not depend on crawl timing."""
+    cage = _SpaCage()
+    sess = _session(cage, routes=())            # the crawl surfaced NOTHING
+    sess._login_url = "http://127.0.0.1:5000/identity/api/auth/login"
+    cands = sess._json_signup_candidates()
+    assert "http://127.0.0.1:5000/identity/api/auth/signup" in cands, cands
+
+
 # -- 1. the capability itself --------------------------------------------------------
 
 def test_a_second_principal_is_established_on_a_form_less_target():
