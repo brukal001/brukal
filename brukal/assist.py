@@ -2895,9 +2895,20 @@ class AssistSession:
         return self.confirm_bola(item_template, param, mine, theirs, token)
 
     # Fields an API must never accept from the client on a self-service create.
+    # Fields a self-service create should never let the client decide. Two families:
+    # AUTHORISATION (who you are) and ECONOMIC / STATUS (what you are worth or entitled to).
+    # The economic family is what reaches crAPI's mass-assignment challenges (a balance or
+    # credit set at creation) and countless real signup endpoints; the detection is generic
+    # — the verify endpoint reflecting the injected field=value, differential vs a control —
+    # so any field with a distinctive value works.
     _PRIVILEGE_FIELDS = (("admin", True), ("is_admin", True), ("isAdmin", True),
                          ("role", "admin"), ("is_staff", True), ("superuser", True),
-                         ("verified", True), ("email_verified", True))
+                         ("verified", True), ("email_verified", True),
+                         ("is_verified", True), ("isVerified", True),
+                         ("credit", 133700), ("balance", 133700),
+                         ("account_balance", 133700), ("available_credit", 133700),
+                         ("wallet_balance", 133700), ("premium", True),
+                         ("is_premium", True), ("discount", 100))
 
     def confirm_mass_assignment(self, register_url: str, login_url: str,
                                 verify_url: str, user_field: str = "username",
