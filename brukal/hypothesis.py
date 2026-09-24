@@ -1445,7 +1445,7 @@ def from_foreign_record(url: str, body: str, our_handles, max_body: int = 200_00
 # went near it. Neither run misbehaved: an agent goes deep where it gets traction, so
 # WHICH endpoints get examined is a coin flip and three challenges sit at MODEL-LIMIT
 # because nobody ever asked. Depth is the model's job; a floor under coverage is not.
-_COVERAGE_MAX = 6
+_COVERAGE_MAX = 4
 # Read-only sweep. A coverage pass that POSTs at everything it finds is a different kind
 # of tool; these words mark a route whose mere invocation changes or destroys state.
 _SWEEP_SKIP = ("delete", "remove", "reset", "drop", "wipe", "purge", "logout", "signout",
@@ -1470,16 +1470,28 @@ def route_families(routes) -> dict:
 
 
 def coverage_proposals(confirmed_routes, existing, base: str = "",
-                       cap: int = _COVERAGE_MAX) -> list:
-    """One deterministic question per confirmed family nothing has asked about.
+                       cap: int = _COVERAGE_MAX, allowed=None) -> list:
+    """The deterministic access-control BATTERY, one set per confirmed family nothing has
+    asked about — read-only, no model call. This is the harness carrying the load the model
+    used to: the biggest miss class on the CR3 measurement was "the model reached an
+    endpoint and never proposed an experiment", and a governed tool whose aim is that even a
+    weak model still performs must fire the standard questions ITSELF rather than wait for
+    the model to think of them.
 
-    The question is the one that found crAPI's unauthenticated order exposure by accident
-    in run 4: control ANONYMOUS, variant as us, `a_denied_b_allowed` — does this endpoint
-    authenticate at all. Read-only, two requests, no model call.
+    Per family, in this order so the cheapest, highest-signal question comes first:
+      1. `a_denied_b_allowed` — anonymous vs self: does the endpoint authenticate at all?
+         (The question that found crAPI's unauthenticated order exposure by accident in
+         run 4.)
+      2. `cross_account_resource` — self vs second: does a DIFFERENT registered principal
+         reach the same resource? The canonical BOLA read, ledger-grounded and fail-closed
+         (it confirms only when the recorded owner differs), which run 2 of the fixed CR3
+         measurement confirmed live.
 
-    Only CONFIRMED routes are swept. A mined-but-unconfirmed path is a phantom (GAP #4)
-    and sweeping it would spend two requests proving nothing.
-    """
+    Both are GET and read-only; state-changing families are skipped. `allowed` (the
+    program's active comparators, see `active_comparators`) filters the battery, so a
+    program that disabled a comparator never has it proposed. Only CONFIRMED routes are
+    swept — a mined-but-unconfirmed path is a phantom (GAP #4). Bounded by `cap` TOTAL
+    experiments."""
     covered = set()
     for h in existing or ():
         for spec in (getattr(h, "control", None) or {}, getattr(h, "variant", None) or {}):
@@ -1492,24 +1504,41 @@ def coverage_proposals(confirmed_routes, existing, base: str = "",
             segs = [s for s in path.split("?")[0].split("/") if s]
             if len(segs) >= 2:
                 covered.add("/" + "/".join(segs[:-1]))
-    out = []
+    # The battery, as (comparator, control_as, variant_as, title, rationale) builders.
+    battery = [
+        ("a_denied_b_allowed", "anonymous", "self",
+         lambda f: f"Endpoint family {f} may not authenticate its callers",
+         lambda f: f"Coverage: is an anonymous caller refused where we are accepted at {f}?"),
+        ("cross_account_resource", "self", "second",
+         lambda f: f"Endpoint family {f} may expose another principal's resource",
+         lambda f: f"Coverage: does a different registered principal reach the same resource "
+                   f"at {f}? Read-only cross-account (BOLA) read, no model call."),
+    ]
+    # Collect the uncovered families first (bounded by `cap`), then emit BREADTH-FIRST: the
+    # primary question (anon vs self) for EVERY family before the deeper cross-account
+    # question. A downstream per-round cap therefore drops depth before breadth — every
+    # confirmed family still gets its authentication question even when the round is capped.
+    uncovered = []
     for family, members in sorted(route_families(confirmed_routes).items()):
-        if family in covered or len(out) >= cap:
+        if family in covered:
             continue
         target_path = sorted(members)[0]
-        low = target_path.lower()
-        if any(word in low for word in _SWEEP_SKIP):
+        if any(word in target_path.lower() for word in _SWEEP_SKIP):
             continue
-        url = (base.rstrip("/") + target_path) if base else target_path
-        out.append(Hypothesis(
-            title=f"Endpoint family {family} may not authenticate its callers",
-            severity="high", comparator="a_denied_b_allowed",
-            control={"method": "GET", "url": url, "as": "anonymous"},
-            variant={"method": "GET", "url": url, "as": "self"},
-            rationale=(f"Coverage: no proposal in this run asked anything about {family}, "
-                       f"which the target confirmed exists. Read-only question — is an "
-                       f"anonymous caller refused where we are accepted?"),
-            setup=[]))
+        uncovered.append(
+            (family, (base.rstrip("/") + target_path) if base else target_path))
+        if len(uncovered) >= cap:
+            break
+    out = []
+    for comparator, c_as, v_as, title_for, why_for in battery:
+        if allowed is not None and comparator not in allowed:
+            continue                       # this program did not enable this comparator
+        for family, url in uncovered:
+            out.append(Hypothesis(
+                title=title_for(family), severity="high", comparator=comparator,
+                control={"method": "GET", "url": url, "as": c_as},
+                variant={"method": "GET", "url": url, "as": v_as},
+                rationale=why_for(family), setup=[]))
     return out
 
 

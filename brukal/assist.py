@@ -4947,7 +4947,8 @@ class AssistSession:
             _cov = _hyp.coverage_proposals(
                 list(getattr(self.surface, "confirmed_routes", []) or []),
                 proposals,
-                base=(getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/"))
+                base=(getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/"),
+                allowed=_active)
         except Exception:
             _cov = []
         if _cov:

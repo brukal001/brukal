@@ -86,10 +86,33 @@ def test_the_question_is_the_one_that_found_run_4s_exposure():
     assert p.control["method"] == "GET" and p.setup == []
 
 
+def test_the_battery_also_asks_the_cross_account_question():
+    """The harness fires the standard access-control BATTERY per family, not just the
+    anonymous question — self-vs-second is the canonical BOLA read the model kept failing
+    to propose (CR3 'reached-not-proposed'). This is the harness carrying the load."""
+    props = coverage_proposals(["/workshop/api/shop/orders"], [], base=BASE)
+    by_cmp = {p.comparator for p in props}
+    assert "a_denied_b_allowed" in by_cmp and "cross_account_resource" in by_cmp, by_cmp
+    bola = next(p for p in props if p.comparator == "cross_account_resource")
+    assert bola.control["as"] == "self" and bola.variant["as"] == "second"
+    assert bola.control["method"] == "GET" and bola.setup == []   # read-only
+
+
+def test_the_battery_respects_per_program_comparator_selection():
+    """A program that did not enable cross_account_resource never has it proposed — the
+    deterministic proposer honours the same allowlist as the model path."""
+    props = coverage_proposals(["/workshop/api/shop/orders"], [], base=BASE,
+                               allowed=("a_denied_b_allowed",))
+    assert {p.comparator for p in props} == {"a_denied_b_allowed"}, props
+
+
 def test_it_is_BOUNDED():
-    """A wide application must not turn into a hundred experiments."""
+    """A wide application must not turn into a hundred experiments. The floor covers at most
+    `cap` families, each with its read-only battery (2 comparators)."""
     wide = [f"/svc{i}/api/thing" for i in range(50)]
-    assert len(coverage_proposals(wide, [], base=BASE)) <= 6
+    props = coverage_proposals(wide, [], base=BASE)
+    assert len({p.variant["url"] for p in props}) <= 4      # at most cap families
+    assert len(props) <= 8                                  # battery of 2 per family
 
 
 def test_state_changing_routes_are_NOT_swept():
@@ -136,6 +159,10 @@ def test_the_ROUND_includes_the_coverage_floor(tmp_path):
     s._run_one_round = lambda proposals, outcomes, shapes=None: (asked.extend(proposals) or 0)
     s.run_hypotheses()
     assert asked, "the model proposed nothing and the run asked nothing"
-    assert all(h.comparator == "a_denied_b_allowed" for h in asked), asked
+    # The deterministic battery: anon-vs-self (a_denied_b_allowed) + self-vs-second
+    # (cross_account_resource). Both are read-only questions the harness fires itself.
+    assert all(h.comparator in ("a_denied_b_allowed", "cross_account_resource")
+               for h in asked), asked
+    assert any(h.comparator == "a_denied_b_allowed" for h in asked), asked
     fams = {h.variant["url"] for h in asked}
     assert len(fams) >= 3, fams
