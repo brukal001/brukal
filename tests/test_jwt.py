@@ -132,6 +132,72 @@ def test_forged_token_is_confirmed_against_an_accepting_server():
     assert f.confirmed and f.severity == "critical"
 
 
+class _AcceptsNone:
+    """A header-trusting verifier: refuses anonymous, but accepts ANY token whose header
+    says alg=none (the crAPI challenge-15 forge). The weak-key path can never reach it."""
+    def run(self, action):
+        auth = (action.headers or {}).get("Authorization", "")
+        tok = auth.replace("Bearer ", "")
+        parsed = jwtscan.decode(tok) if tok else None
+        if parsed is None:
+            return WebResult(status=401, url=action.url, body='{"detail":"no token"}')
+        if str(parsed[0].get("alg", "")).lower() == "none":
+            return WebResult(status=200, url=action.url,
+                             body='{"data":{"username":"victim","role":"admin"}}')
+        return WebResult(status=401, url=action.url, body='{"detail":"bad alg"}')
+
+
+def test_alg_none_forgery_is_confirmed_on_an_rs256_target():
+    """The weak-key path gives up on RS256 (no HMAC key to brute), so before this every
+    header-trusting target was a guaranteed miss. The alg:none forge reaches it."""
+    sess = _session(_AcceptsNone())
+    rs = _token(LIVE_CLAIMS, secret="unbruteforceable-Y8#q2vN!pL7@wZ4rT1", alg="RS256")
+    assert jwtscan.crack_hmac_secret(rs) is None       # precondition: not a weak-key find
+    assert sess.confirm_jwt_forgery(URL, rs) is True
+    f = next(f for f in sess.findings.all()
+             if f.title == "Authentication bypass via forged JWT")
+    assert f.confirmed and "none" in f.evidence.lower()
+
+
+_CONF_JWK = {"kty": "RSA",
+             "n": _b64((2 ** 2047 + 0xC0FFEE).to_bytes(256, "big")),
+             "e": _b64((65537).to_bytes(3, "big"))}
+
+
+class _AcceptsConfusion:
+    """Verifies RS256 with a public key it also PUBLISHES at its JWKS, and does not pin the
+    algorithm — so an HS256 token signed with that public key (RS256->HS256 confusion) is
+    accepted. Refuses anonymous."""
+    def run(self, action):
+        if action.url.endswith("/.well-known/jwks.json"):
+            return WebResult(status=200, url=action.url,
+                             body=json.dumps({"keys": [_CONF_JWK]}))
+        auth = (action.headers or {}).get("Authorization", "")
+        tok = auth.replace("Bearer ", "")
+        parsed = jwtscan.decode(tok) if tok else None
+        if parsed is None:
+            return WebResult(status=401, url=action.url, body='{"detail":"no token"}')
+        header, _p, signing_input, sig = parsed
+        if str(header.get("alg", "")).upper() == "HS256":
+            for pem in jwtscan.jwk_to_pems(_CONF_JWK):
+                good = hmac.new(pem.encode(), signing_input, hashlib.sha256).digest()
+                if hmac.compare_digest(good, sig):
+                    return WebResult(status=200, url=action.url,
+                                     body='{"data":{"role":"admin"}}')
+        return WebResult(status=401, url=action.url, body='{"detail":"bad"}')
+
+
+def test_rs256_to_hs256_confusion_forgery_is_confirmed():
+    """The generalizable forge: fetch the server's own public key from its JWKS, sign HS256
+    with it, and a verifier that does not pin the algorithm accepts it."""
+    sess = _session(_AcceptsConfusion())
+    rs = _token(LIVE_CLAIMS, secret="strong-and-unbruteforceable-x9$", alg="RS256")
+    assert sess.confirm_jwt_forgery(URL, rs) is True
+    f = next(f for f in sess.findings.all()
+             if f.title == "Authentication bypass via forged JWT")
+    assert f.confirmed and "confusion" in f.evidence.lower()
+
+
 def test_a_strong_key_yields_no_forgery_finding():
     strong = "Y8#q2vN!pL7@wZ4rT1$eM6^bK9&xC3*d"
     sess = _session(_Accepts(secret=strong))

