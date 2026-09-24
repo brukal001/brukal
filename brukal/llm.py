@@ -346,6 +346,7 @@ class _OpenAICompatBackend:
         self.backoff = backoff        # base seconds; exponential
         self.last_usage: dict = {}
         self.last_stop_reason: str = ""
+        self.last_content_empty: bool = True
 
     def _post(self, body: bytes) -> dict:
         """POST once, retrying transient network/5xx/429 errors with backoff. A 4xx
@@ -414,6 +415,11 @@ class _OpenAICompatBackend:
         # provider.
         self.last_stop_reason = choice.get("finish_reason") or ""
         message = choice.get("message") or {}
+        # Whether the ANSWER field (`content`) was empty — distinct from the reply TEXT,
+        # which falls back to `reasoning_content`. A reasoning model can spend the whole
+        # budget thinking and leave `content` empty while `reasoning_content` fills with a
+        # truncated chain-of-thought; that reply LOOKS non-empty but never reached an answer.
+        self.last_content_empty = not (message.get("content") or "").strip()
         return _strip_think(self._message_text(message))
 
     # The same COST bound as the Anthropic backend's, and for the same reason.
@@ -436,11 +442,17 @@ class _OpenAICompatBackend:
         usable experiment (0 chars)". That reads as a model with nothing to say about the
         target. It had plenty to say; it never reached the part where it says it.
 
-        Retried only when the reply is EMPTY and was CUT OFF (`finish_reason == "length"`).
-        An empty reply that simply ended is an answer, and retrying it would double the
-        bill on every refusal."""
+        Retried when the reply was CUT OFF (`finish_reason == "length"`) and produced no
+        ANSWER content — either nothing at all, OR only reasoning that never reached the
+        answer. The second case is `deepseek-v4-pro` (CR3, 2026-09-24): `content` empty,
+        `reasoning_content` a truncated chain-of-thought, so the reply looks non-empty and
+        the old empty-only check let it through as "cut off before it named an action",
+        stalling the run. A truncated reply that DID produce answer content is left alone:
+        `parse`/`_salvage` recover its complete objects, and retrying a usable partial would
+        double the bill. An empty reply that simply ENDED (not `length`) is an answer, and
+        retrying it would double the bill on every refusal."""
         text = self._propose_once(system, user, max_tokens)
-        if text or self.last_stop_reason != "length":
+        if self.last_stop_reason != "length" or not self.last_content_empty:
             return text
         bigger = min(max_tokens * self._THINKING_RETRY_FACTOR,
                      self._THINKING_RETRY_CEILING)
