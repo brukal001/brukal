@@ -23,6 +23,57 @@ def _ts(t=None) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
 
 
+# --- impact vs mechanism (roadmap §2.2) ------------------------------------
+# 40% of this project's filed reports were closed RTFS for proving a MECHANISM and not the
+# IMPACT. The gate below labels each confirmed finding 'impact' (a crossed boundary WITH a
+# completed outcome) or 'mechanism' (a reachable sink / a difference / a misconfig that has
+# not yet been driven to a result), so the report says which and the mechanism ones carry a
+# reminder of what to establish before filing.
+#
+# CONSERVATIVE BY CONSTRUCTION: a mechanism verdict under-claims, which is safe; a false
+# 'impact' is the failure this guards against, so anything not clearly complete stays
+# 'mechanism'. The taxonomy is EXPLICIT and meant to be tuned to the maintainer's judgement
+# — edit the two sets. Nothing unconfirmed is ever 'impact'.
+
+# Titles of confirmed findings that name a COMPLETED outcome (a shell result, a held
+# secret, an accepted credential, an executed payload, a crossed access boundary) — matched
+# case-insensitively as substrings against the titles the confirm_* methods actually emit.
+_IMPACT_TITLE_MARKERS = (
+    "os command injection", "blind ssrf", "insecure deserialization",
+    "authentication bypass", "broken object-level", "default credentials",
+    "prompt injection", "mass assignment", "unauthenticated access",
+    "unauthenticated exposure", "local file inclusion",
+    "access key exposed", "api key exposed", "private key", "credentials in uri",
+    "secret in exposed", "live secret key exposed",
+)
+
+
+def _impact_comparators() -> set:
+    """Comparators that, by construction, prove a crossed AUTHORIZATION boundary — read
+    from hypothesis._EVIDENCE_CLASS's own authz flag so this never drifts from the severity
+    bindings — plus oob_callback, whose OOB listener records a completed server-side
+    outcome (SSRF the target actually performed)."""
+    try:
+        from .hypothesis import _EVIDENCE_CLASS
+        s = {k for k, (_c, _cap, authz) in _EVIDENCE_CLASS.items() if authz}
+    except Exception:
+        s = {"a_denied_b_allowed", "unauthenticated_exposure", "cross_account_resource"}
+    s.add("oob_callback")
+    return s
+
+
+def impact_verdict(f) -> str:
+    """'impact' iff the finding is CONFIRMED and either rests on a boundary-crossing
+    comparator or its title names a completed outcome; 'mechanism' otherwise. See the note
+    above — deliberately errs toward 'mechanism'."""
+    if not getattr(f, "confirmed", False):
+        return "mechanism"                     # a candidate has proven neither
+    if (getattr(f, "evidence_class", "") or "") in _impact_comparators():
+        return "impact"
+    title = (getattr(f, "title", "") or "").lower()
+    return "impact" if any(m in title for m in _IMPACT_TITLE_MARKERS) else "mechanism"
+
+
 def _finding_md(f) -> str:
     from .knowledge import enrich
     kb = enrich(f.title, f.severity)
@@ -41,6 +92,14 @@ def _finding_md(f) -> str:
     lines.append(f"- **Remediation:** {kb['remediation']}")
     lines.append(f"- **References:** {', '.join(kb['refs'])}")
     lines.append(f"- **Status:** {'confirmed (evidence-backed)' if f.confirmed else 'candidate — verify manually'}")
+    if f.confirmed:
+        if impact_verdict(f) == "impact":
+            lines.append("- **Impact:** demonstrated — a boundary was crossed with a "
+                         "completed, observed outcome.")
+        else:
+            lines.append("- **Impact:** MECHANISM PROVEN, not yet impact — before filing, "
+                         "state the privilege/data boundary crossed, the completed outcome, "
+                         "and the attacker's start position (this is the #1 RTFS cause).")
     return "\n".join(lines)
 
 
@@ -194,9 +253,25 @@ def build_report(store: FindingStore, meta: dict) -> str:
     # --- findings, ranked -----------------------------------------------------
     confirmed, candidates = store.confirmed(), store.candidates()
     if confirmed:
-        out.append("## Confirmed findings")
-        out.append("")
-        out += [_finding_md(f) + "\n" for f in confirmed]
+        # Split confirmed findings by whether IMPACT was demonstrated or only the
+        # MECHANISM was proven (roadmap §2.2) — the mechanism ones are real but need their
+        # impact established before filing, which is the project's #1 rejection cause.
+        impact = [f for f in confirmed if impact_verdict(f) == "impact"]
+        mech = [f for f in confirmed if impact_verdict(f) != "impact"]
+        if impact:
+            out.append("## Confirmed findings — impact demonstrated")
+            out.append("")
+            out += [_finding_md(f) + "\n" for f in impact]
+        if mech:
+            out.append("## Confirmed findings — mechanism proven (state the impact before filing)")
+            out.append("")
+            out.append("_Each below is evidence-backed but proves the MECHANISM, not a "
+                       "completed outcome. Before filing, name the privilege/data boundary "
+                       "crossed, show the completed result, and state the attacker's start "
+                       "position — mechanism-without-impact is why 40% of prior reports were "
+                       "closed as informative._")
+            out.append("")
+            out += [_finding_md(f) + "\n" for f in mech]
     if candidates:
         out.append("## Candidate findings (verify manually)")
         out.append("")
@@ -234,7 +309,7 @@ def report_json(store: FindingStore, meta: dict) -> dict:
         "meta": {**(meta or {}), "generated": _ts()},
         "counts": store.counts(),
         "total": len(store),
-        "findings": [f.to_dict() for f in store.all()],
+        "findings": [{**f.to_dict(), "impact": impact_verdict(f)} for f in store.all()],
     }
 
 
