@@ -52,6 +52,8 @@ __all__ = [
     '_PATH_SCANNERS',
     '_tool_of',
     '_is_raw_fetch',
+    '_SAVED_PLAN_LINE',
+    '_parse_saved_plan',
 ]
 
 
@@ -522,3 +524,20 @@ def _is_raw_fetch(command: str) -> bool:
     if (command or "").startswith("WEB "):
         return True
     return _tool_of(command) in _RAW_FETCH_TOOLS
+
+
+# A saved plan line is "N. [mark] [phase] text" where mark is x (done), > (current)
+# or blank (pending) — distinct from the strategist's fresh "N. [phase] text".
+_SAVED_PLAN_LINE = re.compile(
+    r"^\s*\d+\.\s*\[(?P<mark>[x> ])\]\s*(?:\[(?P<phase>[^\]]+)\]\s*)?(?P<text>.+?)\s*$")
+def _parse_saved_plan(text: str) -> list:
+    from .agents.strategist import PlanStep
+    steps: list = []
+    for line in (text or "").splitlines():
+        m = _SAVED_PLAN_LINE.match(line)
+        if not m:
+            continue
+        steps.append(PlanStep(text=m.group("text").strip(),
+                              phase=(m.group("phase") or "").strip().lower(),
+                              done=m.group("mark") == "x"))
+    return steps

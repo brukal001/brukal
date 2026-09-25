@@ -106,6 +106,7 @@ def test_auto_honours_an_explicit_web_mode(monkeypatch, tmp_path):
     web/box selector before set_methodology saw it — so detect_kind fell back to target
     detection and every IP target ran the BOX methodology, even when --web was passed."""
     import brukal.assist as A
+    import brukal.assist_cli as C   # run_auto / _prepare_session live in the CLI module
     import brukal.loop as L
     from brukal import AuditLog, Executor, FakeKali, Gate, load_scope
     from brukal.agents import StrategistAgent
@@ -118,7 +119,7 @@ def test_auto_honours_an_explicit_web_mode(monkeypatch, tmp_path):
                            StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()))
     sess.plan = [type("S", (), {"text": "x", "done": True, "phase": ""})()]
 
-    monkeypatch.setattr(A, "_prepare_session",
+    monkeypatch.setattr(C, "_prepare_session",
                         lambda *a, **k: (sess, audit, "10.10.10.5", "fake"))
 
     class _StubLoop:
@@ -131,7 +132,7 @@ def test_auto_honours_an_explicit_web_mode(monkeypatch, tmp_path):
                                   "executed": 0, "blocked": 0})()
 
     monkeypatch.setattr(L, "GroundedLoop", _StubLoop)
-    A.run_auto("10.10.10.5", fake=True, yes_authorised=True, mode="web",
+    C.run_auto("10.10.10.5", fake=True, yes_authorised=True, mode="web",
                handoff_to_menu=False, max_steps=1, resume=False)
     # a bare IP would detect as 'box'; the explicit flag must win
     assert sess.methodology.kind == "web"

@@ -319,7 +319,7 @@ def test_pickers_are_noninteractive_safe():
 def test_choose_brain_groq_option(monkeypatch):
     # Groq is a first-class menu entry (option 3): pick it, get the groq provider
     # and a strong default model, with GROQ_API_KEY prompted/ensured.
-    import brukal.assist as a
+    import brukal.assist_cli as a   # choose_brain / _ask / sys live in the CLI module
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     monkeypatch.setattr(a.sys.stdin, "isatty", lambda: True)
     answers = iter(["3", ""])          # choose Groq, accept the default model
