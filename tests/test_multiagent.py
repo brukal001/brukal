@@ -187,6 +187,38 @@ def test_prepare_session_wires_specialists_on_one_executor(monkeypatch, tmp_path
     assert session.trust is session.executor._gate._trust
 
 
+def test_working_set_lever_is_enabled_by_env_for_a_b_measurement(monkeypatch, tmp_path):
+    """The capability-ceiling lever (roadmap §1.3/§2.1) is off by default so the baseline
+    is untouched, and turned on per run by BRUKAL_WORKING_SET=1 so the maintainer can
+    measure recall with and without it on the same target."""
+    import brukal.llm as llm_mod
+    from brukal import assist as a
+
+    class DummyLLM:
+        def __init__(self, *args, **kw):
+            self.usage = None
+
+        def propose(self, *args, **kw):
+            return ""
+
+    monkeypatch.setattr(llm_mod, "LLMClient", DummyLLM)
+
+    def _prep():
+        return a._prepare_session(
+            TARGET, fake=True, yes_authorised=True, scope_path=str(SCOPE),
+            audit_path=str(tmp_path / "a.jsonl"), vault_path=str(tmp_path / "v"),
+            container="x", model=None, provider="anthropic", base_url=None,
+            console=None, holder={"status": None})
+
+    monkeypatch.delenv("BRUKAL_WORKING_SET", raising=False)
+    sess_off = _prep()[0]
+    assert sess_off.context_working_set is False               # default: baseline-safe
+
+    monkeypatch.setenv("BRUKAL_WORKING_SET", "1")
+    sess_on = _prep()[0]
+    assert sess_on.context_working_set is True                 # opted in for measurement
+
+
 def _approver_loop(approver):
     """A single-strategist loop whose executor uses `approver`, planning an in-scope
     IRREVERSIBLE action (an ssh credential attack -> ESCALATE)."""

@@ -1231,6 +1231,12 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         # like a result.
         session.login_status = ("authenticated" if ok else "failed", login["url"])
     session.reachable = _preflight(session, console)
+    # Capability-ceiling lever, opt-in for A/B measurement (roadmap §1.3/§2.1). The
+    # working set (not-yet-tested classes + open leads + ruled-out negatives) is handed to
+    # the planner ONLY when enabled, so the maintainer can run with and without it on the
+    # same target and measure whether it moves recall — without it the planner context is
+    # byte-identical to every prior run, so an existing baseline is untouched.
+    session.context_working_set = os.environ.get("BRUKAL_WORKING_SET") == "1"
     return session, audit, target, cage
 
 
