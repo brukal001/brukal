@@ -103,6 +103,18 @@ class _WebMixin:
             self.notes.append(skip)
             self.highlights.append(("coverage", skip))
             return None, None, [skip]
+        # A registered pre_action hook may VETO this action (roadmap §1.1) — a
+        # site-specific rule like "never touch /createdb". It can only SKIP: the command
+        # returns here, before executor.run, so it never reaches the gate or the cage, and
+        # a hook can never make a denied command run. Absent bus -> no-op.
+        if self.hooks is not None:
+            veto = self.hooks.veto("pre_action", command=command,
+                                   target=target or self.target, agent=agent)
+            if veto:
+                note = f"[hook] action vetoed before the gate: {veto}"
+                self.notes.append(note)
+                self.highlights.append(("hook", f"vetoed: {veto}"))
+                return None, None, [note]
         decision, result = self.executor.run(command, target or self.target,
                                              agent=agent)
         # Auto-route a web request the shell gate rejected for a metacharacter ('&' in

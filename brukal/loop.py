@@ -179,8 +179,14 @@ class GroundedLoop:
                  max_similar: int = 4, max_coach: int = 3, observer=None, verifier=None,
                  agents=None, trust=None, kill=None, budget=None, on_checkpoint=None,
                  hypothesis_every: int = 8, max_hypothesis_rounds: int = 6,
-                 autonomous: bool = False):
+                 autonomous: bool = False, hooks=None):
         self.session = session
+        # Optional deterministic event bus (roadmap §1.1). Absent -> every emit/veto is a
+        # no-op and the loop behaves exactly as before. Attached to the session so the one
+        # door (session.run) can consult a veto hook; see hooks.py for the safety contract.
+        self._hooks = hooks
+        if hooks is not None:
+            self.session.hooks = hooks
         self._verifier = verifier             # optional Verifier: confirms 'solved'
         # Phase 3 robustness: a hard kill switch (stop now, close sessions), a per-
         # engagement budget (spend/steps/research/time ceilings), and a checkpoint hook
@@ -418,6 +424,12 @@ class GroundedLoop:
                 self._observer(kind, payload)
             except Exception:
                 pass                          # a display error must not derail a run
+        # Same lifecycle points feed the hook bus (roadmap §1.1): start / stop / step /
+        # running / solved / candidate are observational events a hook may watch (log a
+        # finding, run per-session setup/teardown, notify an external monitor). Purely
+        # additive — a hook cannot change control flow here; the veto lives at session.run.
+        if self._hooks is not None:
+            self._hooks.emit(kind, **payload)
 
     def _finish(self, reason: str, detail: str) -> LoopResult:
         result = LoopResult(steps=self.steps, stop_reason=reason, stop_detail=detail)

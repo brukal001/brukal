@@ -26,6 +26,7 @@ from .chrome import ChromeCage, DockerChromeCage, FakeCDP
 from .loop import GroundedLoop, LoopStep, LoopResult
 from .killswitch import KillSwitch
 from .budget import EngagementBudget
+from .hooks import HookBus
 from . import checkpoint
 from . import redact
 from .experiment import BENCH_SCOPE, ExperimentResult, run_all, render
@@ -49,7 +50,7 @@ __all__ = [
     "DockerHttpWebCage", "check_web", "ensure_cage_vhosts",
     "ChromeCage", "DockerChromeCage", "FakeCDP",
     "GroundedLoop", "LoopStep", "LoopResult",
-    "KillSwitch", "EngagementBudget", "checkpoint",
+    "KillSwitch", "EngagementBudget", "HookBus", "checkpoint",
     "ExperimentResult", "run_all", "render", "BENCH_SCOPE",
     "capability_eval", "benchmark",
 ]

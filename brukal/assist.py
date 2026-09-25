@@ -96,6 +96,10 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         # re-proposed (the sqlmap-on-login budget burn, generalised). Always collected
         # (cheap, no behaviour change); only shown when context_working_set is on.
         self.ruled_out: list = []
+        # Optional deterministic event bus (hooks.HookBus). None -> no hooks, so every
+        # emit/veto is a no-op and behaviour is byte-identical. A pre_action hook may only
+        # SKIP an action (never widen), and no hook is ever handed the cage — see hooks.py.
+        self.hooks = None
         # The operator's login URL, captured SESSION-LEVEL. `_login_url` is per-principal
         # and reads empty during `_separate_identity` or when a fresh principal is active,
         # which is why second-principal establishment was INTERMITTENT — the signup
