@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from .assist_util import (
+    _COVERAGE_WORDS,
     _TECH_HINTS,
 )
 
@@ -282,11 +283,59 @@ class _PlanningMixin:
                 seen.add(c); out.append(c)
         return "\n".join(f"- {c}" for c in out[-limit:])
 
+    # Pseudo-class that is recognised by category, never proposed as a "try this" row.
+    _WORKING_SET_SKIP = frozenset({"Model-proposed experiments"})
+
+    def working_set_text(self, max_classes: int = 15, max_leads: int = 12) -> str:
+        """OPT-IN planning aid (self.context_working_set). Hand the model the checklist
+        of what REMAINS — vulnerability classes not yet exercised and unconfirmed leads
+        still open — so a run that has run out of obvious moves does not stall at a
+        fraction of its budget (GAP #28). Pure assembly over the coverage ledger and the
+        findings store: it invents nothing, reaches no host, and has no gate impact; the
+        model still only proposes, and the gate still disposes.
+
+        Empty string when there is nothing outstanding (early in a run everything is
+        untested, so it is capped to stay a hint, not a wall of text)."""
+        parts: list[str] = []
+        covered = set(getattr(self, "coverage", {}) or {})
+        untested = [k for k in _COVERAGE_WORDS
+                    if k not in covered and k not in self._WORKING_SET_SKIP]
+        if untested:
+            shown = untested[:max_classes]
+            more = f" (+{len(untested) - len(shown)} more)" if len(untested) > len(shown) else ""
+            parts.append("NOT YET TESTED (exercise these before concluding the target is "
+                         f"clean){more}:\n" + "\n".join(f"- {k}" for k in shown))
+        leads, seen = [], set()
+        for f in (self.findings.candidates() if self.findings is not None else []):
+            key = (f.title, getattr(f, "target", ""), getattr(f, "param", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            param = getattr(f, "param", "") or "-"
+            leads.append(f"- {f.title} @ {getattr(f, 'target', '')} (param={param}) "
+                         f"— CONFIRM with a differential or rule out")
+            if len(leads) >= max_leads:
+                break
+        if leads:
+            parts.append("OPEN LEADS (unconfirmed — do not report as-is; confirm or "
+                         "refute):\n" + "\n".join(leads))
+        return "\n\n".join(parts)
+
+    def _known_with_working_set(self) -> str:
+        """`known` text for the strategist, with the working set folded in when opted in
+        (keeps the strategist signature unchanged)."""
+        known = self._highlights_text()
+        if getattr(self, "context_working_set", False):
+            ws = self.working_set_text()
+            if ws:
+                known = f"{known}\n\n{ws}" if known else ws
+        return known
+
     def advise(self, question: str = ""):
         ref = self._reference(self._skill_focus(question))
         self.last = self.strategist.advise(
             self.target, self._state(), question, ref, self._objectives_text(),
-            self._plan_text(), known=self._highlights_text(), tried=self._tried_text())
+            self._plan_text(), known=self._known_with_working_set(), tried=self._tried_text())
         return self.last
 
     def advise_options(self, question: str = "", n: int = 3):
@@ -295,7 +344,7 @@ class _PlanningMixin:
         ref = self._reference(self._skill_focus(question))
         opts = self.strategist.options(
             self.target, self._state(), question, ref, self._objectives_text(),
-            self._plan_text(), n=n, known=self._highlights_text(), tried=self._tried_text())
+            self._plan_text(), n=n, known=self._known_with_working_set(), tried=self._tried_text())
         if not opts:                       # never leave the operator with nothing
             opts = [self.advise(question)]
         self.option_list = opts
@@ -319,6 +368,10 @@ class _PlanningMixin:
         obj = self._objectives_text()
         if obj:
             parts.append(f"OBJECTIVE:\n{obj}")
+        if getattr(self, "context_working_set", False):
+            ws = self.working_set_text()
+            if ws:
+                parts.append(ws)
         return "\n\n".join(parts)
 
     def _persist_plan(self):

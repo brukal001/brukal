@@ -83,6 +83,12 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         self.source_leads: list = []
         self._rate_limited = False     # the gate's rate wall stopped a probe this run
         self.allow_intrusive = False   # may a proof CREATE state on the target?
+        # OPT-IN planning aid: when True, plan_context()/advise() also hand the model the
+        # coverage ledger's NOT-YET-TESTED classes and open unconfirmed leads, so a run
+        # that stalls at a fraction of its budget (GAP #28: "model runs out of moves") is
+        # given the checklist of what remains. Default OFF so the experiment baseline is
+        # byte-identical; enable per run and A/B the recall before making it default.
+        self.context_working_set = False
         # The operator's login URL, captured SESSION-LEVEL. `_login_url` is per-principal
         # and reads empty during `_separate_identity` or when a fresh principal is active,
         # which is why second-principal establishment was INTERMITTENT — the signup
