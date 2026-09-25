@@ -114,6 +114,15 @@ _PRICING = {
     "deepseek":          (0.27, 1.10),   # fallback for any other deepseek-* id (approx)
     "glm-4.6":           (0.60, 2.20),
     "z-ai/glm-4.6":      (0.60, 2.20),
+    # Newer OpenRouter slugs (list prices verified against the live catalog 2026-09-25).
+    # Longest-substring-wins (_rate_for), so these specific ids beat the bare fallbacks.
+    "deepseek/deepseek-v3.2": (0.27, 0.41),
+    "deepseek-v3.2":     (0.27, 0.41),
+    "deepseek-v4-pro":   (0.79, 1.59),
+    "z-ai/glm-5.2":      (0.65, 2.04),
+    "glm-5.2":           (0.65, 2.04),
+    "moonshotai/kimi-k2.5": (0.45, 2.25),
+    "kimi-k2.5":         (0.45, 2.25),
     "kimi-k2":           (0.60, 2.50),
     "gpt-4o-mini":       (0.15, 0.60),
     "gpt-4.1-mini":      (0.40, 1.60),
