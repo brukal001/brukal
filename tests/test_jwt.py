@@ -198,6 +198,68 @@ def test_rs256_to_hs256_confusion_forgery_is_confirmed():
     assert f.confirmed and "confusion" in f.evidence.lower()
 
 
+class _AcceptsJwkHeader:
+    """A server that reads its verification key from the TOKEN's own `jwk` header (the
+    header-injection bug) instead of a trusted store — so a token carrying the attacker's
+    public key and signed with the matching private key verifies. Refuses anonymous."""
+    def run(self, action):
+        auth = (action.headers or {}).get("Authorization", "")
+        tok = auth.replace("Bearer ", "")
+        parsed = jwtscan.decode(tok) if tok else None
+        if parsed is None:
+            return WebResult(status=401, url=action.url, body='{"detail":"no token"}')
+        header, _p, signing_input, sig = parsed
+        jwk = header.get("jwk")
+        if str(header.get("alg", "")).upper() == "RS256" and isinstance(jwk, dict):
+            n = int.from_bytes(jwtscan._b64d(jwk["n"]), "big")
+            e = int.from_bytes(jwtscan._b64d(jwk["e"]), "big")
+            em = pow(int.from_bytes(sig, "big"), e, n).to_bytes((n.bit_length() + 7) // 8, "big")
+            want = jwtscan._SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+            if em.startswith(b"\x00\x01") and em.endswith(b"\x00" + want):
+                return WebResult(status=200, url=action.url, body='{"data":{"role":"admin"}}')
+        return WebResult(status=401, url=action.url, body='{"detail":"bad"}')
+
+
+def test_jwk_header_injection_forgery_is_confirmed():
+    """A server that trusts the key embedded IN the token accepts one it never issued — the
+    weak-key and confusion paths cannot reach it because the key is attacker-generated."""
+    sess = _session(_AcceptsJwkHeader())
+    rs = _token(LIVE_CLAIMS, secret="strong-and-unbruteforceable-x9$", alg="RS256")
+    assert sess.confirm_jwt_forgery(URL, rs) is True
+    f = next(f for f in sess.findings.all()
+             if f.title == "Authentication bypass via forged JWT")
+    assert f.confirmed and "jwk" in f.evidence.lower()
+
+
+class _AcceptsKidDevNull:
+    """A verifier that loads its key from the file named by the header `kid` — a traversal to
+    an empty file makes the key empty, so an HS256 token signed with an EMPTY key verifies.
+    Refuses anonymous and refuses a normal (non-poisoned) kid."""
+    def run(self, action):
+        auth = (action.headers or {}).get("Authorization", "")
+        tok = auth.replace("Bearer ", "")
+        parsed = jwtscan.decode(tok) if tok else None
+        if parsed is None:
+            return WebResult(status=401, url=action.url, body='{"detail":"no token"}')
+        header, _p, signing_input, sig = parsed
+        kid = str(header.get("kid", ""))
+        key = b"" if kid.endswith("/dev/null") else b"real-secret-not-guessable"
+        if str(header.get("alg", "")).upper() == "HS256":
+            good = hmac.new(key, signing_input, hashlib.sha256).digest()
+            if hmac.compare_digest(good, sig):
+                return WebResult(status=200, url=action.url, body='{"data":{"role":"admin"}}')
+        return WebResult(status=401, url=action.url, body='{"detail":"bad"}')
+
+
+def test_kid_injection_forgery_is_confirmed_on_a_devnull_traversal():
+    sess = _session(_AcceptsKidDevNull())
+    rs = _token(LIVE_CLAIMS, secret="unbruteforceable-Y8#q2vN!pL7@wZ4rT1", alg="RS256")
+    assert sess.confirm_jwt_forgery(URL, rs) is True
+    f = next(f for f in sess.findings.all()
+             if f.title == "Authentication bypass via forged JWT")
+    assert f.confirmed and "kid" in f.evidence.lower()
+
+
 def test_a_strong_key_yields_no_forgery_finding():
     strong = "Y8#q2vN!pL7@wZ4rT1$eM6^bK9&xC3*d"
     sess = _session(_Accepts(secret=strong))

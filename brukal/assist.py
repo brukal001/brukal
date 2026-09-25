@@ -2844,6 +2844,23 @@ class AssistSession:
                     "RS256->HS256 algorithm confusion", forged,
                     "the token was re-signed HS256 using the server's own RSA public key "
                     "(fetched from its JWKS) as the HMAC secret"))
+            # jwk header injection: plant OUR public key in the header, sign with OUR
+            # private key — a server that trusts the token's embedded key accepts it.
+            jwk_forge = jwtscan.jwk_injection_token(token)
+            if jwk_forge:
+                candidates.append((
+                    "jwk header injection", jwk_forge,
+                    "the token header embeds an attacker-generated RSA public key (jwk) and "
+                    "is RS256-signed with the matching private key, so a server that verifies "
+                    "against the key named IN the token accepts a token it never issued"))
+        # kid injection is algorithm-independent: it poisons the KEY LOOKUP (a file path or a
+        # DB row) so the verification key becomes a value the attacker predicts.
+        for kid, forged in jwtscan.kid_injection_tokens(token):
+            candidates.append((
+                "kid header injection", forged,
+                f"the header `kid` was set to {kid!r} — a path traversal to an empty file or "
+                f"a SQL injection in the key lookup — and the token HS256-signed with the "
+                f"predictable key that lookup then yields"))
 
         def fetch(auth: str | None):
             headers = {"Authorization": auth} if auth else {}

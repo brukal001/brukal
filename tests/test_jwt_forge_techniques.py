@@ -86,3 +86,68 @@ def test_confusion_is_refused_on_a_symmetric_token():
 def test_a_garbage_jwk_yields_no_pems():
     assert jwtscan.jwk_to_pems({"n": "!!!notb64!!!", "e": "AQAB"}) == []
     assert jwtscan.jwk_to_pems({}) == []
+
+
+# --------------------------------------------------------------------------- #
+# jwk header-injection forge
+# --------------------------------------------------------------------------- #
+
+def _b64d(seg: str) -> bytes:
+    return base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4))
+
+
+def test_jwk_injection_embeds_our_key_and_signs_with_it():
+    forged = jwtscan.jwk_injection_token(_tok("RS256", {"sub": "a@b", "role": "user"}))
+    header, payload, signing_input, sig = jwtscan.decode(forged)
+    assert header["alg"] == "RS256"
+    assert header["jwk"]["kty"] == "RSA"            # our public key travels in the header
+    assert payload["exp"] > 0
+    # The RS256 signature actually verifies against the embedded jwk (pure-python check):
+    n = int.from_bytes(_b64d(header["jwk"]["n"]), "big")
+    e = int.from_bytes(_b64d(header["jwk"]["e"]), "big")
+    recovered = pow(int.from_bytes(sig, "big"), e, n)
+    k = (n.bit_length() + 7) // 8
+    em = recovered.to_bytes(k, "big")
+    import hashlib
+    expected = (jwtscan._SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest())
+    assert em.startswith(b"\x00\x01\xff") and em.endswith(b"\x00" + expected)
+
+
+def test_jwk_injection_is_refused_on_a_symmetric_token():
+    assert jwtscan.jwk_injection_token(_tok("HS256", {"sub": "a"})) is None
+
+
+def test_jwk_injection_drops_a_stored_kid():
+    src = _tok("RS256", {"sub": "a"})
+    # give the source a kid so we can prove the forge does not keep pointing at a stored key
+    h = _b64(json.dumps({"alg": "RS256", "typ": "JWT", "kid": "prod-1"}).encode())
+    p = src.split(".")[1]
+    forged = jwtscan.jwk_injection_token(f"{h}.{p}.{_b64(b'sig')}")
+    header, _payload, _si, _sig = jwtscan.decode(forged)
+    assert "kid" not in header and "jwk" in header
+
+
+# --------------------------------------------------------------------------- #
+# kid header-injection forge
+# --------------------------------------------------------------------------- #
+
+def test_kid_injection_signs_with_the_predictable_lookup_key():
+    forged = jwtscan.kid_injection_tokens(_tok("RS256", {"sub": "a", "role": "user"}))
+    assert forged, "expected several kid variants"
+    kids = [k for k, _ in forged]
+    assert any("dev/null" in k for k in kids)                 # empty-file traversal
+    assert any("UNION SELECT" in k for k in kids)             # SQLi in the key lookup
+    for kid, tok in forged:
+        header, payload, _si, _sig = jwtscan.decode(tok)
+        assert header["alg"] == "HS256" and header["kid"] == kid
+        assert payload["exp"] > 0
+    # The /dev/null variant is HS256 with an EMPTY key — verifiable offline.
+    devnull = next(t for k, t in forged if k == "/dev/null")
+    import hmac as _h, hashlib as _hl
+    _hdr, _pl, si, sig = jwtscan.decode(devnull)
+    assert _h.compare_digest(_h.new(b"", si, _hl.sha256).digest(), sig)
+
+
+def test_kid_injection_on_a_broken_token_is_empty():
+    assert jwtscan.kid_injection_tokens("not.a.jwt") == []
+    assert jwtscan.jwk_injection_token("garbage") is None
