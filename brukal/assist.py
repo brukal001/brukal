@@ -89,6 +89,13 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         # given the checklist of what remains. Default OFF so the experiment baseline is
         # byte-identical; enable per run and A/B the recall before making it default.
         self.context_working_set = False
+        # Corroborate-or-shelve (roadmap §2.1): (class, target, param) triples a
+        # deterministic differential RAN and REFUTED — a genuine NEGATIVE, recorded only
+        # when the check returned False (never when it raised: a positive control before a
+        # negative). Surfaced through the opt-in working set so a refuted lead is not
+        # re-proposed (the sqlmap-on-login budget burn, generalised). Always collected
+        # (cheap, no behaviour change); only shown when context_working_set is on.
+        self.ruled_out: list = []
         # The operator's login URL, captured SESSION-LEVEL. `_login_url` is per-principal
         # and reads empty during `_separate_identity` or when a fresh principal is active,
         # which is why second-principal establishment was INTERMITTENT — the signup

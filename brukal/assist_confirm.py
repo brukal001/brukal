@@ -3622,6 +3622,31 @@ class _ConfirmMixin:
         if note and not entry["note"]:
             entry["note"] = note
 
+    # A differential check -> the vulnerability class it settles, so a False result can be
+    # recorded as a NEGATIVE for that class (roadmap §2.1). Names are the confirm_* methods
+    # the surface sweep runs; classes match _COVERAGE_WORDS so the ledgers stay aligned.
+    _CHECK_CLASS = {
+        "confirm_sqli": "SQL injection", "confirm_sqli_error": "SQL injection",
+        "confirm_cmdi": "Command injection", "confirm_lfi": "Path traversal / LFI",
+        "confirm_ssti": "Template injection", "confirm_xss": "Cross-site scripting",
+        "confirm_ssrf": "SSRF", "confirm_open_redirect": "Open redirect",
+        "confirm_idor": "Object-level authz (BOLA)",
+    }
+
+    def _record_ruled_out(self, check_name: str, target: str, param: str,
+                          method: str = "GET") -> None:
+        """Shelve a REFUTED class: the differential `check_name` RAN on this target/param
+        and returned False. Recorded (deduped) so the working set can tell the model the
+        class is ruled out here and it does not burn budget re-proposing it — the sqlmap-
+        on-login false-positive loop, generalised. Only ever called on a clean False (a
+        raise is not a negative), so it honours 'a positive control before a negative'."""
+        klass = self._CHECK_CLASS.get(check_name)
+        if not klass:
+            return
+        key = (klass, target, param, method)
+        if key not in self.ruled_out:
+            self.ruled_out.append(key)
+
     def coverage_summary(self) -> list:
         """(class, probes, note, found) rows for the report, sorted for stable output."""
         found = set()
@@ -3766,8 +3791,12 @@ class _ConfirmMixin:
                         confirmed += 1
                         settled.add((target, param, method))
                         return               # one confirmed class per param is enough
+                    # ran and returned False -> a genuine negative: shelve the class for
+                    # this endpoint so it is not re-proposed (roadmap §2.1).
+                    self._record_ruled_out(getattr(check, "__name__", ""),
+                                           target, param, method)
                 except Exception:
-                    pass
+                    pass                     # raised -> NOT a clean negative, don't record
 
         try:
             from urllib.parse import urljoin as _urljoin

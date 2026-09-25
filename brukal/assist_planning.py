@@ -319,6 +319,20 @@ class _PlanningMixin:
         if leads:
             parts.append("OPEN LEADS (unconfirmed — do not report as-is; confirm or "
                          "refute):\n" + "\n".join(leads))
+        # Classes a differential already RAN and REFUTED here — so the model does not burn
+        # budget re-proposing them (e.g. sqlmap on a login the boolean test already cleared).
+        ruled, seen_ro = [], set()
+        for tup in (getattr(self, "ruled_out", None) or []):
+            klass, target = tup[0], tup[1]
+            if (klass, target) in seen_ro:
+                continue
+            seen_ro.add((klass, target))
+            ruled.append(f"- {klass} @ {target}")
+            if len(ruled) >= 15:
+                break
+        if ruled:
+            parts.append("RULED OUT (a differential already refuted these here — do NOT "
+                         "retest):\n" + "\n".join(ruled))
         return "\n\n".join(parts)
 
     def _known_with_working_set(self) -> str:
