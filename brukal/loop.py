@@ -575,9 +575,42 @@ class GroundedLoop:
             f"{hint}until then it is only a candidate lead.")
         self._emit("candidate", verified=verified)
 
+    def _record_governance_envelope(self) -> None:
+        """Write the safety envelope IN EFFECT into the ledger at run start, so a third
+        party verifying the audit can see not merely THAT a run stopped (the existing
+        `engagement_stop`) but the limits it ran WITHIN — the budget ceilings, whether a
+        kill switch was armed, and the scope's rate/destructive/expiry facts. Without this
+        the ledger records `reason: budget` with no record of what the budget was, so the
+        envelope is legible only in behaviour. Pure instrumentation: a broken sink is
+        swallowed and can never end a run."""
+        audit = getattr(getattr(self.session, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        b = self._budget
+        scope = getattr(getattr(getattr(self.session, "executor", None), "_gate", None),
+                        "scope", None)
+        try:
+            audit.append("governance_envelope", {
+                "kill_switch_armed": self._kill is not None,
+                "loop_max_steps": self.max_steps,
+                "budget": None if b is None else {
+                    "max_cost": b.max_cost, "max_steps": b.max_steps,
+                    "max_research_fetches": b.max_research_fetches,
+                    "max_wall_seconds": b.max_wall_seconds,
+                },
+                "scope": None if scope is None else {
+                    "rate_limit_per_min": getattr(scope, "rate_limit_per_min", None),
+                    "destructive_allowed": getattr(scope, "destructive_allowed", None),
+                    "expires": getattr(scope, "expires", "") or "",
+                },
+            })
+        except Exception:
+            pass                              # instrumentation must never end a run
+
     def run(self) -> LoopResult:
         """Run until a terminal condition and return the trace + why it stopped."""
         self._emit("start", target=self.session.target, budget=self.max_steps)
+        self._record_governance_envelope()
 
         while len(self.steps) < self.max_steps:
             # ROBUSTNESS GATE (Phase 3), checked at the top of every turn — a safe
