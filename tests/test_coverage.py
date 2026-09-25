@@ -84,7 +84,8 @@ def test_every_class_that_produced_a_finding_appears_in_the_table():
                 classes_with_findings.add(klass)
     # every class Brukal can produce a finding for must have an instrumented probe site
     import brukal.assist as _a
-    src = Path(_a.__file__).read_text()
+    # AssistSession is split across assist.py + assist_*.py mixins; scan them all.
+    src = "".join(p.read_text() for p in sorted(Path(_a.__file__).parent.glob("assist*.py")))
     for klass in classes_with_findings:
         assert f'self._covered("{klass}"' in src, \
             f"{klass} produces findings but no probe site records coverage for it"

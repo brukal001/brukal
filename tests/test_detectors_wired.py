@@ -16,7 +16,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-SRC = Path("brukal/assist.py").read_text(encoding="utf-8")
+# AssistSession is split across assist.py + assist_*.py mixins (confirm_* live in
+# assist_confirm.py); scan the whole family so wiring checks see every method.
+SRC = "".join(p.read_text(encoding="utf-8")
+              for p in sorted(Path("brukal").glob("assist*.py")))
 
 # Detectors deliberately reachable only through an explicit operator action, with the
 # reason. Anything else must be called from the autonomous confirmation pass.

@@ -17,7 +17,10 @@ from pathlib import Path
 
 from brukal.assist import _COVERAGE_WORDS
 
-SRC = Path("brukal/assist.py").read_text(encoding="utf-8")
+# AssistSession is split across assist.py + assist_*.py mixins; scan them all so a
+# _covered()/title in any mixin is seen (else this guard would pass vacuously).
+SRC = "".join(p.read_text(encoding="utf-8")
+              for p in sorted(Path("brukal").glob("assist*.py")))
 
 
 def test_every_probed_class_can_report_a_finding():

@@ -224,9 +224,12 @@ def test_the_severity_cap_applies_only_to_the_experiment_path():
     an explicit signal, not by a two-request comparator, and must keep its severity. The
     ceiling belongs to the differential evidence classes alone."""
     import inspect
+    from pathlib import Path
 
     from brukal import assist
-    src = inspect.getsource(assist)
+    # AssistSession is split across assist.py + assist_*.py mixins; scan them all so the
+    # ceiling can't reappear in a different mixin unseen.
+    src = "".join(p.read_text() for p in sorted(Path(assist.__file__).parent.glob("assist*.py")))
     assert src.count("cap_severity(") == 1, (
         "the severity ceiling reached a second construction site — a non-experiment "
         "finding is now being capped, which would silently downgrade a confirmed SQLi")

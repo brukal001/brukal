@@ -87,7 +87,9 @@ def test_the_call_site_passes_CONFIRMED_routes_not_mined_fragments():
     session must pass `surface.confirmed_routes`, never `api_routes`, which is the
     unverified tier that held the fragments in the first place."""
     import re
-    src = (Path(__file__).resolve().parents[1] / "brukal" / "assist.py").read_text()
+    # AssistSession is split across assist.py + assist_*.py mixins; scan them all.
+    src = "".join(p.read_text() for p in
+                  sorted((Path(__file__).resolve().parents[1] / "brukal").glob("assist*.py")))
     call = re.search(r"coverage_proposals\((.{0,160})", src, re.S)
     assert call, "the coverage call site vanished"
     assert "confirmed_routes" in call.group(1), call.group(1)[:160]

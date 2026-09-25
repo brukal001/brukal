@@ -260,7 +260,10 @@ def test_hypotheses_are_reachable_on_a_wide_surface():
     from pathlib import Path
     import brukal.loop as _loop, brukal.assist as _assist
     loop_src = Path(_loop.__file__).read_text()
-    assist_src = Path(_assist.__file__).read_text()
+    # AssistSession is split across assist.py + assist_*.py mixins (confirm_surface is
+    # in assist_confirm.py); scan them all.
+    assist_src = "".join(p.read_text() for p in
+                         sorted(Path(_assist.__file__).parent.glob("assist*.py")))
     # the loop invokes it...
     assert "self.session.run_hypotheses()" in loop_src
     # ...and the sweep does not, so it cannot be starved by the reflex budget
