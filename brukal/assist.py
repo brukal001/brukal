@@ -2661,10 +2661,12 @@ class AssistSession:
         return False
 
     def confirm_nosqli_sinks(self) -> int:
-        """Fire the NoSQL-operator question at lookup/validate endpoints the harness itself,
-        for the injectable JSON body fields a crawl never surfaces (crAPI's `coupon_code`).
-        Bounded, governed. Gated on allow_intrusive because an operator body is a WRITE-
-        shaped request to a validate endpoint. Returns the number confirmed."""
+        """Fire the INJECTION question at lookup/validate endpoints the harness itself, for
+        the injectable JSON body fields a crawl never surfaces (crAPI's `coupon_code`). Each
+        field gets BOTH the NoSQL operator differential (`confirm_nosqli`, crAPI #12) and the
+        boolean SQL differential over a JSON body (`confirm_sqli` method=JSON, crAPI #13).
+        Bounded, governed. Gated on allow_intrusive because an operator/injection body is a
+        WRITE-shaped request to a validate endpoint. Returns the number confirmed."""
         if self.browser is None or not self.allow_intrusive or self.surface is None:
             return 0
         base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
@@ -2687,9 +2689,10 @@ class AssistSession:
                 if getattr(self, "_confirm_budget", None) is not None:
                     self._confirm_budget -= 1
                 try:
-                    if self.confirm_nosqli(url, field):
+                    if self.confirm_nosqli(url, field) or \
+                            self.confirm_sqli(url, field, method="JSON"):
                         confirmed += 1
-                        break                # one confirmed operator per endpoint
+                        break                # one confirmed injection per endpoint
                 except Exception:
                     continue
         return confirmed
@@ -8441,6 +8444,8 @@ class AssistSession:
                 try:
                     self._covered("NoSQL injection",
                                   note="benign vs always-true operator differential")
+                    self._covered("SQL injection",
+                                  note="boolean differential over a JSON body param")
                     confirmed += self.confirm_nosqli_sinks()
                 except Exception:
                     pass

@@ -90,3 +90,29 @@ def test_the_sweep_needs_allow_intrusive():
     s.allow_intrusive = False
     s.surface.confirmed_routes = [COUPON]
     assert s.confirm_nosqli_sinks() == 0
+
+
+class _CouponSQL:
+    """A SQL-backed coupon lookup (`WHERE code='<input>'`) reflected as a boolean — a TRUE
+    condition returns the found row, a FALSE condition returns nothing. crAPI challenge 13."""
+    def run(self, action):
+        try:
+            body = json.loads(action.body or "{}")
+        except Exception:
+            body = {}
+        code = str(body.get("coupon_code", ""))
+        false_cond = ("'1'='2" in code or "1=2" in code or '"1"="2' in code)
+        if false_cond:
+            return WebResult(status=200, url=action.url, body='{"result":[]}')
+        return WebResult(status=200, url=action.url,
+                         body='{"result":[{"coupon":"TRAC075","amount":75,"valid":true}]}')
+
+
+def test_the_sweep_also_catches_boolean_sql_injection_in_the_json_body():
+    """crAPI #13: SQL injection lives in the SAME JSON coupon field, so the lookup sweep
+    runs the boolean SQLi differential (method=JSON) beside the NoSQL operator check."""
+    s = _session(_CouponSQL())
+    s.surface.confirmed_routes = [COUPON]
+    assert s.confirm_nosqli_sinks() == 1
+    assert any(f.title == "SQL injection (boolean-based)" and f.confirmed
+               for f in s.findings.all())
