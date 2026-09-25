@@ -1403,6 +1403,10 @@ def _write_session_report(session, result, cage, audit, spend=""):
             "spend_detail": _spend_detail(session),
             "coverage": (session.coverage_summary()
                          if hasattr(session, "coverage_summary") else []),
+            # Findings whose title maps to no coverage class — flagged in the report so it
+            # cannot silently contradict itself (see coverage_contradictions).
+            "contradictions": (session.coverage_contradictions()
+                               if hasattr(session, "coverage_contradictions") else []),
             "target_health": (getattr(getattr(session, "browser", None), "health", None)
                               .summary()
                               if getattr(getattr(session, "browser", None), "health", None)

@@ -173,6 +173,24 @@ def build_report(store: FindingStore, meta: dict) -> str:
                    "not a clean result either._")
         out.append("")
 
+    # --- consistency guard ----------------------------------------------------
+    # A finding whose title maps to no coverage class makes this document contradict
+    # itself: it is listed below while the table above shows every class 'none found'.
+    # That shipped three times before it was caught. Rather than silently do so again,
+    # flag it here so the reader (and the maintainer) see it and add the keyword.
+    _contra = m.get("contradictions") or []
+    if _contra:
+        out.append("## ⚠ Consistency warning")
+        out.append("")
+        out.append(f"{len(_contra)} finding(s) below map to **no coverage class**, so the "
+                   "coverage table cannot represent them and this report would otherwise "
+                   "contradict itself (a finding listed while every class reads 'none "
+                   "found'). Add the title's keyword to `_COVERAGE_WORDS`:")
+        out.append("")
+        for _t, _sev, _tgt in _contra:
+            out.append(f"- **{_t}** ({_sev}) — {_tgt}")
+        out.append("")
+
     # --- findings, ranked -----------------------------------------------------
     confirmed, candidates = store.confirmed(), store.candidates()
     if confirmed:

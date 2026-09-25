@@ -3660,6 +3660,30 @@ class _ConfirmMixin:
         return sorted(((k, v["probes"], v["note"], k in found)
                        for k, v in self.coverage.items()), key=lambda r: r[0])
 
+    def coverage_contradictions(self) -> list:
+        """Findings whose title maps to NO coverage class — the exact shape that makes a
+        report contradict itself: the finding is listed, but no coverage row flips to
+        'finding' for it, so the table reads 'none found' beside a critical (the defect
+        the vault recorded three times). The static test_coverage_consistency guards
+        source-literal titles; this RUNTIME check catches titles built at run time (a
+        model-named experiment, a composed title). Logic-category findings are represented
+        by the 'Model-proposed experiments' row and are not orphans. Returns (title,
+        severity, target) so the report can FLAG the contradiction instead of shipping it."""
+        out, seen = [], set()
+        for f in self.findings.all():
+            if getattr(f, "category", "") == "logic":
+                continue
+            title = getattr(f, "title", "") or ""
+            low = title.lower()
+            if any(w in low for ws in _COVERAGE_WORDS.values() for w in ws):
+                continue
+            key = (title, getattr(f, "target", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((title, getattr(f, "severity", ""), getattr(f, "target", "")))
+        return out
+
     def mass_assignment_targets(self):
         """(register_url, login_url, verify_url) for the mass-assignment proof, or None.
 
