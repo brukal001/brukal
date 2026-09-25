@@ -56,7 +56,12 @@ scope.json ─► scope.py ─► gate.py ─► executor.py ─► kali.py ─�
   Done per milestone is a gate, not a suggestion.
 - **Commit per milestone** with a clear message; **update `Brukal.md`** at the
   end of every session.
-- **Do NOT over-build** — three agents plus a verifier is the whole system.
+- **Don't over-build for its own sake — but BUILD when it is necessary to raise the
+  capability ceiling.** Three agents plus a verifier is the core; do not add machinery
+  that only adds surface. However, when a change is genuinely needed to lift what Brukal
+  can find or prove (the measured ceiling, e.g. runs that stall at ~1/5 of budget), build
+  it — as a tested milestone that keeps every safety invariant. (Amended 2026-09-25 by
+  the maintainer, superseding the earlier flat "do NOT over-build".)
 - Run agents **sequentially** for now (no concurrency until explicitly told).
 
 ## Rules of engagement (safety)
