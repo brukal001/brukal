@@ -1316,8 +1316,13 @@ class AssistSession:
     # Labels from webprobe.scan_output that represent an EXPLICIT, unambiguous vuln
     # statement (vs a heuristic match) -> recorded as a CONFIRMED finding. The rest
     # are candidates a human/Verifier should confirm.
-    _CONFIRMED_VULN_LABELS = {"SQL injection", "SQLi (DBMS identified)", "XSS PoC",
-                              "vulnerable"}
+    # NB: sqlmap's tentative "appears to be injectable" heuristic is deliberately NOT
+    # here — it is emitted as "SQLi lead (sqlmap heuristic — unconfirmed)" and stays a
+    # CANDIDATE (see webprobe._SIGNALS / GAP #23, the crAPI login false positive that
+    # was recorded confirmed=True and burned a fifth of a run's budget). Only sqlmap's
+    # confirmed injection-point block and DBMS fingerprint are trusted as confirmed.
+    _CONFIRMED_VULN_LABELS = {"SQL injection (sqlmap-confirmed)",
+                              "SQLi (DBMS identified)", "XSS PoC", "vulnerable"}
     # Exposures whose EVIDENCE is itself the proof — a private key, a .git repo, or a
     # directory listing IN the response body confirms the exposure; no further probe is
     # needed. Promoted to a CONFIRMED finding (not a lead to verify) when it came from a

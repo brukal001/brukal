@@ -96,6 +96,35 @@ def test_scan_output_flags_vulnerability_signals():
     assert webprobe.scan_output("nothing interesting here") == []
 
 
+def test_sqlmap_tentative_heuristic_is_a_low_unconfirmed_lead_not_a_high_finding():
+    """GAP #23 (sqlmap login false positive, 2026-09-25). sqlmap's mid-test heuristic
+    'parameter X appears to be <technique> injectable' is TENTATIVE — it false-positives
+    on endpoints with uniform responses (a JSON login), and it was being recorded as a
+    HIGH 'SQL injection' that read as confirmed, so the model burned a fifth of its budget
+    chasing a --dump that never came. It must now be a LOW, explicitly-unconfirmed lead —
+    never a high, confirmed-looking finding."""
+    # The exact live line from the crAPI login run (runs/bake_ds32_260925.log).
+    line = ("POST parameter 'JSON #1*' appears to be 'SQLite OR boolean-based blind - "
+            "WHERE or HAVING clause (NOT)' injectable")
+    hits = webprobe.scan_output(line)
+    sqli_high = [h for h in hits if h[0] == "high" and "SQL" in h[1]]
+    assert not sqli_high, f"tentative sqlmap heuristic must not be a high SQLi: {hits}"
+    assert any(sev == "low" and "unconfirmed" in label.lower()
+               for sev, label, _l in hits), hits
+
+
+def test_sqlmap_confirmed_injection_point_is_a_high_finding():
+    """The trustworthy sqlmap signal — 'identified the following injection point(s)',
+    printed only after a payload worked — must still surface at HIGH so a real SQLi is
+    never lost. A genuinely injectable target also reaches HIGH via 'back-end DBMS'."""
+    confirmed = ("sqlmap identified the following injection point(s) with a total of 74 "
+                 "HTTP(s) requests:\n---\nParameter: id (GET)\n    Type: boolean-based "
+                 "blind\n    Payload: id=1 AND 1=1\n---\nback-end DBMS: MySQL")
+    hits = webprobe.scan_output(confirmed)
+    assert any(sev == "high" and "SQL" in label
+               for sev, label, _l in hits), hits
+
+
 # ---- governed execution through the loop ----------------------------------- #
 
 def _session(approver=None, **kw):

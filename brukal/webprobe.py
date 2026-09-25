@@ -124,10 +124,29 @@ def plan_probes(surface, target: str, *, max_active: int = 12) -> list[Probe]:
 # Phase 3 will build the full findings model; this flags the obvious hits now so a
 # real vulnerability is surfaced (and can be verified) instead of buried in output.
 _SIGNALS = (
-    (re.compile(r"parameter '[^']+'.*?(?:is|appears to be).*?injectabl", re.I), "high",
-     "SQL injection"),
-    (re.compile(r"\bis vulnerable\b", re.I), "high", "vulnerable"),
+    # sqlmap CONFIRMED injection. sqlmap prints "identified the following injection
+    # point(s)" ONLY after a payload actually worked, and follows it with a
+    # `Parameter:/Type:/Payload:` block — this is the trustworthy signal that an
+    # injection point exists, not a mid-test guess.
+    (re.compile(r"sqlmap identified the following injection point", re.I), "high",
+     "SQL injection (sqlmap-confirmed)"),
+    # A working injection is what lets sqlmap fingerprint the database, so "back-end
+    # DBMS" is only reachable once injection succeeded — confirmation too.
     (re.compile(r"back-end DBMS", re.I), "high", "SQLi (DBMS identified)"),
+    # sqlmap's mid-test HEURISTIC — "parameter 'X' appears to be '<technique>' injectable"
+    # (or the bare "is injectable"). This is TENTATIVE: sqlmap routinely retracts it ("all
+    # tested parameters do not appear to be injectable") or fails to dump, and it is a
+    # well-known false positive on endpoints with uniform responses — e.g. a JSON login
+    # that answers the same for every credential (crAPI /identity/api/auth/login,
+    # 2026-09-25: this heuristic on the login was recorded as a HIGH "SQL injection" and
+    # burned a fifth of a run's budget chasing a --dump that never came). Record it as a
+    # LOW candidate lead the boolean/error differential (confirm_sqli / confirm_sqli_error,
+    # which is Brukal's authority for SQLi) must corroborate before it is believed —
+    # NEVER as a high, confirmed-looking finding. A genuinely injectable target still
+    # surfaces at HIGH via the two confirmation signals above.
+    (re.compile(r"parameter '[^']+'.*?(?:is|appears to be).*?injectabl", re.I), "low",
+     "SQLi lead (sqlmap heuristic — unconfirmed)"),
+    (re.compile(r"\bis vulnerable\b", re.I), "high", "vulnerable"),
     (re.compile(r"\[(critical|high)\]", re.I), "high", "nuclei finding"),
     (re.compile(r"\[(medium|low)\]", re.I), "medium", "nuclei finding"),
     (re.compile(r"\[POC\]|triggered in", re.I), "high", "XSS PoC"),

@@ -90,9 +90,13 @@ def _session():
 def test_vuln_signal_in_output_becomes_a_finding():
     sess, tmp = _session()
     try:
-        # simulate a sqlmap run whose real output flags an injection
+        # simulate a sqlmap run whose real output CONFIRMS an injection — the "identified
+        # the following injection point(s)" block with a working Payload is printed only
+        # after a payload succeeded, so it is a confirmed finding.
         from brukal.kali import ExecResult
-        out = "sqlmap: parameter 'q' is injectable ... back-end DBMS: MySQL"
+        out = ("sqlmap identified the following injection point(s) with a total of 42 "
+               "HTTP(s) requests:\n---\nParameter: q (GET)\n    Type: boolean-based "
+               "blind\n    Payload: q=1 AND 1=1\n---\nback-end DBMS: MySQL")
         result = ExecResult(command="sqlmap", returncode=0, stdout=out, stderr="")
         decision, _ = sess.executor.run('sqlmap -u "http://10.10.10.5/s?q=1" -p q --batch',
                                         TARGET, agent="exploit")
@@ -101,9 +105,35 @@ def test_vuln_signal_in_output_becomes_a_finding():
         sess._absorb_shell('sqlmap -u "http://10.10.10.5/s?q=1" -p q --batch',
                            decision, result)
         titles = {f.title for f in sess.findings.all()}
-        assert "SQL injection" in titles
-        f = next(f for f in sess.findings.all() if f.title == "SQL injection")
+        assert any(t.startswith("SQL injection") for t in titles), titles
+        f = next(f for f in sess.findings.all() if f.title.startswith("SQL injection"))
         assert f.confirmed and f.param == "q" and "10.10.10.5" in f.target
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_sqlmap_tentative_heuristic_is_an_unconfirmed_candidate_not_a_confirmed_finding():
+    """GAP #23 (crAPI login, 2026-09-25). sqlmap's tentative 'appears to be injectable'
+    heuristic on a non-injectable JSON login was recorded as a CONFIRMED critical SQLi and
+    the model burned a fifth of its budget chasing it. That heuristic must now land as an
+    UNCONFIRMED candidate lead — never confirmed — so the boolean/error differential stays
+    the sole authority for confirming SQLi."""
+    sess, tmp = _session()
+    try:
+        from brukal.kali import ExecResult
+        out = ("POST parameter 'JSON #1*' appears to be 'SQLite OR boolean-based blind - "
+               "WHERE or HAVING clause (NOT)' injectable")
+        result = ExecResult(command="sqlmap", returncode=0, stdout=out, stderr="")
+        cmd = ('sqlmap -u "http://10.10.10.5/identity/api/auth/login" '
+               '--data={"email":"a","password":"b"} --batch')
+        decision, _ = sess.executor.run(cmd, TARGET, agent="exploit")
+        sess._absorb_shell(cmd, decision, result)
+        sqli = [f for f in sess.findings.all() if "sql" in f.title.lower()]
+        assert sqli, "the heuristic should still record a lead"
+        assert all(not f.confirmed for f in sqli), \
+            f"a tentative sqlmap heuristic must not be a confirmed SQLi: {[f.title for f in sqli]}"
+        assert all(f.severity != "high" for f in sqli), \
+            f"a tentative sqlmap heuristic must not be high severity: {[(f.title, f.severity) for f in sqli]}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
