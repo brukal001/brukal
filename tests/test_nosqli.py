@@ -101,6 +101,20 @@ def test_the_sweep_reaches_a_POST_only_mined_route_never_GET_confirmed():
                for f in s.findings.all())
 
 
+def test_a_templated_route_does_not_abort_the_sink_sweep():
+    """2026-09-26: drawing sink candidates from mined api_routes mixes in templated ({id})
+    routes, and the loop did `break` on the first template — silently skipping the concrete
+    coupon sink behind it, so 0 operator payloads were sent even with the rate wall gone.
+    A template must be SKIPPED (or ordered last), never abort the sweep."""
+    s = _session(_CouponMongo(vulnerable=True))
+    s.surface.confirmed_routes = []
+    # a templated hint-matching route AHEAD of the concrete coupon route
+    s.surface.api_routes = ["/community/api/v2/coupon/{id}/validate", COUPON]
+    assert s.confirm_nosqli_sinks() == 1
+    assert any(f.title == "NoSQL injection (operator)" and f.confirmed
+               for f in s.findings.all())
+
+
 def test_the_field_injection_sinks_run_before_the_expensive_route_sweeps():
     """Regression for the 2026-09-26 rate-starvation. The field-injection sinks
     (object mass-assignment / SSRF / NoSQL — crAPI #8/#9/#10/#11/#12) must be dispatched

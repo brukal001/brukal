@@ -781,6 +781,21 @@ class GroundedLoop:
                 # _establish_principals: this is an ordering fix, not a budget one.
                 self._establish_principals()
                 self._seed_principals()
+                # RESOLVE mined route fragments to their real mounted paths BEFORE the
+                # confirm sinks run. A POST-only NoSQL / mass-assignment endpoint (crAPI's
+                # coupon `validate-coupon`) is mined as a prefixless fragment
+                # (`/v2/coupon/validate-coupon`) that 404s, and confirm_surface's
+                # field-injection sinks draw candidates from `confirmed_routes` — which
+                # resolve_mined_routes fills with the aligned full path
+                # (`/community/api/v2/...`). Without this the sinks ran before resolution
+                # and never reached the working endpoint: crAPI #12 (and the #8/#9/#10/#11
+                # sink family) was missed across five live runs even though the vuln and
+                # the prover both work (proven in isolation 2026-09-26). Cheap and
+                # idempotent; a target with no learnable prefix resolves nothing.
+                try:
+                    self.session.resolve_mined_routes()
+                except Exception:
+                    pass
                 n = 0
                 try:
                     n = self.session.confirm_surface()

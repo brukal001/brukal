@@ -399,12 +399,19 @@ class _ConfirmMixin:
                 "check", "verify", "login", "query", "filter")
         # FILTER, not rank: only lookup/validate endpoints are probed, so an operator body
         # is never POSTed to an unrelated write (which would create state, not test a query).
-        ranked = [r for r in routes if any(h in r.lower() for h in hint)]
+        # Concrete routes first, templated ({id}) ones last: a template cannot be probed
+        # with a fixed body and must be SKIPPED, not abort the sweep — but ordering it
+        # last also means it never even gets the chance to (drawing from api_routes now
+        # mixes in many templated routes, and a break here silently skipped the coupon
+        # sink behind them; 2026-09-26).
+        ranked = sorted((r for r in routes if any(h in r.lower() for h in hint)),
+                        key=lambda r: "{" in r)
         confirmed = 0
         for route in ranked[:6]:
-            if "{" in route or (getattr(self, "_confirm_budget", 1) or 1) <= 0 \
-                    or self._rate_limited:
-                break
+            if (getattr(self, "_confirm_budget", 1) or 1) <= 0 or self._rate_limited:
+                break                          # budget/rate: stop the whole sweep
+            if "{" in route:
+                continue                       # a templated route: skip it, keep probing
             url = route if route.startswith("http") else base + (
                 route if route.startswith("/") else "/" + route)
             for field in self._NOSQL_FIELDS:
