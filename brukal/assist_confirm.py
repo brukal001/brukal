@@ -395,17 +395,23 @@ class _ConfirmMixin:
         for r in (getattr(self.surface, "api_routes", []) or []):
             if r not in routes:
                 routes.append(r)
+        # Ordered by how squarely a hint names a lookup/validate SINK: `coupon`/`validate`
+        # first, the auth-ish `login`/`verify`/`check` last. This is a RANK, not just a
+        # filter, because the [:6] cap below combined with a flat filter silently starved
+        # the target: crAPI's auth surface (/auth/login, /check-otp, /verify, ...) matches
+        # the broad hints and, listed before the coupon route, filled all six slots so
+        # confirm_nosqli never reached validate-coupon — 0 operator payloads even with the
+        # route resolved and budget free (2026-09-26, reproduced without the loop).
         hint = ("coupon", "validate", "redeem", "apply", "lookup", "search", "find",
-                "check", "verify", "login", "query", "filter")
-        # FILTER, not rank: only lookup/validate endpoints are probed, so an operator body
-        # is never POSTed to an unrelated write (which would create state, not test a query).
-        # Concrete routes first, templated ({id}) ones last: a template cannot be probed
-        # with a fixed body and must be SKIPPED, not abort the sweep — but ordering it
-        # last also means it never even gets the chance to (drawing from api_routes now
-        # mixes in many templated routes, and a break here silently skipped the coupon
-        # sink behind them; 2026-09-26).
-        ranked = sorted((r for r in routes if any(h in r.lower() for h in hint)),
-                        key=lambda r: "{" in r)
+                "query", "filter", "check", "verify", "login")
+        # FILTER + RANK: only lookup/validate endpoints are probed (an operator body is
+        # never POSTed to an unrelated write), ordered by hint priority, then concrete
+        # routes before templated ({id}) ones (a template can't take a fixed body).
+        def _rank(r):
+            rl = r.lower()
+            pri = min((i for i, h in enumerate(hint) if h in rl), default=len(hint))
+            return (pri, "{" in r, r)
+        ranked = sorted((r for r in routes if any(h in r.lower() for h in hint)), key=_rank)
         confirmed = 0
         for route in ranked[:6]:
             if (getattr(self, "_confirm_budget", 1) or 1) <= 0 or self._rate_limited:

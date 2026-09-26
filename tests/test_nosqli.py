@@ -115,6 +115,27 @@ def test_a_templated_route_does_not_abort_the_sink_sweep():
                for f in s.findings.all())
 
 
+def test_the_coupon_sink_is_not_crowded_out_of_the_cap_by_auth_routes():
+    """2026-09-26, reproduced WITHOUT the loop or the model: the broad hints match crAPI's
+    auth surface (/auth/login, /check-otp, /verify, ...) and, with a flat filter + the [:6]
+    cap, those filled every slot so confirm_nosqli never reached validate-coupon (0 operator
+    payloads even with the route resolved and budget free). The coupon/validate sink must be
+    RANKED above the auth routes so the cap can't starve it."""
+    s = _session(_CouponMongo(vulnerable=True))
+    s.surface.confirmed_routes = [
+        "/identity/api/auth/login", "/identity/api/auth/v3/check-otp",
+        "/identity/api/auth/verify", "/identity/api/auth/v4.0/user/login-with-token",
+        "/identity/api/v2/user/verify-phone-otp", "/identity/api/v2/user/verify-email-token",
+        COUPON,                          # 7th — beyond a flat [:6] cap
+    ]
+    s.surface.api_routes = []
+    s.confirm_nosqli_sinks()
+    # the confirmed NoSQL injection must be on the COUPON route, not the first auth route
+    assert any(f.title == "NoSQL injection (operator)" and "validate-coupon" in f.target
+               and f.confirmed for f in s.findings.all()), \
+        [(f.title, f.target) for f in s.findings.all()]
+
+
 def test_the_field_injection_sinks_run_before_the_expensive_route_sweeps():
     """Regression for the 2026-09-26 rate-starvation. The field-injection sinks
     (object mass-assignment / SSRF / NoSQL — crAPI #8/#9/#10/#11/#12) must be dispatched
