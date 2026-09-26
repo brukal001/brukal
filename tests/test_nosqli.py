@@ -101,6 +101,26 @@ def test_the_sweep_reaches_a_POST_only_mined_route_never_GET_confirmed():
                for f in s.findings.all())
 
 
+def test_the_field_injection_sinks_run_before_the_expensive_route_sweeps():
+    """Regression for the 2026-09-26 rate-starvation. The field-injection sinks
+    (object mass-assignment / SSRF / NoSQL — crAPI #8/#9/#10/#11/#12) must be dispatched
+    in confirm_surface BEFORE the expensive per-route sweeps (collection at pass 4, mined
+    routes at pass 6b), or the scope's 120/min limit is spent by those sweeps and the
+    sinks — which used to run last — send ZERO operator payloads (both live A/B arms did
+    exactly that). A source-order guard so the hoist can't silently regress."""
+    import inspect
+    from brukal.assist import AssistSession
+    src = inspect.getsource(AssistSession.confirm_surface)
+    i_nosql = src.index("confirm_nosqli_sinks()")
+    i_ssrf = src.index("confirm_ssrf_sinks()")
+    i_objma = src.index("confirm_object_mass_assignment_sinks()")
+    i_collection = src.index("# 4) COLLECTION endpoints")
+    i_mined = src.index("# 6b) MINED API ROUTES")
+    assert max(i_nosql, i_ssrf, i_objma) < min(i_collection, i_mined), (
+        "a field-injection sink is dispatched AFTER the expensive collection/mined-route "
+        "sweeps — under a rate limit those sweeps starve it (2026-09-26 regression)")
+
+
 def test_the_sweep_needs_allow_intrusive():
     s = _session(_CouponMongo(vulnerable=True))
     s.allow_intrusive = False

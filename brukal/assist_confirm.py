@@ -3869,6 +3869,39 @@ class _ConfirmMixin:
                     except Exception:
                         pass
 
+            # 1b) FIELD-INJECTION SINKS, HOISTED EARLY (was pass 7a2/7b/7c, run last).
+            #     Object mass-assignment, SSRF and NoSQL-operator sinks fire the injection
+            #     question at JSON body fields a crawl never surfaces (crAPI's
+            #     `conversion_params`, `mechanic_api`, `coupon_code`) — challenges
+            #     #8/#9/#10/#11/#12. Each is a handful of requests and carries the highest
+            #     signal per request, so it runs BEFORE the expensive per-route/per-param
+            #     sweeps: under the scope rate limit those sweeps hit the wall first and
+            #     starved these to zero (2026-09-26 A/B). They depend only on the routes
+            #     already resolved before confirm_surface (confirmed_routes + mined
+            #     api_routes), not on the later passes, so the move is safe. Gated on
+            #     allow_intrusive (an operator/write body) exactly as before.
+            if self.allow_intrusive and self._confirm_budget > 0 and not self._rate_limited:
+                try:
+                    self._covered("Mass assignment",
+                                  note="internal property written to an existing object")
+                    confirmed += self.confirm_object_mass_assignment_sinks()
+                except Exception:
+                    pass
+                try:
+                    self._covered("Blind injection (out-of-band)",
+                                  note="OOB callback from a URL POSTed into each sink field")
+                    confirmed += self.confirm_ssrf_sinks()
+                except Exception:
+                    pass
+                try:
+                    self._covered("NoSQL injection",
+                                  note="benign vs always-true operator differential")
+                    self._covered("SQL injection",
+                                  note="boolean differential over a JSON body param")
+                    confirmed += self.confirm_nosqli_sinks()
+                except Exception:
+                    pass
+
             # 2) Hygiene: transport and browser-side controls, one request per host.
             #    Low severity by design so it can never crowd out a proven critical.
             if not self._headers_checked:
@@ -4248,39 +4281,14 @@ class _ConfirmMixin:
                             confirmed += 1
                     except Exception:
                         pass
-
-                # 7a2) OBJECT MASS ASSIGNMENT — write an internal property to an object we
-                #      can address and read it back (crAPI #8/#10: order status, video
-                #      conversion_params). The registration prover above only covers signup.
-                try:
-                    self._covered("Mass assignment",
-                                  note="internal property written to an existing object")
-                    confirmed += self.confirm_object_mass_assignment_sinks()
-                except Exception:
-                    pass
-
-                # 7b) SSRF SINKS — the harness fires the SSRF question at URL-shaped JSON
-                #     body fields the crawl never surfaced (crAPI's `mechanic_api`), which
-                #     the blind-SSRF prover could not reach without the field name. Runs
-                #     regardless of a mass-assignment target; a no-op without a listener.
-                try:
-                    self._covered("Blind injection (out-of-band)",
-                                  note="OOB callback from a URL POSTed into each sink field")
-                    confirmed += self.confirm_ssrf_sinks()
-                except Exception:
-                    pass
-
-                # 7c) NoSQL OPERATOR injection at lookup/validate endpoints — the harness
-                #     fires the `{"$ne": null}` question at JSON body fields the crawl never
-                #     surfaced (crAPI's `coupon_code`), which no SQLi differential reaches.
-                try:
-                    self._covered("NoSQL injection",
-                                  note="benign vs always-true operator differential")
-                    self._covered("SQL injection",
-                                  note="boolean differential over a JSON body param")
-                    confirmed += self.confirm_nosqli_sinks()
-                except Exception:
-                    pass
+                # NB: the field-injection sinks (object mass-assignment, SSRF, NoSQL) used
+                # to live here, LAST — and under the scope rate limit the earlier per-route
+                # sweeps hit the wall first, so those cheap high-value probes (crAPI
+                # #8/#9/#10/#11/#12) never ran (2026-09-26 A/B: 36 web-rate DENYs, 0 sink
+                # payloads sent). They are hoisted to run early instead (see below, right
+                # after the protected-routes pass), per the file's own law: a rate wall
+                # must cost the expensive sweeps, not the one-request checks that carry the
+                # most signal.
 
                 # 8) BFLA — the write-side of authorization. BOLA (pass 5) proves we can
                 #    READ another principal's object; this proves we can ACT on it. A
