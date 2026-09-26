@@ -85,6 +85,22 @@ def test_the_sweep_finds_the_coupon_field_the_crawl_never_surfaced():
                for f in s.findings.all())
 
 
+def test_the_sweep_reaches_a_POST_only_mined_route_never_GET_confirmed():
+    """The live crAPI gap (2026-09-26 A/B). validate-coupon is POST-only, so it answers
+    the crawl's GET with 405 and never lands in confirmed_routes — yet it is exactly the
+    NoSQL sink for challenge 12. The audit of both A/B arms showed ZERO operator payloads
+    were ever sent, because the sink sweep drew candidates only from confirmed_routes. It
+    must also draw from the mined api_routes: confirm_nosqli POSTs and runs its own
+    differential, so a GET-405 route is fine, and the hint filter + allow_intrusive gate
+    keep an operator body to lookup/validate routes only."""
+    s = _session(_CouponMongo(vulnerable=True))
+    s.surface.confirmed_routes = []                  # nothing GET-confirmed (405 on GET)
+    s.surface.api_routes = [COUPON]                  # mined only — the real live situation
+    assert s.confirm_nosqli_sinks() == 1
+    assert any(f.title == "NoSQL injection (operator)" and f.confirmed
+               for f in s.findings.all())
+
+
 def test_the_sweep_needs_allow_intrusive():
     s = _session(_CouponMongo(vulnerable=True))
     s.allow_intrusive = False

@@ -382,7 +382,19 @@ class _ConfirmMixin:
         if self.browser is None or not self.allow_intrusive or self.surface is None:
             return 0
         base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
+        # Draw from confirmed routes AND the mined api_routes. A NoSQL sink like crAPI's
+        # coupon `validate-coupon` is POST-only: it 405s on the crawl's GET, so it never
+        # lands in confirmed_routes — yet it is exactly the endpoint the operator
+        # differential must reach (the 2026-09-26 A/B missed challenge 12 for precisely
+        # this reason: both arms sent ZERO operator payloads because the mined route was
+        # never GET-confirmed). confirm_nosqli/confirm_sqli POST and run their own
+        # differential, so a route that only answers POST is fine; the hint filter below
+        # keeps an operator body to lookup/validate routes, and the sweep stays
+        # allow_intrusive-gated and budget-bounded.
         routes = list(getattr(self.surface, "confirmed_routes", []) or [])
+        for r in (getattr(self.surface, "api_routes", []) or []):
+            if r not in routes:
+                routes.append(r)
         hint = ("coupon", "validate", "redeem", "apply", "lookup", "search", "find",
                 "check", "verify", "login", "query", "filter")
         # FILTER, not rank: only lookup/validate endpoints are probed, so an operator body
