@@ -198,6 +198,14 @@ class _WebMixin:
                 self._observe_answer(_u, int(_m.group(1)) if _m else (200 if raw else 0))
             except Exception:
                 pass
+            # CORROBORATE WHAT THE MODEL REACHED (capability lever #1): turn a bug the model
+            # touched into a scored, proof-carrying CONFIRMED finding via the deterministic
+            # differential, instead of an uncredited curl. Opt-in + bounded; see
+            # _auto_confirm_reached / docs/AUTO_CONFIRM_REACHED.md.
+            try:
+                self._auto_confirm_reached(command)
+            except Exception:
+                pass
             new_hl = highlight_findings(raw)
             # Flag vulnerability signals in the output (sqlmap 'is vulnerable',
             # nuclei [critical], nikto findings, CVE ids) so a real bug surfaces as a

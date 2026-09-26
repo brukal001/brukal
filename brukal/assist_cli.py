@@ -1237,6 +1237,10 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     # same target and measure whether it moves recall — without it the planner context is
     # byte-identical to every prior run, so an existing baseline is untouched.
     session.context_working_set = os.environ.get("BRUKAL_WORKING_SET") == "1"
+    # Capability lever #1, opt-in for A/B measurement (docs/AUTO_CONFIRM_REACHED.md):
+    # corroborate what the model reaches into scored CONFIRMED findings. Off by default so
+    # the baseline is unchanged; enable with BRUKAL_AUTO_CONFIRM=1 and measure recall.
+    session.auto_confirm_reached = os.environ.get("BRUKAL_AUTO_CONFIRM") == "1"
     return session, audit, target, cage
 
 

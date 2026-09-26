@@ -18,9 +18,11 @@ from .assist_util import (
     _JSON_SIGNUP_PATHS,
     _SESSION_COOKIE_NAMES,
     _SIGNUP_MAX_ROUNDS,
+    _is_raw_fetch,
     _issued_session,
     _norm_body,
     _norm_ws,
+    _url_in,
 )
 
 
@@ -371,6 +373,72 @@ class _ConfirmMixin:
                     category="api")
                 return True
         return False
+
+    def _auto_confirm_reached(self, command: str) -> int:
+        """Capability lever #1 (docs/AUTO_CONFIRM_REACHED.md). A model command REACHED an
+        endpoint; run the matching deterministic differential on it so a bug the model
+        touched becomes a scored CONFIRMED finding, not an uncredited curl. The crAPI #12
+        leak: the model dumped the free coupon 150x and it scored 0 because only a
+        proof-carrying differential counts.
+
+        Opt-in (self.auto_confirm_reached). Every confirmation runs through the same
+        governed browser + gate + confirm_* provers as the surface sweep, records only what
+        a differential PROVES (never 'the model got a 200'), is deduped per (url, field,
+        method) and bounded, and honours allow_intrusive + the rate/budget wall. Pure
+        deterministic dispatch on the agent's own command text — no LLM in the decision."""
+        if not getattr(self, "auto_confirm_reached", False) or self.browser is None:
+            return 0
+        if not (_is_raw_fetch(command) or command.startswith("WEB ")):
+            return 0                          # only the model's own web requests
+        import json as _json
+        from urllib.parse import urlsplit, parse_qs
+        seen = self._auto_confirmed
+        if len(seen) >= 24:                   # bounded: a spammy model can't run us forever
+            return 0
+        # Reuse the curl->action parser for URL / method / body (agent text; never eval'd).
+        action = None
+        try:
+            action = self._curl_to_web_action(command)
+        except Exception:
+            action = None
+        url = (getattr(action, "url", "") if action else "") or _url_in(command)
+        if not url:
+            return 0
+        base = url.split("?", 1)[0]
+        conf = 0
+        # 1) query parameters the model addressed -> injection differentials
+        for p in list(parse_qs(urlsplit(url).query))[:4]:
+            key = (base, p, "GET")
+            if key in seen or len(seen) >= 24 or self._rate_limited:
+                continue
+            seen.add(key)
+            try:
+                if (self.confirm_sqli(base, p) or self.confirm_sqli_error(base, p)
+                        or self.confirm_xss(base, p)):
+                    conf += 1
+            except Exception:
+                pass
+        # 2) JSON / form body fields -> NoSQL operator + JSON-body boolean SQLi
+        body = getattr(action, "body", "") if action else ""
+        fields: list = []
+        if body:
+            try:
+                doc = _json.loads(body)
+                if isinstance(doc, dict):
+                    fields = [k for k in doc if isinstance(k, str)]
+            except Exception:
+                fields = [kv.split("=", 1)[0] for kv in body.split("&") if "=" in kv]
+        for f in fields[:6]:
+            key = (base, f, "JSON")
+            if key in seen or len(seen) >= 24 or self._rate_limited:
+                continue
+            seen.add(key)
+            try:
+                if self.confirm_nosqli(base, f) or self.confirm_sqli(base, f, method="JSON"):
+                    conf += 1
+            except Exception:
+                pass
+        return conf
 
     def confirm_nosqli_sinks(self) -> int:
         """Fire the INJECTION question at lookup/validate endpoints the harness itself, for

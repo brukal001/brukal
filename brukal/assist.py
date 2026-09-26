@@ -100,6 +100,13 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         # emit/veto is a no-op and behaviour is byte-identical. A pre_action hook may only
         # SKIP an action (never widen), and no hook is ever handed the cage — see hooks.py.
         self.hooks = None
+        # Capability lever #1 (docs/AUTO_CONFIRM_REACHED.md): when True, a model command
+        # that REACHED an endpoint triggers the matching deterministic differential on it,
+        # so a bug the model touched becomes a scored CONFIRMED finding instead of an
+        # uncredited curl (the crAPI #12 leak: exploited 150x, credited 0). Default OFF so
+        # the experiment baseline is unchanged until measured; enable per run and A/B it.
+        self.auto_confirm_reached = False
+        self._auto_confirmed: set = set()     # (url, field, method) already corroborated
         # The operator's login URL, captured SESSION-LEVEL. `_login_url` is per-principal
         # and reads empty during `_separate_identity` or when a fresh principal is active,
         # which is why second-principal establishment was INTERMITTENT — the signup
