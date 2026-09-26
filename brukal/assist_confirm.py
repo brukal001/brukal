@@ -438,6 +438,21 @@ class _ConfirmMixin:
                     conf += 1
             except Exception:
                 pass
+        # 3) an object-shaped WRITE the model performed -> mass assignment on that object
+        #    (crAPI #8/#9/#10: order status, balance, internal video property). Write-shaped
+        #    so allow_intrusive-gated, exactly like the sink sweep.
+        method = (getattr(action, "method", "") or "GET").upper()
+        object_shaped = method in ("PUT", "PATCH") or bool(self._NUMERIC_TAIL_RE.match(base))
+        if object_shaped and self.allow_intrusive and not self._rate_limited:
+            key = (base, "_objma", method)
+            if key not in seen and len(seen) < 24:
+                seen.add(key)
+                try:
+                    if self.confirm_object_mass_assignment(
+                            base, method=method if method in ("PUT", "PATCH", "POST") else "PUT"):
+                        conf += 1
+                except Exception:
+                    pass
         return conf
 
     def confirm_nosqli_sinks(self) -> int:

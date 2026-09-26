@@ -88,6 +88,40 @@ def test_the_same_command_is_confirmed_once():
     assert sum(1 for f in s.findings.all() if f.title == "NoSQL injection (operator)") == 1
 
 
+class _ObjCage:
+    """A stateful object that accepts (mass-assigns) any field written to it and reflects it
+    on GET — crAPI #8/#10 shape (internal video/order property the client must not control)."""
+    def __init__(self):
+        self.state: dict = {}
+
+    def run(self, action):
+        if (getattr(action, "method", "GET") or "GET").upper() == "GET":
+            return WebResult(status=200, url=action.url,
+                             body=json.dumps({"id": 1, **self.state}))
+        try:
+            self.state.update(json.loads(action.body or "{}"))
+        except Exception:
+            pass
+        return WebResult(status=200, url=action.url, body=json.dumps({"ok": True}))
+
+
+def test_an_object_write_the_model_made_is_auto_confirmed_as_mass_assignment():
+    # writing to an object is destructive -> needs a scope that authorised it (127.0.0.1 is in it)
+    scope = load_scope(Path(__file__).resolve().parent / "fixtures" / "scope_destructive.json")
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession(TARGET, Executor(Gate(scope), FakeKali(), audit, approver=lambda d: True),
+                      StrategistAgent(type("L", (), {"propose": lambda s, *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _ObjCage(), audit))
+    s.allow_intrusive = True
+    s.auto_confirm_reached = True
+    s.surface = AttackSurface(seed=f"{BASE}/")
+    cmd = (f"curl -s -X PUT {BASE}/workshop/api/shop/orders/1 "
+           f"-H 'Content-Type: application/json' --data '{{\"quantity\":1}}'")
+    s._auto_confirm_reached(cmd)
+    assert any(f.title.startswith("Mass assignment") and f.confirmed
+               for f in s.findings.all()), [f.title for f in s.findings.all()]
+
+
 def test_it_fires_through_the_absorb_shell_hook():
     """Guards a dead hook: the confirmation must fire from the real observation point, not
     only when called directly."""
