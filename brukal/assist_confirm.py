@@ -360,6 +360,51 @@ class _ConfirmMixin:
             comparator="sqli_error_differential")
         return True
 
+    def confirm_sqli_status(self, url: str, param: str, base: str = "1",
+                            method: str = "GET", extra=None) -> bool:
+        """SQL injection confirmed by a quote-balance HTTP-STATUS differential — a third
+        SQLi oracle beside the boolean (`confirm_sqli`) and the body-error one
+        (`confirm_sqli_error`). An unbalanced single quote must provoke a SERVER ERROR
+        (5xx) that the balanced form of the same payload does NOT.
+
+        This covers the case `confirm_sqli_error` cannot: a stack (Django/DRF) that returns
+        a bare `Server Error (500)` page carrying NO SQL keyword, so a body grep finds
+        nothing — crAPI's `/workshop/api/shop/apply_coupon` is exactly this (measured
+        2026-09-27: `1'` -> 500, `1''` -> 400, baseline 400).
+
+            baseline(base)        -> a NORMAL status (not 5xx); else there is no signal
+            broken(base + "'")    -> 5xx  (the unterminated literal breaks the query)
+            balanced(base + "''") -> NOT 5xx again (the matching quote repairs it)
+
+        Both controls are load-bearing against false positives, and mirror the vault's
+        positive-control law: an endpoint that 5xx's on CLEAN input has no readable signal,
+        and one that stays 5xx when the quote is BALANCED is doing input validation on any
+        quote — not leaking an unbalanced literal — so neither is recorded. No LLM in the
+        decision; the payload rides the governed HTTP client, never a shell."""
+        if self.browser is None:
+            return False
+
+        def status(val):
+            _b, s, _h = self._probe(url, param, val, method, extra)
+            return s
+
+        b = status(base)
+        if b is None or b >= 500:
+            return False                      # unreachable, or errors on clean input
+        broken = status(base + "'")
+        if broken is None or broken < 500:
+            return False                      # a broken quote MUST provoke a server error
+        balanced = status(base + "''")
+        if balanced is None or balanced >= 500:
+            return False                      # still 5xx when balanced -> not the quote
+        self._record_confirmed(
+            url, "SQL injection (error-based, status differential)", "critical", param,
+            f"an unbalanced quote ({base + chr(39)!r}) makes the endpoint return {broken} "
+            f"while the balanced {base + chr(39) * 2!r} returns {balanced} (baseline {b}) — "
+            f"the input is concatenated into a SQL statement",
+            category="api", comparator="sqli_error_status_differential")
+        return True
+
     def confirm_nosqli(self, url: str, param: str, extra=None) -> bool:
         """NoSQL (Mongo-style) OPERATOR injection through the governed browser. A benign
         value that should NOT match is compared with an always-true operator supplied as a
@@ -499,6 +544,11 @@ class _ConfirmMixin:
         WRITE-shaped request to a validate endpoint. Returns the number confirmed."""
         if self.browser is None or not self.allow_intrusive or self.surface is None:
             return 0
+        import os as _os
+        # The STATUS-oracle SQLi prover is ON by default (it is the capability we want on a
+        # normal run); the A/B control disables it with BRUKAL_SQLI_STATUS=0 so the recall
+        # delta can be attributed to it alone. Idiom-matched to BRUKAL_WORKING_SET.
+        _sqli_status_on = _os.environ.get("BRUKAL_SQLI_STATUS", "1") != "0"
         base = (getattr(self.surface, "seed", "") or f"http://{self.target}/").rstrip("/")
         # Draw from confirmed routes AND the mined api_routes. A NoSQL sink like crAPI's
         # coupon `validate-coupon` is POST-only: it 405s on the crawl's GET, so it never
@@ -538,14 +588,28 @@ class _ConfirmMixin:
                 continue                       # a templated route: skip it, keep probing
             url = route if route.startswith("http") else base + (
                 route if route.startswith("/") else "/" + route)
+            # A companion field the endpoint needs before it reaches the injectable query.
+            # crAPI's apply_coupon 400s on `{coupon_code: ...}` alone and only builds the
+            # SQL string once `amount` is present (measured 2026-09-27) — so a benign
+            # companion is supplied to apply/redeem/checkout/order sinks. Kept off pure
+            # lookup routes (validate-coupon) so the #12 NoSQL body is unchanged.
+            companion = ({"amount": 1} if any(h in url.lower() for h in
+                         ("apply", "redeem", "checkout", "order", "purchase")) else None)
             for field in self._NOSQL_FIELDS:
                 if (getattr(self, "_confirm_budget", 1) or 1) <= 0 or self._rate_limited:
                     break
                 if getattr(self, "_confirm_budget", None) is not None:
                     self._confirm_budget -= 1
                 try:
-                    if self.confirm_nosqli(url, field) or \
-                            self.confirm_sqli(url, field, method="JSON"):
+                    # NoSQL operator (#12) · boolean SQLi · then the STATUS-oracle SQLi
+                    # (#13): crAPI's apply_coupon returns a bare 500 with no SQL text, so
+                    # only the quote-balance status differential lands it.
+                    hit = (self.confirm_nosqli(url, field, extra=companion)
+                           or self.confirm_sqli(url, field, method="JSON", extra=companion))
+                    if not hit and _sqli_status_on:
+                        hit = self.confirm_sqli_status(url, field, method="JSON",
+                                                       extra=companion)
+                    if hit:
                         confirmed += 1
                         break                # one confirmed injection per endpoint
                 except Exception:
