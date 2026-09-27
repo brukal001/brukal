@@ -197,3 +197,81 @@ def test_registry_covers_every_confirm_method():
     assert methods == set(bc.PROVER_CLASSES), {
         "unregistered": sorted(methods - set(bc.PROVER_CLASSES)),
         "stale": sorted(set(bc.PROVER_CLASSES) - methods)}
+
+
+# --- Task 5: @gated_by_class decorator applied to every confirm_* prover ---
+
+def test_every_confirm_method_is_decorated():
+    """No-blind-spot guarantee: every confirm_* on _ConfirmMixin must be wrapped by
+    bugclass.gated_by_class (marked with __gated_by_class__), so a bug class a program
+    forbids can never be actively probed."""
+    from brukal.assist_confirm import _ConfirmMixin
+    methods = [n for n in dir(_ConfirmMixin)
+               if n.startswith("confirm_") and callable(getattr(_ConfirmMixin, n))]
+    undecorated = [m for m in methods
+                   if not getattr(getattr(_ConfirmMixin, m), "__gated_by_class__", False)]
+    assert not undecorated, f"confirm_* provers missing @gated_by_class: {undecorated}"
+
+
+def test_forbidden_class_prover_issues_zero_probes():
+    # A scope allowing only nosqli must NOT let the SQLi status prover send anything.
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.kali import FakeKali
+    from brukal.web import GovernedBrowser, WebResult
+    from brukal.assist import AssistSession
+    from brukal.webmap import AttackSurface
+
+    class _Spy:
+        def __init__(self): self.calls = 0
+        def run(self, action):
+            self.calls += 1
+            return WebResult(status=500, url=action.url, body="<h1>Server Error (500)</h1>")
+
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.10.10.5/32"],
+                             "allowlisted_tools": "all", "allowed_classes": ["NoSQLi"]}))
+    scope = load_scope(p)
+    root = Path(tempfile.mkdtemp()); audit = AuditLog(root / "a.jsonl")
+    spy = _Spy()
+    s = AssistSession("10.10.10.5", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda s,*a,**k: "[]"})()),
+                      browser=GovernedBrowser(scope, spy, audit))
+    s.allow_intrusive = True
+    s.surface = AttackSurface(seed="http://10.10.10.5/")
+    s._confirm_budget = 50
+    out = s.confirm_sqli_status("http://10.10.10.5/x", "q", method="JSON")
+    assert out is False
+    assert spy.calls == 0, "a forbidden-class prover sent a probe"
+
+
+def test_allowed_class_prover_still_runs():
+    # Same setup but allow sqli -> the prover runs (issues probes).
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.kali import FakeKali
+    from brukal.web import GovernedBrowser, WebResult
+    from brukal.assist import AssistSession
+    from brukal.webmap import AttackSurface
+
+    class _QB:
+        def __init__(self): self.calls = 0
+        def run(self, action):
+            self.calls += 1
+            code = str((json.loads(action.body or "{}")).get("q", ""))
+            st = 500 if code.count("'") % 2 == 1 else 400
+            return WebResult(status=st, url=action.url, body="x")
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.10.10.5/32"],
+                             "allowlisted_tools": "all", "allowed_classes": ["SQLi"]}))
+    scope = load_scope(p)
+    root = Path(tempfile.mkdtemp()); audit = AuditLog(root / "a.jsonl")
+    qb = _QB()
+    s = AssistSession("10.10.10.5", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda s,*a,**k: "[]"})()),
+                      browser=GovernedBrowser(scope, qb, audit))
+    s.allow_intrusive = True
+    s.surface = AttackSurface(seed="http://10.10.10.5/")
+    s._confirm_budget = 50
+    s.confirm_sqli_status("http://10.10.10.5/x", "q", method="JSON")
+    assert qb.calls > 0, "an allowed-class prover was blocked"

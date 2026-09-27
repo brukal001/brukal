@@ -4,6 +4,8 @@ confirm_* provers run. Deterministic; no LLM. The model's differential vocabular
 (_COMPARATORS in hypothesis.py) is a SEPARATE axis and is not touched here."""
 from __future__ import annotations
 
+import functools
+
 # Superset — includes non-qualifying/hygiene classes so a program can explicitly
 # FORBID them (e.g. "don't bother with rate-limit/user-enum noise on this program").
 CANONICAL = frozenset({
@@ -155,3 +157,19 @@ def prover_enabled(scope, method_name: str) -> bool:
     if not classes:
         return False
     return bool(classes & active)
+
+
+def gated_by_class(method):
+    """Decorator for a confirm_* prover: skip it (return False, send nothing) when the
+    scope's class policy does not allow the class it tests. Fail-closed: an unmapped
+    method under an active (restricted) policy is skipped. No-op (the prover runs
+    exactly as before) when the session has no scope or the scope is unrestricted —
+    this is what keeps the entire pre-existing test suite byte-identical."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        scope = getattr(self, "scope", None)
+        if scope is not None and not prover_enabled(scope, method.__name__):
+            return False
+        return method(self, *args, **kwargs)
+    wrapper.__gated_by_class__ = True
+    return wrapper

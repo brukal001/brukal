@@ -128,6 +128,22 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         if blackboard is not None:
             self._load_memory()
 
+    @property
+    def scope(self):
+        """The frozen engagement Scope, so @bugclass.gated_by_class can read the
+        program's allowed/forbidden bug classes without every prover threading it
+        through as an argument. Tries the executor's gate first (Executor stores it as
+        self._gate; Gate stores the scope as self.scope), then falls back to the
+        GovernedBrowser's self._scope. Returns None if neither is set (e.g. a bare
+        AssistSession built for a unit test) — gated_by_class treats that as
+        unrestricted, matching pre-existing behaviour."""
+        ex = getattr(self, "executor", None)
+        gate = getattr(ex, "_gate", None) or getattr(ex, "gate", None)
+        if gate is not None and getattr(gate, "scope", None) is not None:
+            return gate.scope
+        br = getattr(self, "browser", None)
+        return getattr(br, "_scope", None)
+
     _BUCKET_RE = re.compile(r"([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])\.s3[.\-]", re.I)
     _BUCKET_URI_RE = re.compile(r"s3://([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])", re.I)
 

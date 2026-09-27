@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from . import redact
 from . import signup
+from .bugclass import gated_by_class
 from urllib.parse import quote
 import json
 import random
@@ -28,6 +29,7 @@ from .assist_util import (
 
 class _ConfirmMixin:
 
+    @gated_by_class
     def confirm_authentication(self) -> str:
         """Prove which carriage this target honours — or prove that it honours none.
 
@@ -276,6 +278,7 @@ class _ConfirmMixin:
             "source": "confirm_prover", "target": tgt})
 
 
+    @gated_by_class
     def confirm_sqli(self, url: str, param: str, base: str = "1",
                      method: str = "GET", extra=None) -> bool:
         """Boolean-based SQL injection confirmation through the GOVERNED browser: fetch a
@@ -326,6 +329,7 @@ class _ConfirmMixin:
                 return True
         return False
 
+    @gated_by_class
     def confirm_sqli_error(self, url: str, param: str, base: str = "1",
                            method: str = "GET", extra=None) -> bool:
         """Error-based SQL injection confirmation by a QUOTE-BALANCE differential: an
@@ -360,6 +364,7 @@ class _ConfirmMixin:
             comparator="sqli_error_differential")
         return True
 
+    @gated_by_class
     def confirm_sqli_status(self, url: str, param: str, base: str = "1",
                             method: str = "GET", extra=None) -> bool:
         """SQL injection confirmed by a quote-balance HTTP-STATUS differential — a third
@@ -405,6 +410,7 @@ class _ConfirmMixin:
             category="api", comparator="sqli_error_status_differential")
         return True
 
+    @gated_by_class
     def confirm_nosqli(self, url: str, param: str, extra=None) -> bool:
         """NoSQL (Mongo-style) OPERATOR injection through the governed browser. A benign
         value that should NOT match is compared with an always-true operator supplied as a
@@ -535,6 +541,7 @@ class _ConfirmMixin:
                     pass
         return conf
 
+    @gated_by_class
     def confirm_nosqli_sinks(self) -> int:
         """Fire the INJECTION question at lookup/validate endpoints the harness itself, for
         the injectable JSON body fields a crawl never surfaces (crAPI's `coupon_code`). Each
@@ -616,6 +623,7 @@ class _ConfirmMixin:
                     continue
         return confirmed
 
+    @gated_by_class
     def confirm_unauth_access(self, url: str, spec_path: str = "") -> bool:
         """Broken authentication: an endpoint the API's OWN SPEC declares as requiring
         credentials answers a request that carries none (OWASP API2/API5).
@@ -717,6 +725,7 @@ class _ConfirmMixin:
                         pems.append(pem)
         return pems
 
+    @gated_by_class
     def confirm_jwt_forgery(self, url: str, token: str) -> bool:
         """Prove a JWT can be FORGED: build a token the server should reject, and see
         whether it is accepted where an unauthenticated request is refused.
@@ -815,6 +824,7 @@ class _ConfirmMixin:
                 self.browser._cookies = saved_cookies
         return False
 
+    @gated_by_class
     def confirm_bola(self, url_template: str, param: str, id_a: str, id_b: str,
                      token_a: str, token_b: str = "") -> bool:
         """Broken object-level authorization (OWASP API1) — proved with TWO identities.
@@ -883,6 +893,7 @@ class _ConfirmMixin:
             category="api", comparator="bola_cross_account")
         return True
 
+    @gated_by_class
     def confirm_bola_from_collection(self, collection_url: str, item_template: str,
                                      param: str, token: str, identity: str = "") -> bool:
         """Autonomous BOLA: read the collection, find an object the API itself says
@@ -923,6 +934,7 @@ class _ConfirmMixin:
             return False
         return self.confirm_bola(item_template, param, mine, theirs, token)
 
+    @gated_by_class
     def confirm_mass_assignment(self, register_url: str, login_url: str,
                                 verify_url: str, user_field: str = "username",
                                 pass_field: str = "password",
@@ -995,6 +1007,7 @@ class _ConfirmMixin:
             stamp += 1
         return False
 
+    @gated_by_class
     def confirm_object_mass_assignment(self, url: str, method: str = "PUT",
                                        extra=None) -> bool:
         """Mass assignment on an EXISTING object (crAPI #8/#10): write an INTERNAL field to
@@ -1044,6 +1057,7 @@ class _ConfirmMixin:
                 return True
         return False
 
+    @gated_by_class
     def confirm_object_mass_assignment_sinks(self) -> int:
         """Fire the object-mass-assignment question at the objects we can address — those the
         ownership ledger recorded as ours (real ids from captured traffic), and confirmed
@@ -1092,6 +1106,7 @@ class _ConfirmMixin:
                     continue
         return confirmed
 
+    @gated_by_class
     def confirm_data_exposure(self, url: str) -> bool:
         """Sensitive data served to an UNAUTHENTICATED caller (OWASP API3 / A01).
 
@@ -1140,6 +1155,7 @@ class _ConfirmMixin:
             category="api", comparator="unauthenticated_exposure")
         return True
 
+    @gated_by_class
     def confirm_cors(self, url: str) -> bool:
         """Cross-origin resource sharing that lets any site read authenticated responses.
 
@@ -1184,6 +1200,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_graphql_introspection(self, url: str) -> bool:
         """A GraphQL endpoint that hands its entire schema to an anonymous caller.
 
@@ -1216,6 +1233,7 @@ class _ConfirmMixin:
             category="api")
         return True
 
+    @gated_by_class
     def confirm_graphql_suggestions(self, url: str,
                                     introspection_open: bool = False) -> bool:
         """Field suggestions rebuild the schema even when introspection is disabled.
@@ -1257,6 +1275,7 @@ class _ConfirmMixin:
             category="api")
         return True
 
+    @gated_by_class
     def confirm_graphql_batching(self, url: str) -> bool:
         """Query batching: many operations carried by ONE HTTP request.
 
@@ -1307,6 +1326,7 @@ class _ConfirmMixin:
                 found.append(u)
         return found[:8]
 
+    @gated_by_class
     def confirm_default_credentials(self, login_url: str, login_type: str = "form",
                                     user_field: str = "username",
                                     pass_field: str = "password") -> bool:
@@ -1359,6 +1379,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_security_headers(self, url: str) -> int:
         """Transport and browser-side controls that are absent from a real response.
 
@@ -1418,6 +1439,7 @@ class _ConfirmMixin:
                 n += 1
         return n
 
+    @gated_by_class
     def confirm_xss(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Reflected-XSS confirmation: inject a unique marker tag and confirm it comes
         back UNENCODED (a live `<tag>`, not `&lt;tag&gt;`). Deterministic; records a
@@ -1515,6 +1537,7 @@ class _ConfirmMixin:
             return None, None, {}
         return (r.body or ""), r.status, (r.headers or {})
 
+    @gated_by_class
     def confirm_cmdi(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm OS command injection: append an `id` command via the common shell
         separators; a hit is real `uid=…(…) gid=…(…)` output in the response. The
@@ -1531,6 +1554,7 @@ class _ConfirmMixin:
                 return True
         return False
 
+    @gated_by_class
     def confirm_lfi(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm local file inclusion / path traversal: read /etc/passwd via several
         traversal/wrapper encodings; a hit is a real passwd line (root:...:0:0:)."""
@@ -1547,6 +1571,7 @@ class _ConfirmMixin:
                 return True
         return False
 
+    @gated_by_class
     def confirm_ssti(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm server-side template injection: send a distinctive arithmetic
         expression across engine syntaxes; a hit is the EVALUATED product in the
@@ -1563,6 +1588,7 @@ class _ConfirmMixin:
                 return True
         return False
 
+    @gated_by_class
     def confirm_open_redirect(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm an open redirect: point the parameter at an external host; a hit is a
         3xx Location (or a meta/JS redirect) that sends the browser to that host."""
@@ -1598,6 +1624,7 @@ class _ConfirmMixin:
                 return verdict
         return bool(self._AUTHZ_DENY_RE.search(body or ""))
 
+    @gated_by_class
     def confirm_ssrf(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm server-side request forgery IN-BAND: make the server fetch a URL whose
         response carries a definitive marker. Cloud metadata (IMDS) and file:// reads are
@@ -1642,6 +1669,7 @@ class _ConfirmMixin:
                 out = out.replace(piece, "")
         return out
 
+    @gated_by_class
     def confirm_idor(self, url: str, param: str, method: str = "GET", extra=None,
                      observed: int | None = None) -> bool:
         """Heuristic IDOR check: a numeric object id, when changed, returns a DIFFERENT
@@ -1731,6 +1759,7 @@ class _ConfirmMixin:
                 worst = sev
         return worst
 
+    @gated_by_class
     def confirm_prompt_injection(self, url: str, param: str = "message",
                                  method: str = "JSON", extra=None) -> bool:
         """Confirm prompt injection (OWASP LLM01) on an LLM-backed endpoint: send a
@@ -1797,6 +1826,7 @@ class _ConfirmMixin:
                 self._oob_listener = lis
         return self._oob_listener
 
+    @gated_by_class
     def confirm_deserialization_rce(self, url: str, param: str, method: str = "GET",
                                     extra=None) -> bool:
         """Insecure deserialization proved by an out-of-band callback (OWASP A08).
@@ -1854,6 +1884,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_blind_rce(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm BLIND OS command injection out-of-band: inject a command that calls
         Brukal's in-cage listener across the common separators; if the listener receives
@@ -1886,6 +1917,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_blind_ssrf(self, url: str, param: str, method: str = "GET", extra=None) -> bool:
         """Confirm BLIND SSRF out-of-band: point the parameter at Brukal's in-cage
         listener; a callback proves the server made the request."""
@@ -1903,6 +1935,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_ssrf_sinks(self) -> int:
         """Deterministic SSRF sweep of URL-shaped JSON body fields on write endpoints — the
         sink an HTML-form / query-param crawl never surfaces, so the (already wired) blind-
@@ -1962,6 +1995,7 @@ class _ConfirmMixin:
                     break
         return confirmed
 
+    @gated_by_class
     def confirm_bfla_password_takeover(self, change_url_template: str, login_url: str,
                                        victim: str, token: str,
                                        user_field: str = "username",
@@ -2045,6 +2079,7 @@ class _ConfirmMixin:
                     f"{{\"{pass_field}\": \"...\"}}, then POST {login_url} as {victim}")))
         return True
 
+    @gated_by_class
     def confirm_destructive_endpoint_exposed(self, url: str,
                                              protected_url: str) -> bool:
         """A STATE-DESTROYING endpoint answers strangers — proved without invoking it.
@@ -2133,6 +2168,7 @@ class _ConfirmMixin:
                     f"Deliberately never requested with a method that would execute it")))
         return True
 
+    @gated_by_class
     def confirm_no_session_revocation(self, change_url_template: str, login_url: str,
                                       verify_url: str, user: str, password: str,
                                       user_field: str = "username",
@@ -2215,6 +2251,7 @@ class _ConfirmMixin:
                     f"GET {verify_url} with the ORIGINAL token still OK")))
         return True
 
+    @gated_by_class
     def confirm_plaintext_password_storage(self, register_url: str, probe_urls,
                                            user_field: str = "username",
                                            pass_field: str = "password",
@@ -2266,6 +2303,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_unthrottled_registration(self, register_url: str, attempts: int = 5,
                                          user_field: str = "username",
                                          pass_field: str = "password",
@@ -2345,6 +2383,7 @@ class _ConfirmMixin:
                 f"{len(protected)} other operation(s) — the application states that this "
                 f"state-destroying endpoint needs no authentication")
 
+    @gated_by_class
     def confirm_debug_console(self, base_url: str) -> bool:
         """An INTERACTIVE debugger exposed to the network (Werkzeug/Flask debug mode).
 
@@ -3200,6 +3239,7 @@ class _ConfirmMixin:
             self.note("[experiment] second principal NOT established — " + self.signup_refusal)
         return None
 
+    @gated_by_class
     def confirm_predictable_reset_token(self, reset_url: str, id_param: str,
                                         token_param: str, known_user: str) -> bool:
         """A password-reset token DERIVED from the username (OWASP API2 / A07).
@@ -3264,6 +3304,7 @@ class _ConfirmMixin:
             return True
         return False
 
+    @gated_by_class
     def confirm_session_fixation(self, login_url: str, username: str,
                                  password: str) -> bool:
         """The session identifier is not rotated when privilege changes (CWE-384).
@@ -3311,6 +3352,7 @@ class _ConfirmMixin:
         self.note(f"[confirm] session identifier '{name}' survives login on {login_url}")
         return True
 
+    @gated_by_class
     def confirm_recovery_enumeration(self, recovery_url: str, known_user: str,
                                      field: str = "login") -> bool:
         """The password-recovery form tells a stranger which accounts exist.
@@ -3367,6 +3409,7 @@ class _ConfirmMixin:
         self.note(f"[confirm] recovery endpoint enumerates accounts: {recovery_url}")
         return True
 
+    @gated_by_class
     def confirm_weak_password_policy(self) -> bool:
         """The server accepts a password no policy would allow (CWE-521).
 
@@ -3461,6 +3504,7 @@ class _ConfirmMixin:
                 out.append((base, ident, token))
         return out
 
+    @gated_by_class
     def confirm_privileged_route_via_signup(self, url: str) -> bool:
         """An administrative endpoint reachable by an account anyone can create
         (OWASP API5, broken function-level authorization).
@@ -3563,6 +3607,7 @@ class _ConfirmMixin:
                     break
         return out
 
+    @gated_by_class
     def confirm_horizontal_takeover_via_form(self, edit_url, fields, id_field,
                                              pass_field, confirm_field="") -> bool:
         """Horizontal account takeover through a form that names its victim in the BODY.
@@ -3694,6 +3739,7 @@ class _ConfirmMixin:
                 break
         return out
 
+    @gated_by_class
     def confirm_user_enumeration(self, login_url: str, known_user: str,
                                  user_field: str = "username",
                                  pass_field: str = "password") -> bool:
@@ -3743,6 +3789,7 @@ class _ConfirmMixin:
                     f"{user_field}={absent}, identical wrong password")))
         return True
 
+    @gated_by_class
     def confirm_missing_rate_limit(self, login_url: str, known_user: str,
                                    attempts: int = 8,
                                    user_field: str = "username",
@@ -3943,6 +3990,7 @@ class _ConfirmMixin:
             return None
         return register, login, verify
 
+    @gated_by_class
     def confirm_surface(self, max_params: int = 12) -> int:
         """Autonomously confirm the web vuln classes (SQLi · cmdi · LFI · SSTI · XSS ·
         SSRF · open-redirect · IDOR) on BOTH the GET query parameters AND the POST/GET
