@@ -144,6 +144,14 @@ class AssistSession(_PlanningMixin, _WebMixin, _ConfirmMixin, _AuthMixin, _Hypot
         br = getattr(self, "browser", None)
         return getattr(br, "_scope", None)
 
+    def apply_envelope(self):
+        """Apply the scope's testing-policy envelope to this session's behavior.
+        Safe when scope is None (no-op) — e.g. a bare AssistSession built for a
+        unit test with no gate/browser scope attached."""
+        env = getattr(getattr(self, "scope", None), "envelope", frozenset()) or frozenset()
+        if "read_only" in env:
+            self.allow_intrusive = False
+
     _BUCKET_RE = re.compile(r"([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])\.s3[.\-]", re.I)
     _BUCKET_URI_RE = re.compile(r"s3://([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])", re.I)
 

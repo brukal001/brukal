@@ -3999,6 +3999,11 @@ class _ConfirmMixin:
         Returns how many were confirmed."""
         if self.browser is None or self.surface is None:
             return 0
+        _scope = getattr(self, "scope", None)
+        if _scope is not None and "no_automated_scanners" in getattr(_scope, "envelope", frozenset()):
+            # Program forbids automated scanners: the breadth sweep is narrowed OFF; the
+            # model's targeted, proof-carrying provers still run via their own dispatch.
+            return 0
         # Breadth before depth. Nine classes on ONE endpoint costs about twenty-five
         # requests, so a flat budget bought four endpoints out of fifteen and the other
         # eleven were never touched by ANY class — which is not "probed and clean", the

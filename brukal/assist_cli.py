@@ -1191,6 +1191,7 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     session = AssistSession(target, executor, strategist, skills=SkillLibrary(),
                             blackboard=blackboard, lessons=lessons, browser=browser,
                             research=research if research.enabled else None)
+    session.apply_envelope()   # scope's testing-policy envelope (no_automated_scanners, read_only)
     session.cage_container = None if fake else container   # for mid-session vhost mapping
     if not fake:
         # Ground the planner in the cage's real toolset (one read-only `which`), so it

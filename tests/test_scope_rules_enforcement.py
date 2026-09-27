@@ -275,3 +275,52 @@ def test_allowed_class_prover_still_runs():
     s._confirm_budget = 50
     s.confirm_sqli_status("http://10.10.10.5/x", "q", method="JSON")
     assert qb.calls > 0, "an allowed-class prover was blocked"
+
+
+# --- Task 6: behavioral envelope wiring (no_automated_scanners, read_only) ---
+
+def test_no_automated_scanners_narrows_the_sweep_to_zero_probes():
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.kali import FakeKali
+    from brukal.web import GovernedBrowser, WebResult
+    from brukal.assist import AssistSession
+    from brukal.webmap import AttackSurface
+
+    class _Spy:
+        def __init__(self): self.calls = 0
+        def run(self, action):
+            self.calls += 1
+            return WebResult(status=200, url=action.url, body="ok")
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.10.10.5/32"],
+                             "allowlisted_tools": "all",
+                             "envelope": {"no_automated_scanners": True}}))
+    scope = load_scope(p)
+    root = Path(tempfile.mkdtemp()); audit = AuditLog(root / "a.jsonl")
+    spy = _Spy()
+    s = AssistSession("10.10.10.5", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda s,*a,**k: "[]"})()),
+                      browser=GovernedBrowser(scope, spy, audit))
+    s.surface = AttackSurface(seed="http://10.10.10.5/")
+    s.surface.confirmed_routes = ["/x"]
+    n = s.confirm_surface()
+    assert n == 0 and spy.calls == 0, "no_automated_scanners did not narrow the sweep"
+
+
+def test_read_only_forces_non_intrusive():
+    from brukal import AuditLog, Executor, Gate, load_scope
+    from brukal.agents import StrategistAgent
+    from brukal.kali import FakeKali
+    from brukal.web import GovernedBrowser
+    from brukal.assist import AssistSession
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.10.10.5/32"],
+                             "allowlisted_tools": "all", "envelope": {"read_only": True}}))
+    scope = load_scope(p)
+    root = Path(tempfile.mkdtemp()); audit = AuditLog(root / "a.jsonl")
+    s = AssistSession("10.10.10.5", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda s,*a,**k: "[]"})()),
+                      browser=GovernedBrowser(scope, FakeKali(), audit))
+    s.apply_envelope()             # explicit application hook (Step 3)
+    assert s.allow_intrusive is False
