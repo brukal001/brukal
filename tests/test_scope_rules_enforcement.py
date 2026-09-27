@@ -53,3 +53,28 @@ def test_with_host_preserves_new_fields():
     assert "sqli" in s.allowed_classes
     assert "dos" in s.forbidden_classes
     assert "read_only" in s.envelope
+
+def test_string_valued_list_field_is_coerced_not_char_iterated():
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all",
+                             "forbidden_classes": "dos", "exclusions": "info.coindcx.com"}))
+    s = load_scope(p)
+    assert s.forbidden_classes == frozenset({"dos"})          # not {'d','o','s'}
+    assert s.exclusions == frozenset({"info.coindcx.com"})     # not single chars
+
+def test_wrongly_typed_field_is_rejected_not_silently_dropped():
+    import json, tempfile, pytest
+    from pathlib import Path
+    from brukal.scope import load_scope
+    for bad in ({"forbidden_classes": {"dos": True}},      # dict where str/list expected
+                {"exclusions": 5},
+                {"envelope": ["read_only"]}):              # list where dict expected
+        p = Path(tempfile.mkdtemp()) / "s.json"
+        p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                                 "allowlisted_tools": "all", **bad}))
+        with pytest.raises((ValueError, TypeError)):
+            load_scope(p)

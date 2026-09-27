@@ -233,17 +233,47 @@ def load_scope(path: str | Path) -> Scope:
     else:
         tools = frozenset(raw_tools)
 
+    def _as_list(name, v):
+        """Normalize a list-shaped scope field. A bare string is a single item (a
+        plausible scope.json typo like "forbidden_classes": "dos" must NOT be
+        char-iterated into {'d','o','s'} — a silent denylist no-op). Absent/None
+        is empty. Anything else (dict, int, ...) is a malformed policy and we
+        raise rather than silently drop it (fail-closed, per this function's
+        documented contract: refuse to start rather than run on a scope we
+        cannot trust)."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return v
+        raise ValueError(f"scope field '{name}' must be a string or list")
+
+    def _as_dict(name, v):
+        """Normalize the envelope field. Absent/None is empty; anything that
+        isn't an object (a list, a string, ...) is malformed and rejected
+        rather than silently dropped."""
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        raise ValueError(f"scope field '{name}' must be an object")
+
     excl = set()
-    for e in data.get("exclusions", []) or []:
+    for e in _as_list("exclusions", data.get("exclusions")):
         if isinstance(e, str) and e.strip():
             excl.add(e.strip().lower())
         elif isinstance(e, dict) and str(e.get("host", "")).strip():
             excl.add((str(e["host"]).strip().lower(),
                       str(e.get("path_prefix", "/")).strip() or "/"))
     # class names are lowercased here; Task 4 rewires this to bugclass.normalize_class.
-    allowed = frozenset(str(c).strip().lower() for c in data.get("allowed_classes", []) if str(c).strip())
-    forbidden = frozenset(str(c).strip().lower() for c in data.get("forbidden_classes", []) if str(c).strip())
-    env = frozenset(k for k, v in (data.get("envelope", {}) or {}).items() if v is True)
+    allowed = frozenset(str(c).strip().lower()
+                         for c in _as_list("allowed_classes", data.get("allowed_classes"))
+                         if str(c).strip())
+    forbidden = frozenset(str(c).strip().lower()
+                           for c in _as_list("forbidden_classes", data.get("forbidden_classes"))
+                           if str(c).strip())
+    env = frozenset(k for k, v in _as_dict("envelope", data.get("envelope")).items() if v is True)
 
     return Scope(
         engagement=str(data["engagement"]),
