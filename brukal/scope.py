@@ -74,6 +74,18 @@ class Scope:
     # a program's rules — enable the aggressive checks a program invites, drop the ones it
     # excludes — WITHOUT widening beyond the trusted set or touching any severity bound.
     comparators: frozenset = frozenset()
+    # Out-of-scope patterns that OVERRIDE an in-scope wildcard. Each entry is either a
+    # host pattern (exact or "*.domain") or a (host, path_prefix) tuple for a path-level
+    # exclusion (e.g. coindcx.com/blog). Deterministic membership; an exclusion always
+    # wins over an in-scope match (fail-closed).
+    exclusions: frozenset = frozenset()
+    # Allowed / forbidden BUG CLASSES (canonical names, normalized at load). allowed is an
+    # allowlist over provers (empty => all); forbidden is a hard-off denylist that wins.
+    allowed_classes: frozenset = frozenset()
+    forbidden_classes: frozenset = frozenset()
+    # Testing-policy behavior flags that are TRUE for this program (e.g. read_only,
+    # no_automated_scanners, no_high_traffic, pii_redaction).
+    envelope: frozenset = frozenset()
 
     def is_authorized(self) -> bool:
         """True if the scope file itself asserts authorization (a non-empty statement)."""
@@ -114,6 +126,10 @@ class Scope:
             "destructive_allowed": self.destructive_allowed,
             "authorization": self.authorization,
             "expires": self.expires,
+            "exclusions": sorted(str(x) for x in self.exclusions),
+            "allowed_classes": sorted(self.allowed_classes),
+            "forbidden_classes": sorted(self.forbidden_classes),
+            "envelope": sorted(self.envelope),
         }, sort_keys=True)
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
@@ -213,6 +229,18 @@ def load_scope(path: str | Path) -> Scope:
     else:
         tools = frozenset(raw_tools)
 
+    excl = set()
+    for e in data.get("exclusions", []) or []:
+        if isinstance(e, str) and e.strip():
+            excl.add(e.strip().lower())
+        elif isinstance(e, dict) and str(e.get("host", "")).strip():
+            excl.add((str(e["host"]).strip().lower(),
+                      str(e.get("path_prefix", "/")).strip() or "/"))
+    # class names are lowercased here; Task 4 rewires this to bugclass.normalize_class.
+    allowed = frozenset(str(c).strip().lower() for c in data.get("allowed_classes", []) if str(c).strip())
+    forbidden = frozenset(str(c).strip().lower() for c in data.get("forbidden_classes", []) if str(c).strip())
+    env = frozenset(k for k, v in (data.get("envelope", {}) or {}).items() if v is True)
+
     return Scope(
         engagement=str(data["engagement"]),
         authorized_networks=tuple(nets),
@@ -236,6 +264,10 @@ def load_scope(path: str | Path) -> Scope:
         comparators=frozenset(
             c.strip() for c in data.get("comparators", []) or []
             if isinstance(c, str) and c.strip()),
+        exclusions=frozenset(excl),
+        allowed_classes=allowed,
+        forbidden_classes=forbidden,
+        envelope=env,
     )
 
 
