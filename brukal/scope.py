@@ -313,13 +313,22 @@ def load_scope(path: str | Path) -> Scope:
         elif isinstance(e, dict) and str(e.get("host", "")).strip():
             excl.add((str(e["host"]).strip().lower(),
                       str(e.get("path_prefix", "/")).strip() or "/"))
-    # class names are lowercased here; Task 4 rewires this to bugclass.normalize_class.
-    allowed = frozenset(str(c).strip().lower()
-                         for c in _as_list("allowed_classes", data.get("allowed_classes"))
-                         if str(c).strip())
-    forbidden = frozenset(str(c).strip().lower()
-                           for c in _as_list("forbidden_classes", data.get("forbidden_classes"))
-                           if str(c).strip())
+    # Class names are normalized through the canonical bug-class taxonomy: a human
+    # vocabulary (e.g. "SQL Injection", "open-redirect") maps to a canonical class
+    # (e.g. "sqli", "open_redirect"); an unrecognized name is DROPPED, never invented
+    # (fail-closed — see brukal.bugclass.normalize_class).
+    from . import bugclass as _bc
+
+    def _norm_classes(key):
+        out = set()
+        for c in _as_list(key, data.get(key)):
+            n = _bc.normalize_class(str(c))
+            if n:  # unknown names drop (fail-closed)
+                out.add(n)
+        return frozenset(out)
+
+    allowed = _norm_classes("allowed_classes")
+    forbidden = _norm_classes("forbidden_classes")
     env = frozenset(k for k, v in _as_dict("envelope", data.get("envelope")).items() if v is True)
 
     return Scope(

@@ -137,3 +137,63 @@ def test_check_web_denies_excluded_path_and_subdomain():
     assert ok.verdict == "ALLOW"
     assert blog.verdict == "DENY" and "scope" in blog.layer
     assert sub.verdict == "DENY" and "scope" in sub.layer
+
+
+# --- Task 4: bug-class taxonomy, prover->class registry, active_classes ---
+
+def test_normalize_human_class_names():
+    from brukal import bugclass as bc
+    assert bc.normalize_class("SQL Injection") == "sqli"
+    assert bc.normalize_class("open-redirect") == "open_redirect"
+    assert bc.normalize_class("IDOR") == "idor"
+    assert bc.normalize_class("telepathy") is None          # unknown -> None (fail-closed)
+
+
+def test_active_classes_allowed_minus_forbidden():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all",
+                             "allowed_classes": ["SQLi", "XSS", "DoS"],
+                             "forbidden_classes": ["DoS"]}))
+    from brukal import bugclass as bc
+    s = load_scope(p)
+    act = bc.active_classes(s)
+    assert "sqli" in act and "xss" in act and "dos" not in act   # forbidden wins
+
+
+def test_active_classes_none_when_unrestricted():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all"}))
+    from brukal import bugclass as bc
+    assert bc.active_classes(load_scope(p)) is None            # empty allowlist -> all active
+
+
+def test_prover_enabled_respects_allowlist():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all", "allowed_classes": ["NoSQLi"]}))
+    from brukal import bugclass as bc
+    s = load_scope(p)
+    assert bc.prover_enabled(s, "confirm_nosqli") is True
+    assert bc.prover_enabled(s, "confirm_sqli") is False       # sqli not allowed
+
+
+def test_prover_enabled_always_sentinel_bypasses_allowlist():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all", "allowed_classes": ["NoSQLi"]}))
+    from brukal import bugclass as bc
+    s = load_scope(p)
+    assert bc.prover_enabled(s, "confirm_surface") is True
+    assert bc.prover_enabled(s, "confirm_authentication") is True
+
+
+def test_registry_covers_every_confirm_method():
+    from brukal.assist_confirm import _ConfirmMixin
+    from brukal import bugclass as bc
+    methods = {n for n in dir(_ConfirmMixin)
+               if n.startswith("confirm_") and callable(getattr(_ConfirmMixin, n))}
+    assert methods == set(bc.PROVER_CLASSES), {
+        "unregistered": sorted(methods - set(bc.PROVER_CLASSES)),
+        "stale": sorted(set(bc.PROVER_CLASSES) - methods)}
