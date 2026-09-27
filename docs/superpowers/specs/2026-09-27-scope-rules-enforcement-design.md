@@ -156,13 +156,13 @@ run and a later scope swap is visible.
 - CVSS/reward mapping from `assets[].value` (the separate, paused evidence-based CVSS work).
 - The recall scorer (untouched; realness stays with the differential).
 
-## 9. Open questions for review
-1. `allowed_classes` vocabulary: use the human vuln names (sqli, xss, idor, …) normalized to
-   comparator names at load, or require raw comparator names in the scope? (Proposed: accept
-   human names, normalize deterministically, fail-closed on unknowns.)
-2. Path model: exclusions only (deny paths), or also positive `allowed_paths` (scope to
-   specific endpoints)? (Proposed: exclusions for SP-A; `allowed_paths` deferred unless a
-   program needs it.)
-3. Envelope `no_automated_scanners`: narrow the sweep vs disable it entirely? (Proposed:
-   narrow to targeted checks; a program that forbids scanners still permits manual-grade
-   proofs.)
+## 9. Decisions (resolved 2026-09-27, maintainer accepted the defaults)
+1. **Allowed-class vocabulary — accept human vuln names**, normalized deterministically to
+   comparator names at load time, **fail-closed on unknowns** (an unrecognized name authorizes
+   nothing; it never invents a comparator). A canonical `HUMAN_CLASS_TO_COMPARATORS` map lives
+   in `scope.py` (or a small shared module) and is the single normalization source.
+2. **Path model — exclusions only for SP-A** (deny paths that override an in-scope wildcard).
+   Positive `allowed_paths` (scope-to-specific-endpoints) is **deferred**; not built now.
+3. **Envelope `no_automated_scanners` — narrow, not disable.** The aggressive `confirm_surface`
+   breadth sweep is reduced to targeted, evidence-driven checks and scanner-class tools drop
+   from the effective allowlist; manual-grade proof-carrying provers still run.
