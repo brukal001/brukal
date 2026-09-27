@@ -61,11 +61,34 @@ def _gate_password_reset(e) -> bool:
     return any(k in s for k in ("check-otp", "login-with-token", "reset", "state_changed"))
 
 
+def _gate_mechanic_reports(e) -> bool:
+    """ch2 is READING ANOTHER USER'S MECHANIC REPORT — a BOLA. Its signature includes
+    `/merchant/contact_mechanic`, which is ALSO crAPI's SSRF surface (ch11) and DoS surface
+    (ch6); once confirmed SSRF experiments are recorded on that endpoint (they were not,
+    before confirm_* provers emitted experiments), a blind-SSRF confirmation there would be
+    miscredited as report access — GAP #23 in a new place. An SSRF/DoS confirmation is
+    excluded; a credit needs evidence of reading a report / a cross-account authz break."""
+    s = _text(e)
+    if any(k in s for k in ("ssrf", "out-of-band", "out of band", "server-side request",
+                            "dos", "rate limit", "rate-limit")):
+        return False
+    return any(k in s for k in ("report", "mechanic_report", "bola", "idor",
+                                "cross_account", "cross-account", "another user"))
+
+
 def _gate_coupon_sqli(e) -> bool:
     """ch13 is a SQL INJECTION that modifies the database. Reusing a coupon issued to
     someone else is crAPI's per-user coupon design, and is already recorded as almost
-    certainly intended."""
-    return any(k in _text(e) for k in ("sql", "injection", "union", "1=1", "--", "sleep("))
+    certainly intended.
+
+    NoSQL injection is ch12 (free coupon via a client operator), a DIFFERENT bug on the
+    SAME endpoint — and "noSQL" CONTAINS "sql", so a confirmed NoSQL experiment would slip
+    through the substring check below and credit ch13 as well, the exact double-count GAP
+    #23 exists to stop. Excluded explicitly before the SQL test."""
+    s = _text(e)
+    if "nosql" in s or "no-sql" in s or "no sql" in s:
+        return False
+    return any(k in s for k in ("sql", "injection", "union", "1=1", "--", "sleep("))
 
 
 def _gate_unauthenticated(e) -> bool:
@@ -91,7 +114,8 @@ CHALLENGES = [
     (1,  "Access details of another user's vehicle", "BOLA",
      ("/identity/api/v2/vehicle/", "/vehicle/location", "/vehicle/resend_email"), None),
     (2,  "Access mechanic reports of other users", "BOLA",
-     ("/workshop/api/mechanic/mechanic_report", "/merchant/contact_mechanic"), None),
+     ("/workshop/api/mechanic/mechanic_report", "/merchant/contact_mechanic"), None,
+     _gate_mechanic_reports),
     (3,  "Reset the password of a different user", "Broken user auth",
      ("/identity/api/auth/forget-password", "/identity/api/auth/v3/check-otp",
       "/identity/api/auth/v2/check-otp", "/identity/api/auth/v4.0/user/login-with-token"),

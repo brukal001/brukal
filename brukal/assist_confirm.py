@@ -234,13 +234,46 @@ class _ConfirmMixin:
                     ("coverage", "active confirmation cut short by the scope rate limit"))
             self._rate_limited = True
 
-    def _record_confirmed(self, target, title, sev, param, evidence, category="web") -> None:
+    def _record_confirmed(self, target, title, sev, param, evidence, category="web",
+                          comparator: str = "") -> None:
         from .findings import Finding
         self.findings.add(Finding(title=title, severity=sev, target=target,
                                   evidence=evidence, source=f"active confirmation · param={param}",
                                   param=param, category=category, confirmed=True))
         self.highlights.append(("confirmed", f"{title}: {target} ({param})"))
         self.notes.append(f"[confirm] {title} CONFIRMED on {target} param '{param}' — {evidence}")
+        # A confirm_* prover IS a differential experiment: a control side and a variant side
+        # judged by deterministic code. It just filed its proof as a FINDING, and the recall
+        # ledger only reads confirmed EXPERIMENTS (`experiment_outcome`) — so a genuinely
+        # proven challenge (crAPI #11 SSRF, #12 NoSQL) scored MEASURED-NOT-CONFIRMED because
+        # its proof was written in the wrong channel. When the caller names the `comparator`
+        # (opt-in, so config-shaped confirmations like a missing header emit nothing and
+        # cannot forge a credit) record the same `experiment_result` + `experiment_outcome`
+        # pair the model's own experiments leave, so the differential is counted as what it
+        # already is. Recording the evidence, not inventing it — the finding above carries it.
+        if comparator:
+            self._record_confirmed_experiment(target, title, comparator, evidence)
+
+    def _record_confirmed_experiment(self, target, title, comparator, evidence) -> None:
+        """Emit the ledger pair a confirmed differential deserves: one `experiment_result`
+        carrying the endpoint (buffered by the recall scorer's `group_experiments`) and the
+        closing `experiment_outcome{outcome:"confirmed"}` it attaches to. Faithful to the
+        model-experiment path in assist_hypothesis (`_record_experiment_result` /
+        `_record_experiment_outcome`); no LLM, no proposal — a deterministic prover held."""
+        audit = getattr(getattr(self, "executor", None), "_audit", None)
+        if audit is None:
+            return
+        from . import hypothesis as _hyp
+        tgt = getattr(self, "target", "") or ""
+        audit.append("experiment_result", {
+            "role": "differential", "url": target, "status": None,
+            "bytes": 0, "body": "", "truncated": False,
+            "source": "confirm_prover", "target": tgt})
+        audit.append("experiment_outcome", {
+            "title": title, "comparator": comparator, "outcome": "confirmed",
+            "stage": _hyp.outcome_stage("confirmed"),
+            "attribution": _hyp.attribution("confirmed"),
+            "source": "confirm_prover", "target": tgt})
 
 
     def confirm_sqli(self, url: str, param: str, base: str = "1",
@@ -289,7 +322,7 @@ class _ConfirmMixin:
                 self._record_confirmed(
                     url, "SQL injection (boolean-based)", "critical", param,
                     f"TRUE tracks baseline ({st:.3f}) while FALSE diverges ({sf:.3f}); "
-                    f"payload {tp!r}")
+                    f"payload {tp!r}", comparator="sqli_boolean_differential")
                 return True
         return False
 
@@ -323,7 +356,8 @@ class _ConfirmMixin:
         self._record_confirmed(
             url, "SQL injection (error-based)", "critical", param,
             f"{base + chr(39)!r} provokes a database error while {base + chr(39) * 2!r} "
-            f"does not — the input is concatenated into the query")
+            f"does not — the input is concatenated into the query",
+            comparator="sqli_error_differential")
         return True
 
     def confirm_nosqli(self, url: str, param: str, extra=None) -> bool:
@@ -363,14 +397,15 @@ class _ConfirmMixin:
                     url, "NoSQL injection (operator)", "critical", param,
                     f"a benign {param}={benign!r} is refused ({bs}), but the always-true "
                     f"operator {op!r} is ACCEPTED ({os_}) — the query trusts a "
-                    f"client-supplied operator", category="api")
+                    f"client-supplied operator", category="api",
+                    comparator="nosql_operator_differential")
                 return True
             if op_ok and benign_ok and len(ob) > max(len(bb) * 2, 200):
                 self._record_confirmed(
                     url, "NoSQL injection (operator)", "critical", param,
                     f"the always-true operator {op!r} returns {len(ob)}B where a benign "
                     f"{param} returns {len(bb)}B — the filter matches on a client operator",
-                    category="api")
+                    category="api", comparator="nosql_operator_differential")
                 return True
         return False
 
@@ -543,7 +578,7 @@ class _ConfirmMixin:
             url, "Unauthenticated access to a protected endpoint", "high", "",
             f"the API's own specification declares {spec_path or url} as requiring "
             f"authentication, yet an unauthenticated GET returned 200 with "
-            f"{len(body)} bytes of content")
+            f"{len(body)} bytes of content", comparator="unauthenticated_access")
         return True
 
     def scan_jwt(self, token: str, source: str = "") -> int:
@@ -707,7 +742,8 @@ class _ConfirmMixin:
                         url, "Authentication bypass via forged JWT", "critical", "",
                         f"{detail}; the resulting token ({label}) is ACCEPTED (200) where "
                         f"an unauthenticated request is refused ({anon_status}) — any user "
-                        f"or role can be impersonated", category="api")
+                        f"or role can be impersonated", category="api",
+                        comparator="forged_token_accepted")
                     return True
         finally:
             self.browser.auth_header = saved_header
@@ -780,7 +816,7 @@ class _ConfirmMixin:
             f"anonymous is refused ({anon_status}) so the endpoint is access-controlled, "
             f"yet A's token returns 200 with content that differs from A's own object"
             f"{victim_match}",
-            category="api")
+            category="api", comparator="bola_cross_account")
         return True
 
     def confirm_bola_from_collection(self, collection_url: str, item_template: str,
@@ -890,7 +926,7 @@ class _ConfirmMixin:
                     f"reports as {field}={value!r}, while a control account created the "
                     f"same way WITHOUT that field does not — the client controls a "
                     f"property it must not",
-                    category="api")
+                    category="api", comparator="mass_assignment_differential")
                 return True
             stamp += 1
         return False
@@ -939,7 +975,8 @@ class _ConfirmMixin:
                     url, "Mass assignment of an internal object property", "high", field,
                     f"writing {field}={marker!r} to the object made the server report "
                     f"{field}={marker!r} where it did not before — the client controls a "
-                    f"server-internal property", category="api")
+                    f"server-internal property", category="api",
+                    comparator="object_mass_assignment_differential")
                 return True
         return False
 
@@ -1036,7 +1073,7 @@ class _ConfirmMixin:
             url, f"Unauthenticated exposure of {kind}", severity, "",
             f"an anonymous GET returned {count} record(s) carrying "
             f"{', '.join(fields)} — no credential of any kind was presented",
-            category="api")
+            category="api", comparator="unauthenticated_exposure")
         return True
 
     def confirm_cors(self, url: str) -> bool:
@@ -1328,7 +1365,8 @@ class _ConfirmMixin:
         body = self._probe(url, param, payload, method, extra)[0] or ""
         if payload in body:                         # reflected unencoded => executable
             self._record_confirmed(url, "Reflected XSS", "high", param,
-                                   f"injected {payload} reflected UNENCODED in the response")
+                                   f"injected {payload} reflected UNENCODED in the response",
+                                   comparator="reflected_xss_differential")
             return True
         return False
 
@@ -1424,7 +1462,8 @@ class _ConfirmMixin:
             if body and self._CMDI_RE.search(body):
                 m = self._CMDI_RE.search(body)
                 self._record_confirmed(url, "OS command injection", "critical", param,
-                                       f"payload {payload!r} → {m.group(0)}")
+                                       f"payload {payload!r} → {m.group(0)}",
+                                       comparator="os_command_injection_differential")
                 return True
         return False
 
@@ -1439,7 +1478,8 @@ class _ConfirmMixin:
             if body and self._PASSWD_RE.search(body):
                 self._record_confirmed(url, "Local file inclusion / path traversal",
                                        "critical", param,
-                                       f"payload {payload!r} → /etc/passwd contents leaked")
+                                       f"payload {payload!r} → /etc/passwd contents leaked",
+                                       comparator="lfi_path_traversal_differential")
                 return True
         return False
 
@@ -1454,7 +1494,8 @@ class _ConfirmMixin:
             body, _s, _h = self._probe(url, param, tmpl, method, extra)
             if body and product in body and tmpl not in body:
                 self._record_confirmed(url, "Server-side template injection", "critical",
-                                       param, f"payload {tmpl!r} evaluated to {product}")
+                                       param, f"payload {tmpl!r} evaluated to {product}",
+                                       comparator="ssti_differential")
                 return True
         return False
 
@@ -1470,7 +1511,8 @@ class _ConfirmMixin:
                                       or f'location="{payload}"' in (body or "").lower())
             if redirect_hdr or meta_js:
                 self._record_confirmed(url, "Open redirect", "medium", param,
-                                       f"payload {payload!r} → redirects to {mark}")
+                                       f"payload {payload!r} → redirects to {mark}",
+                                       comparator="open_redirect_differential")
                 return True
         return False
     def _refused(self, result, body: str = "") -> bool:
@@ -1516,7 +1558,8 @@ class _ConfirmMixin:
             # left is what the SERVER chose to say.
             if body and rx.search(self._without_payload(body, payload)):
                 self._record_confirmed(url, label, sev, param,
-                                       f"payload {payload!r} fetched by the server")
+                                       f"payload {payload!r} fetched by the server",
+                                       comparator="ssrf_differential")
                 return True
         return False
 
@@ -1774,7 +1817,8 @@ class _ConfirmMixin:
         if lis.hit(token):
             self._record_confirmed(url, "Blind OS command injection (out-of-band)",
                                    "critical", param,
-                                   f"target called our OOB listener with token {token}")
+                                   f"target called our OOB listener with token {token}",
+                                   comparator="blind_cmdi_out_of_band")
             return True
         return False
 
@@ -1790,7 +1834,8 @@ class _ConfirmMixin:
         time.sleep(2)
         if lis.hit(token):
             self._record_confirmed(url, "Blind SSRF (out-of-band)", "high", param,
-                                   f"server fetched our OOB listener with token {token}")
+                                   f"server fetched our OOB listener with token {token}",
+                                   comparator="ssrf_out_of_band")
             return True
         return False
 
@@ -1847,7 +1892,8 @@ class _ConfirmMixin:
                         url, "Blind SSRF (out-of-band)", "high", field,
                         f"the endpoint fetched our in-cage OOB listener from the "
                         f"{field!r} body field (token {tok}) — a caller-controlled URL "
-                        f"in that field reaches server-side requests", category="api")
+                        f"in that field reaches server-side requests", category="api",
+                        comparator="ssrf_out_of_band")
                     confirmed += 1
                     break
         return confirmed
