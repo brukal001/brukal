@@ -209,6 +209,53 @@ class Scope:
     def broad_tools(self) -> bool:
         return "*" in self.allowlisted_tools
 
+    @staticmethod
+    def _norm_host(host: str) -> str:
+        h = (host or "").strip().lower().rstrip(".")
+        if h.count(":") == 1 and not h.replace(":", "").isalpha():
+            h = h.split(":", 1)[0]
+        return h
+
+    @staticmethod
+    def _norm_path(path: str) -> str:
+        p = (path or "/").split("?", 1)[0].split("#", 1)[0]
+        if not p.startswith("/"):
+            p = "/" + p
+        return p
+
+    def _host_matches(self, pattern: str, host: str) -> bool:
+        if pattern == host:
+            return True
+        if pattern.startswith("*.") and host.endswith("." + pattern[2:]):
+            return True
+        return False
+
+    def _excluded(self, host: str, path: str) -> bool:
+        """True if (host, path) matches any exclusion. An exclusion always wins over an
+        in-scope match (fail-closed). Path exclusions match on a /-boundary prefix."""
+        h, p = self._norm_host(host), self._norm_path(path)
+        for e in self.exclusions:
+            if isinstance(e, tuple):
+                eh, ep = e
+                ep = self._norm_path(ep)
+                if self._host_matches(eh, h) and (p == ep or p.startswith(ep.rstrip("/") + "/")):
+                    return True
+            else:
+                if self._host_matches(e, h):
+                    return True
+        return False
+
+    def in_scope(self, host: str, path: str = "") -> bool:
+        """Deterministic default-DENY host+path scope: authorized asset AND not excluded.
+        No DNS. Fail-closed on empty/unparseable."""
+        h = self._norm_host(host)
+        if not h:
+            return False
+        authorized = self.contains_host(h) or self.contains_ip(h)
+        if not authorized:
+            return False
+        return not self._excluded(h, path)
+
 
 def load_scope(path: str | Path) -> Scope:
     """Read scope.json from disk and build an immutable Scope.

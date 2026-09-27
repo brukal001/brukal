@@ -78,3 +78,41 @@ def test_wrongly_typed_field_is_rejected_not_silently_dropped():
                                  "allowlisted_tools": "all", **bad}))
         with pytest.raises((ValueError, TypeError)):
             load_scope(p)
+
+def _scope_hosts(hosts, exclusions):
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all", "authorized_hosts": hosts,
+                             "exclusions": exclusions}))
+    return load_scope(p)
+
+def test_wildcard_in_scope_but_exclusion_wins():
+    s = _scope_hosts(["*.coindcx.com"], ["info.coindcx.com"])
+    assert s.in_scope("api.coindcx.com") is True
+    assert s.in_scope("info.coindcx.com") is False          # exclusion beats wildcard
+
+def test_host_normalization_matches_exclusion():
+    s = _scope_hosts(["*.coindcx.com"], ["info.coindcx.com"])
+    assert s.in_scope("Info.CoinDCX.com.") is False         # case + trailing dot
+    assert s.in_scope("info.coindcx.com:443") is False      # host:port
+
+def test_path_exclusion_prefix_boundary():
+    s = _scope_hosts(["coindcx.com"], [{"host": "coindcx.com", "path_prefix": "/blog"}])
+    assert s.in_scope("coindcx.com", "/api") is True
+    assert s.in_scope("coindcx.com", "/blog") is False
+    assert s.in_scope("coindcx.com", "/blog/post") is False
+    assert s.in_scope("coindcx.com", "/blogger") is True    # boundary, not prefix substring
+    assert s.in_scope("coindcx.com", "/blog?x=1") is False  # query stripped before match
+
+def test_wildcard_exclusion_pattern():
+    s = _scope_hosts(["*.coindcx.com"], ["*.wordpress.coindcx.com"])
+    assert s.in_scope("cms.wordpress.coindcx.com") is False
+    assert s.in_scope("api.coindcx.com") is True
+
+def test_default_deny_unknown_host():
+    s = _scope_hosts(["*.coindcx.com"], [])
+    assert s.in_scope("evil.com") is False
+    assert s.in_scope("") is False
