@@ -324,3 +324,21 @@ def test_read_only_forces_non_intrusive():
                       browser=GovernedBrowser(scope, FakeKali(), audit))
     s.apply_envelope()             # explicit application hook (Step 3)
     assert s.allow_intrusive is False
+
+
+def test_read_only_scope_overrides_full_send_flag():
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    from brukal.assist_cli import _effective_full_send
+    def scp(env):
+        p = Path(tempfile.mkdtemp()) / "s.json"
+        p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                                 "allowlisted_tools": "all", "envelope": env}))
+        return load_scope(p)
+    ro = scp({"read_only": True})
+    open_ = scp({})
+    assert _effective_full_send(True, ro) is False    # flag cannot unleash a read_only scope
+    assert _effective_full_send(True, open_) is True   # normal scope honours the flag
+    assert _effective_full_send(False, open_) is False
+    assert _effective_full_send(True, None) is True    # None scope: no policy, honour flag

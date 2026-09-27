@@ -149,6 +149,16 @@ def _auto_approver(decision) -> bool:
     return getattr(decision, "reversibility", None) == "reversible"
 
 
+def _effective_full_send(full_send_flag: bool, scope) -> bool:
+    """--full-send is honoured only if the scope's envelope does NOT forbid it. A
+    read_only engagement can never be unleashed by a CLI flag: program policy beats
+    the flag (fail-closed on scope)."""
+    env = getattr(scope, "envelope", None) or frozenset()
+    if "read_only" in env:
+        return False
+    return bool(full_send_flag)
+
+
 def _full_send_approver(decision) -> bool:
     """'Full send' auto-mode approver: approve EVERY escalation the gate routed here —
     including irreversible, attack-grade actions (credential attacks, sqlmap --dump,
@@ -1542,7 +1552,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     #   full-send  : auto-approve EVERY in-scope action; only DENY (out of scope /
     #                hard-check failure) still stops it. Maximum autonomy inside the
     #                authorised scope; it cannot widen scope.
-    full = bool(full_send or os.environ.get("BRUKAL_FULL_SEND"))
+    full = _effective_full_send(bool(full_send or os.environ.get("BRUKAL_FULL_SEND")), session.scope)
     session.executor._approver = _full_send_approver if full else _auto_approver
     # Some proofs can only be made by CREATING state on the target (a mass-assignment
     # test needs an account carrying the injected field, plus a control account without
