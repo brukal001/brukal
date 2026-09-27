@@ -116,3 +116,24 @@ def test_default_deny_unknown_host():
     s = _scope_hosts(["*.coindcx.com"], [])
     assert s.in_scope("evil.com") is False
     assert s.in_scope("") is False
+
+
+def test_check_web_denies_excluded_path_and_subdomain():
+    import json, tempfile
+    from pathlib import Path
+    from urllib.parse import urlsplit
+    from brukal.scope import load_scope
+    from brukal.web import check_web, WebAction
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all",
+                             "authorized_hosts": ["*.coindcx.com", "coindcx.com"],
+                             "exclusions": ["info.coindcx.com",
+                                            {"host": "coindcx.com", "path_prefix": "/blog"}]}))
+    scope = load_scope(p)
+    ok = check_web(WebAction("get", url="https://api.coindcx.com/orders"), scope)
+    blog = check_web(WebAction("get", url="https://coindcx.com/blog/post"), scope)
+    sub = check_web(WebAction("get", url="https://info.coindcx.com/x"), scope)
+    assert ok.verdict == "ALLOW"
+    assert blog.verdict == "DENY" and "scope" in blog.layer
+    assert sub.verdict == "DENY" and "scope" in sub.layer

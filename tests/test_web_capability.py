@@ -110,7 +110,7 @@ def test_scope_precedes_capability_on_the_web_path():
     d = check_web(WebAction("get", url="http://evil.com/"), _scope(),
                   agent=operator_identity())
     assert d.verdict == "DENY"
-    assert d.layer == "hard:web-scope"
+    assert d.layer == "hard:scope"
 
 
 def test_the_operator_is_unconstrained_on_the_web_path_too():

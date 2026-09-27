@@ -138,8 +138,16 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
     host = _host_of(url)
     if not host:
         return deny("could not parse a host from the url")
-    if not scope.contains_host(host):
-        return deny(f"host '{host}' is out of scope", "hard:web-scope")
+    # PATH + EXCLUSION GATE. `in_scope` re-parses host/path from the URL itself (never
+    # trusted from a declared field) and internally calls `contains_host`/`contains_ip`,
+    # so this still enforces the host exactly as the old bare `contains_host` check did
+    # — and additionally denies a host that IS authorized but whose path (or a more
+    # specific excluded subdomain) is carved out by `scope.exclusions`. Default-DENY,
+    # fail-closed: an unparseable host already returned above.
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    if not scope.in_scope(host, path):
+        return deny(f"target out of scope: {host}{path}", layer="hard:scope")
 
     # CAPABILITY — last, so every earlier denial keeps its own reason and layer and
     # this can only ever ADD denials. Same decision procedure as the shell path

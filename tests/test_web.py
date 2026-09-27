@@ -61,7 +61,7 @@ def test_in_scope_navigate_and_request_allowed():
 def test_out_of_scope_host_denied():
     s = _scope_with_host()
     d = check_web(WebAction("get", url="http://evil.com/"), s)
-    assert d.verdict == "DENY" and d.layer == "hard:web-scope"
+    assert d.verdict == "DENY" and d.layer == "hard:scope"
 
 
 def test_bad_scheme_denied():
