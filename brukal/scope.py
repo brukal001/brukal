@@ -190,7 +190,11 @@ class Scope:
                      expires=self.expires,
                      tls_verify=self.tls_verify,
                      destructive_allowed=self.destructive_allowed,
-                     comparators=self.comparators)
+                     comparators=self.comparators,
+                     exclusions=self.exclusions,
+                     allowed_classes=self.allowed_classes,
+                     forbidden_classes=self.forbidden_classes,
+                     envelope=self.envelope)
 
     def tool_allowed(self, tool: str) -> bool:
         """True if the tool passes the ALLOWLIST layer. `"*"` in the allowlist means

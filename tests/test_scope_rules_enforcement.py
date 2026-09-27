@@ -36,3 +36,20 @@ def test_fingerprint_includes_new_fields():
     a = _scope({})
     b = _scope({"exclusions": ["info.coindcx.com"]})
     assert a.fingerprint() != b.fingerprint()
+
+def test_with_host_preserves_new_fields():
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all", "authorized_hosts": ["*.coindcx.com"],
+                             "exclusions": ["info.coindcx.com"],
+                             "allowed_classes": ["SQLi"], "forbidden_classes": ["DoS"],
+                             "envelope": {"read_only": True}}))
+    s = load_scope(p).with_host("extra.coindcx.com")
+    assert "extra.coindcx.com" in s.authorized_hosts
+    assert "info.coindcx.com" in s.exclusions          # not dropped
+    assert "sqli" in s.allowed_classes
+    assert "dos" in s.forbidden_classes
+    assert "read_only" in s.envelope
