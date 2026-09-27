@@ -1,0 +1,317 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Brukal — Trust-Governed Multi-Agent Pentest",
+    "subtitle": "The model proposes; the deterministic gate disposes. No LLM inside the gate.",
+    "output": "brukal-architecture.html",
+    "quality_profile": "showcase",
+    "visual_preset": "blueprint",
+    "views": [
+      {
+        "id": "one-door",
+        "label": "The one execution path",
+        "focus": [
+          "agents",
+          "gate",
+          "executor",
+          "kali",
+          "target"
+        ],
+        "note": "Every action a model proposes reaches the cage through exactly one door: Executor.run, which gates first and logs always."
+      },
+      {
+        "id": "trust-boundary",
+        "label": "Where trust changes hands",
+        "focus": [
+          "model",
+          "agents",
+          "scope",
+          "gate"
+        ],
+        "note": "Agents emit only text. The frozen scope and the deterministic gate — not the model — decide what runs."
+      },
+      {
+        "id": "escalation",
+        "label": "Risk escalation",
+        "focus": [
+          "gate",
+          "approver",
+          "audit"
+        ],
+        "note": "Hard checks can only DENY; a soft risk score can ESCALATE to a human. Every decision is appended to the hash-chained ledger."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "model",
+      "type": "external",
+      "label": "LLM Agents (model)",
+      "sublabel": "propose TEXT only",
+      "pos": [
+        60,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "untrusted"
+    },
+    {
+      "id": "agents",
+      "type": "backend",
+      "label": "Agent layer",
+      "sublabel": "recon · exploit · verify",
+      "pos": [
+        300,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "schema-validated"
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "Gate",
+      "sublabel": "ALLOW / DENY / ESCALATE",
+      "pos": [
+        540,
+        205
+      ],
+      "size": [
+        160,
+        76
+      ],
+      "tag": "no LLM"
+    },
+    {
+      "id": "approver",
+      "type": "security",
+      "label": "Human approver",
+      "sublabel": "human-in-the-loop",
+      "pos": [
+        790,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "scope",
+      "type": "security",
+      "label": "Scope",
+      "sublabel": "frozen · immutable",
+      "pos": [
+        540,
+        55
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "tag": "scope.json"
+    },
+    {
+      "id": "executor",
+      "type": "backend",
+      "label": "Executor.run",
+      "sublabel": "gate then log then run",
+      "pos": [
+        545,
+        470
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "single path"
+    },
+    {
+      "id": "kali",
+      "type": "cloud",
+      "label": "Kali cage",
+      "sublabel": "Fake / Docker",
+      "pos": [
+        300,
+        470
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "no agent handle"
+    },
+    {
+      "id": "target",
+      "type": "external",
+      "label": "Target",
+      "sublabel": "in-scope only",
+      "pos": [
+        60,
+        470
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "audit",
+      "type": "database",
+      "label": "Audit log",
+      "sublabel": "hash-chained",
+      "pos": [
+        790,
+        470
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "append-only"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Untrusted — model proposes text",
+      "wraps": [
+        "model",
+        "agents"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "Deterministic control plane (no LLM)",
+      "wraps": [
+        "scope",
+        "gate",
+        "executor",
+        "audit",
+        "approver"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Sandboxed cage",
+      "wraps": [
+        "kali"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "model-proposes",
+      "from": "model",
+      "to": "agents",
+      "label": "proposes text",
+      "variant": "dashed"
+    },
+    {
+      "id": "agents-request",
+      "from": "agents",
+      "to": "gate",
+      "label": "Action Request",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scope-feeds-gate",
+      "from": "scope",
+      "to": "gate",
+      "label": "frozen policy",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 40
+    },
+    {
+      "id": "gate-allow",
+      "from": "gate",
+      "to": "executor",
+      "label": "ALLOW",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 50
+    },
+    {
+      "id": "gate-escalate",
+      "from": "gate",
+      "to": "approver",
+      "label": "ESCALATE",
+      "variant": "security"
+    },
+    {
+      "id": "approver-approves",
+      "from": "approver",
+      "to": "executor",
+      "label": "approve",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "right"
+    },
+    {
+      "id": "executor-runs",
+      "from": "executor",
+      "to": "kali",
+      "label": "run (gated)",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "kali-target",
+      "from": "kali",
+      "to": "target",
+      "label": "tool traffic",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "executor-logs",
+      "from": "executor",
+      "to": "audit",
+      "label": "append",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Five safety invariants",
+      "items": [
+        "No LLM inside the gate — a regex cannot be prompt-injected",
+        "Fail-closed: anything ambiguous is DENIED",
+        "Never trust an agent's self-report — the gate re-reads the command",
+        "One execution path: Executor.run gates then logs",
+        "Immutable scope, append-only hash-chained audit"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "The gate",
+      "items": [
+        "Hard checks (AND): injection then parse then allowlist then target-in-scope then no smuggled host then rate-limit",
+        "Hard checks can only DENY, never widen",
+        "A soft risk score can ESCALATE to a human"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "The one rule that protects all five",
+      "items": [
+        "Never give an agent the kali object — only ever a way to call executor.run"
+      ]
+    }
+  ]
+}
