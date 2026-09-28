@@ -1542,6 +1542,19 @@ def coverage_proposals(confirmed_routes, existing, base: str = "",
     return out
 
 
+# Class-named mapping for the model's comparators, kept for the SP-A `forbidden_classes`
+# hook below. The 12 generic differential shapes in `_COMPARATORS` (status_differs,
+# a_denied_b_allowed, b_reveals_more, ...) are SHAPES of a comparison, not vulnerability
+# classes — none of them says "this is a SQLi" or "this is a DoS" the way a
+# `confirm_sqli`-style prover method name does, so this map is empty today. The real,
+# load-bearing enforcement of `forbidden_classes` is prover-side (`brukal.bugclass`'s
+# `@gated_by_class` decorator, Task 5), which is unconditional and already covers every
+# `confirm_*` method. This map exists purely so a FUTURE class-named comparator is
+# automatically dropped by `active_comparators` for a program that forbids that class,
+# without requiring anyone to remember to come back and edit this function.
+_COMPARATOR_CLASS: dict = {}
+
+
 def active_comparators(scope=None) -> tuple:
     """The comparators ENABLED for this program — a subset of the closed set.
 
@@ -1553,11 +1566,20 @@ def active_comparators(scope=None) -> tuple:
     checks where IDOR is in scope and high-value, drop the ones the rules exclude — while
     the closed set and every severity bound stay exactly as they are. This is the SAFE form
     of 'per-program comparators': selection within a fail-closed set, never a denylist that
-    forbids less."""
+    forbids less.
+
+    Defense in depth: also drops any comparator whose class (per `_COMPARATOR_CLASS`) is in
+    the scope's `forbidden_classes` — see the module note above `_COMPARATOR_CLASS` for why
+    this is a no-op today and where the primary enforcement actually lives."""
     requested = frozenset(getattr(scope, "comparators", None) or ())
     if not requested:
-        return tuple(sorted(_COMPARATORS))
-    return tuple(name for name in sorted(_COMPARATORS) if name in requested)
+        candidates = tuple(sorted(_COMPARATORS))
+    else:
+        candidates = tuple(name for name in sorted(_COMPARATORS) if name in requested)
+    forbidden = frozenset(getattr(scope, "forbidden_classes", None) or ())
+    if not forbidden or not _COMPARATOR_CLASS:
+        return candidates
+    return tuple(name for name in candidates if _COMPARATOR_CLASS.get(name) not in forbidden)
 
 
 def comparator_names(scope=None) -> tuple:

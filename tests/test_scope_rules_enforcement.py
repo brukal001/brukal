@@ -342,3 +342,33 @@ def test_read_only_scope_overrides_full_send_flag():
     assert _effective_full_send(True, open_) is True   # normal scope honours the flag
     assert _effective_full_send(False, open_) is False
     assert _effective_full_send(True, None) is True    # None scope: no policy, honour flag
+
+
+# --- Task 7: end-to-end integration guard, realistic (CoinDCX-like) scope ---
+
+def test_end_to_end_coindcx_like_scope():
+    # A realistic scope: wildcard + exclusions + allowed + forbidden classes + envelope.
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    from brukal.web import check_web, WebAction
+    from brukal import bugclass as bc
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    p.write_text(json.dumps({
+        "engagement": "coindcx-like", "authorized_cidrs": ["10.0.0.1/32"],
+        "allowlisted_tools": "all",
+        "authorized_hosts": ["*.coindcx.com", "coindcx.com", "api.coindcx.com"],
+        "exclusions": ["info.coindcx.com", "otcdesk.coindcx.com", "careers.coindcx.com",
+                       {"host": "coindcx.com", "path_prefix": "/blog"}],
+        "allowed_classes": ["SQLi", "XSS", "RCE", "IDOR", "SSRF", "CSRF",
+                            "Open Redirect", "Business Logic"],
+        "forbidden_classes": ["DoS"],
+        "envelope": {"no_automated_scanners": True, "read_only": True}}))
+    s = load_scope(p)
+    assert check_web(WebAction("get", url="https://api.coindcx.com/v1"), s).verdict == "ALLOW"
+    assert check_web(WebAction("get", url="https://coindcx.com/blog"), s).verdict == "DENY"
+    assert check_web(WebAction("get", url="https://info.coindcx.com/"), s).verdict == "DENY"
+    act = bc.active_classes(s)
+    assert "sqli" in act and "dos" not in act
+    assert bc.prover_enabled(s, "confirm_sqli") is True
+    assert "no_automated_scanners" in s.envelope
