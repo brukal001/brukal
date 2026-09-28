@@ -6,14 +6,16 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **_Queue drained 2026-09-28 (all `/code-review high` findings addressed)._** No autonomous item is
-  queued. **Refill before the loop can run again**: take the top of a fresh `/code-review` pass or a
-  coverage sweep, confirm it is build+self-test only (nothing under HUMAN-GATED), and write it here
-  as the new TOP. The loop MUST NOT invent scope-relevant work on its own — a human or a review
-  supplies the next item.
+- **`_norm_host` strict ASCII port predicate** — in `brukal/scope.py`, the bracket branch accepts a
+  `:port` via `rest[1:].isdigit()`, and Python's `str.isdigit()` accepts non-ASCII digits, so
+  `[::1]:80²` still normalizes to `::1`. **No security consequence** (the port is discarded and the
+  inner IP must still be an authorized-network member, so the gate decision is identical), so this is
+  a robustness nicety, NOT a bug or invariant fix. Tighten to `rest[1:].isascii() and
+  rest[1:].isdigit()` (or `.isdecimal()`), and add a test for a non-ASCII-digit port. _(informational
+  non-finding from the 2nd `/code-review high`, 2026-09-28)_
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-_(empty — refill from a review or a fresh coverage pass)_
+_(empty — the 2nd review was otherwise a clean pass; refill from a further review or coverage sweep)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
 - **2026-09-28** `cvss.grade()` no-raise contract made real: it now catches the `ValueError`

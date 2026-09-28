@@ -1053,6 +1053,17 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — 2nd `/code-review high` on `main...auto-improve`: CLEAN PASS (`[]`).** Reviewed
+  the full current diff (HEAD `484b4a5`) and verified all four review-driven fixes by running
+  the normalization logic and confirming the fallback path is total: `_absorb` strongest-wins
+  cannot lower/clear a score and ties keep first; `_norm_host` junk-rejection has no bypass
+  (20-case battery; inner IP still gated by `contains_ip`/`contains_host`); `contains_host`
+  routing is idempotent with no wildcard/subdomain/IP regression; `grade()` fallback is
+  structurally total (`score_from_vector` raises only `ValueError`, `knowledge.enrich` always
+  returns a dict). No new bugs, no invariant weakening. One informational NON-finding: the
+  `:port` predicate `rest[1:].isdigit()` accepts non-ASCII digits (`[::1]:80²` → `::1`) — no
+  security consequence (port discarded, inner IP still gated), only a robustness nicety. Queued
+  as the new TOP; queue otherwise empty.
 - **2026-09-28 — `cvss.grade()` no-raise contract made real (`484b4a5`).** `grade()` promised
   "Never raises" but delegates to `score_from_vector`, which raises `ValueError` on an
   incomplete vector (since `b6ffd03`) — a guarantee contingent on all 24 `COMPARATOR_CVSS`
