@@ -1053,6 +1053,15 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `_norm_host` bracketed-IPv6 port strip (`e8afb63`).** A request host
+  arriving as `[::1]:8443` was left verbatim, so `contains_ip` could not parse it and it
+  was denied as *unauthorized* (not judged on scope), and a bare-form IPv6 exclusion
+  (`::1`) never matched it. `_norm_host` now unwraps `[addr]` / `[addr]:port` to the bare
+  address before the existing host:port strip. Correctness only — the prior behavior
+  failed CLOSED (denied), never open; malformed (no closing bracket) still stays verbatim
+  and is denied downstream. 5 tests, IPv4/hostname/bare-word/bare-IPv6 regressions
+  preserved. Full suite green (1927 passed). NEXT.md top promoted to the `check_web`
+  micro-cleanup.
 - **2026-09-28 — report evidence-CVSS rendering test (`9bd0997`).** Pinned `report.py`
   `_finding_md`'s evidence-CVSS path with 3 tests: a finding's own `cvss`/`cvss_vector`
   render and override the title-keyed `knowledge.enrich` class number; the

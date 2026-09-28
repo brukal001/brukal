@@ -6,20 +6,21 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`_norm_host` IPv6 port-strip** — in `brukal/scope.py`, handle a bracketed IPv6 `host:port`
-  (`[::1]:8443` → `::1`) in `_norm_host` so an IPv6 exclusion with a port matches; add a test. (It
-  currently fails *closed* for authorization, so this is a correctness nicety, not a security fix.)
+- **`check_web` micro-cleanup** — reuse the `urlsplit(url)` result already computed by `_host_of`
+  instead of parsing twice (pure refactor; behavior identical; keep tests green).
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-1. **`check_web` micro-cleanup** — reuse the `urlsplit(url)` result already computed by `_host_of`
-   instead of parsing twice (pure refactor; behavior identical; keep tests green).
-2. **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
+1. **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
    from the web door, not the decorator); wording only, no behavior change.
-3. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
+2. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
    earlier un-comparatored sighting, merge in the evidence `cvss`/`cvss_vector`/`cvss_basis` (today
    first-write-wins drops them). Add a test. (Confirm this does not disturb severity/dedup semantics.)
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `scope._norm_host` now unwraps a bracketed IPv6 `host:port` (`[::1]:8443` → `::1`,
+  `[2001:db8::1]:443` → `2001:db8::1`) so authorization and exclusion match a bare-form IPv6; a
+  missing closing bracket stays verbatim (denied downstream). Correctness fix — prior behavior failed
+  closed. 5 tests, regressions preserved. `e8afb63`.
 - **2026-09-28** Report `_finding_md` evidence-CVSS rendering pinned: 3 tests that the finding's own
   `cvss`/`cvss_vector` + "Demonstrated impact:" line render and override the class number, the line
   requires both a score and a basis, and absent an evidence CVSS it falls back to `knowledge.enrich`.
