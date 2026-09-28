@@ -212,6 +212,19 @@ class Scope:
     @staticmethod
     def _norm_host(host: str) -> str:
         h = (host or "").strip().lower().rstrip(".")
+        # Bracketed IPv6 literal, with or without a port: [::1] / [::1]:8443 /
+        # [2001:db8::1]:443 -> the bare address (::1, 2001:db8::1). Without this a
+        # port-bearing bracketed request never matches an IPv6 exclusion or authorized
+        # host written in bare form, so contains_ip fails to parse it and it is denied
+        # as unauthorized rather than judged on its actual scope membership. A missing
+        # closing bracket is malformed and left as-is (unparseable downstream => denied).
+        if h.startswith("["):
+            end = h.find("]")
+            if end != -1:
+                return h[1:end]
+        # host:port for IPv4 / hostname -> strip the port. Exactly one colon and the
+        # rest is not all-alpha (so a bare word like "localhost" is kept and a bare
+        # IPv6 literal, which has 2+ colons, is left untouched).
         if h.count(":") == 1 and not h.replace(":", "").isalpha():
             h = h.split(":", 1)[0]
         return h
