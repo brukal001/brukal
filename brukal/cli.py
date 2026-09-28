@@ -482,6 +482,94 @@ def _cmd_drafts(args) -> int:
     return 0
 
 
+def _cmd_scope_draft(args) -> int:
+    """`brukal scope draft <description-file>` — SP-B. Turns a free-text program
+    description into a draft scope.json (authorized:false) + scope_rules.md for
+    human review. The model/judge runs ONCE here, at authoring time, model-side
+    (spec §2) — this command performs no network action against a target; it only
+    reads a text file and writes two files."""
+    from .scope_judge import DeterministicJudge, JudgeUnavailable, make_judge
+    from .scope_parse import assemble, build_questions, render_rules_md, segment, validate
+
+    try:
+        text = Path(args.description).read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"Refused: could not read description file '{args.description}': {e}")
+        return 2
+
+    segs = segment(text)
+    if args.engagement:
+        segs.engagement = args.engagement
+    questions = build_questions(segs)
+
+    judge = make_judge()
+    try:
+        answers = judge.ask({"description": text}, questions)
+    except JudgeUnavailable as e:
+        print(f"  (judge unavailable: {e} — falling back to the deterministic parser)")
+        answers = DeterministicJudge().ask({"description": text}, questions)
+
+    scope_dict, provenance = assemble(segs, answers)
+    clean, review_items = validate(scope_dict)
+    md = render_rules_md(clean, provenance, review_items)
+
+    out_path = Path(args.out) if args.out else Path(f"scope.{segs.engagement}.json")
+    rules_path = Path(args.rules) if args.rules else out_path.with_name("scope_rules.md")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+    rules_path.write_text(md, encoding="utf-8")
+
+    unresolved = [r for r in review_items if not r.get("resolved")]
+    print(f"\n  drafted (authorized:false) : {out_path}")
+    print(f"  rules                       : {rules_path}")
+    print(f"  authorized_hosts            : {len(clean.get('authorized_hosts', []))}")
+    print(f"  REVIEW REQUIRED             : {len(unresolved)} item(s)")
+    print(f"  -> read {rules_path} before running `brukal scope approve {out_path}`\n")
+    return 0
+
+
+def _cmd_scope_approve(args) -> int:
+    """`brukal scope approve <scope.json>` — the human sign-off SP-B needs before
+    anything the parser drafted can ever be loaded by a live engagement. Refuses
+    (fail-closed) while any review_item is unresolved; otherwise sets
+    authorized:true, stamps approved_by/approved_at, re-validates, and rewrites the
+    file in place."""
+    import datetime as _dt
+
+    from .scope_parse import validate
+
+    path = Path(args.scope_file)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Refused: could not read/parse '{path}': {e}")
+        return 2
+
+    clean, review_items = validate(data)
+    unresolved = [r for r in review_items if not r.get("resolved")]
+    if unresolved:
+        print(f"Refused: {len(unresolved)} unresolved REVIEW REQUIRED item(s) remain in "
+              f"{path}.\nRead scope_rules.md, then either fix the underlying line or "
+              "mark the item's\n\"resolved\": true in the JSON once you have manually "
+              "verified it — then re-run\n`brukal scope approve`.\n")
+        for r in unresolved[:20]:
+            print(f"  - [{r.get('field') or '(unclassified)'}] {r.get('reason')}")
+        return 2
+
+    approver = args.approver or getpass.getuser()
+    stamp = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    clean["authorized"] = True
+    clean["authorization"] = f"approved by {approver} on {stamp}"
+    clean["approved_by"] = approver
+    clean["approved_at"] = stamp
+
+    path.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+    print(f"\n  approved : {path}")
+    print(f"  by       : {approver}")
+    print(f"  at       : {stamp}\n")
+    return 0
+
+
 def _cmd_skills(args) -> int:
     if args.action == "add":
         if not args.source:
@@ -762,6 +850,38 @@ def main(argv: list[str] | None = None) -> int:
     pd.add_argument("--audit", default="runs/audit.jsonl",
                     help="the engagement audit to mine (default: runs/audit.jsonl)")
     pd.set_defaults(func=_cmd_drafts)
+
+    psc = sub.add_parser("scope",
+                         help="SP-B: draft a scope.json from free text, or approve one")
+    scope_sub = psc.add_subparsers(dest="scope_cmd", metavar="<action>")
+
+    pscd = scope_sub.add_parser(
+        "draft", help="parse a free-text program description into a draft scope.json "
+                      "(authorized:false) + scope_rules.md")
+    pscd.add_argument("description", help="path to a text/markdown file with the program's "
+                                          "scope description")
+    pscd.add_argument("--out", default=None,
+                      help="output scope.json path (default: scope.<engagement>.json)")
+    pscd.add_argument("--rules", default=None,
+                      help="output rules.md path (default: scope_rules.md next to --out)")
+    pscd.add_argument("--engagement", default=None,
+                      help="override the engagement name derived from the description")
+    pscd.set_defaults(func=_cmd_scope_draft)
+
+    psca = scope_sub.add_parser(
+        "approve", help="human sign-off: set authorized:true on a drafted scope.json "
+                        "(refuses while any REVIEW REQUIRED item is unresolved)")
+    psca.add_argument("scope_file", help="the drafted scope.json to approve")
+    psca.add_argument("--as", dest="approver", default=None,
+                      help="name to record as approver (default: the OS user)")
+    psca.set_defaults(func=_cmd_scope_approve)
+
+    def _cmd_scope(args) -> int:
+        if not getattr(args, "scope_cmd", None):
+            psc.print_help()
+            return 1
+        return args.func(args)
+    psc.set_defaults(func=_cmd_scope)
 
     ps = sub.add_parser("skills", help="list / search / add offensive skill packs")
     ps.add_argument("action", nargs="?", default="list",
