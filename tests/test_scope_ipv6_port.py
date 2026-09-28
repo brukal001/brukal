@@ -55,6 +55,10 @@ def test_norm_host_rejects_junk_after_the_bracket():
     assert Scope._norm_host("[::1]:") == ""             # empty port -> reject
     assert Scope._norm_host("[::1]:80x") == ""          # non-numeric port -> reject
     assert Scope._norm_host("[::1].evil") == ""         # trailing junk -> reject
+    # A non-ASCII "digit" port is not a valid port -> reject (str.isdigit() alone would
+    # accept U+00B2 etc.; the predicate pins ports to ASCII 0-9).
+    assert Scope._norm_host("[::1]:80²") == ""     # superscript-2 -> reject
+    assert Scope._norm_host("[::1]:１２") == "" # fullwidth digits -> reject
     # The valid forms are unaffected.
     assert Scope._norm_host("[::1]") == "::1"
     assert Scope._norm_host("[::1]:8443") == "::1"

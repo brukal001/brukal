@@ -229,7 +229,13 @@ class Scope:
             # authority: reject it (fail-closed to "") rather than silently truncating
             # to the inside, which would judge the junk host on the bracketed IP's scope.
             rest = h[end + 1:]
-            if rest and not (rest[0] == ":" and rest[1:].isdigit()):
+            # A valid port is ASCII digits only. `str.isdigit()` alone also accepts
+            # non-ASCII digits (e.g. "80²"), which would let a malformed port slip
+            # through; `.isascii()` pins it to 0-9. No security consequence either way
+            # (the port is discarded and the inner IP must still be an authorized-network
+            # member), but this keeps the accept/reject rule exactly RFC-shaped.
+            port = rest[1:]
+            if rest and not (rest[0] == ":" and port.isascii() and port.isdigit()):
                 return ""
             return h[1:end]
         # host:port for IPv4 / hostname -> strip the port. Exactly one colon and the
