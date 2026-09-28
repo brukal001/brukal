@@ -47,6 +47,26 @@ def test_norm_host_regressions_preserved():
     assert Scope._norm_host("[::1") == "[::1"
 
 
+def test_norm_host_rejects_junk_after_the_bracket():
+    # A bracketed authority may be followed only by an empty remainder or a numeric
+    # :port. Any other trailing text is malformed and fails closed to "" rather than
+    # being truncated to the inside (which would judge the junk host on the IP's scope).
+    assert Scope._norm_host("[::1]evil.com") == ""      # trailing label -> reject
+    assert Scope._norm_host("[::1]:") == ""             # empty port -> reject
+    assert Scope._norm_host("[::1]:80x") == ""          # non-numeric port -> reject
+    assert Scope._norm_host("[::1].evil") == ""         # trailing junk -> reject
+    # The valid forms are unaffected.
+    assert Scope._norm_host("[::1]") == "::1"
+    assert Scope._norm_host("[::1]:8443") == "::1"
+
+
+def test_norm_host_junk_after_bracket_is_out_of_scope_even_if_the_inner_ip_is_authorized():
+    # ::1 is authorized, but "[::1]evil.com" must NOT ride on ::1's membership.
+    s = _scope()
+    assert s.in_scope("[::1]evil.com", "/") is False
+    assert s.contains_host("[::1]evil.com") is False
+
+
 def test_ipv6_exclusion_in_bare_form_matches_a_bracketed_port_request():
     # Exclusion written bare; request arrives bracketed with a port.
     s = _scope(exclusions=frozenset({"::1"}))

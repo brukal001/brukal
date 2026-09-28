@@ -219,12 +219,19 @@ class Scope:
         # [2001:db8::1]:443 -> the bare address (::1, 2001:db8::1). Without this a
         # port-bearing bracketed request never matches an IPv6 exclusion or authorized
         # host written in bare form, so contains_ip fails to parse it and it is denied
-        # as unauthorized rather than judged on its actual scope membership. A missing
-        # closing bracket is malformed and left as-is (unparseable downstream => denied).
+        # as unauthorized rather than judged on its actual scope membership.
         if h.startswith("["):
             end = h.find("]")
-            if end != -1:
-                return h[1:end]
+            if end == -1:
+                return h            # no closing bracket: malformed -> denied downstream
+            # Only an empty remainder or a numeric :port may follow the bracket. Any
+            # other trailing text ([::1]evil.com, [::1]:, [::1]:80x) is a malformed
+            # authority: reject it (fail-closed to "") rather than silently truncating
+            # to the inside, which would judge the junk host on the bracketed IP's scope.
+            rest = h[end + 1:]
+            if rest and not (rest[0] == ":" and rest[1:].isdigit()):
+                return ""
+            return h[1:end]
         # host:port for IPv4 / hostname -> strip the port. Exactly one colon and the
         # rest is not all-alpha (so a bare word like "localhost" is kept and a bare
         # IPv6 literal, which has 2+ colons, is left untouched).
