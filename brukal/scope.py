@@ -331,6 +331,16 @@ def load_scope(path: str | Path) -> Scope:
     forbidden = _norm_classes("forbidden_classes")
     env = frozenset(k for k, v in _as_dict("envelope", data.get("envelope")).items() if v is True)
 
+    # Only an explicit `true` opts in. Anything else — absent, misspelled, a string —
+    # leaves it off, because an unparseable authorisation is not an authorisation.
+    destructive_allowed = data.get("destructive_allowed", False) is True
+    # read_only is a program policy that must win over an explicit destructive_allowed:true
+    # (same principle as _effective_full_send: policy beats the flag). Enforced at freeze
+    # time so the frozen Scope is self-consistent (spec §4.3: read_only implies
+    # destructive_allowed=False AND write-provers gated — this covers the first half).
+    if "read_only" in env:
+        destructive_allowed = False
+
     return Scope(
         engagement=str(data["engagement"]),
         authorized_networks=tuple(nets),
@@ -344,9 +354,7 @@ def load_scope(path: str | Path) -> Scope:
         # misspelled, a string, null — verifies, because an unparseable policy is a
         # policy we refuse to act on (invariant 2).
         tls_verify=data.get("tls_verify", True) is not False,
-        # Only an explicit `true` opts in. Anything else — absent, misspelled, a string —
-        # leaves it off, because an unparseable authorisation is not an authorisation.
-        destructive_allowed=data.get("destructive_allowed", False) is True,
+        destructive_allowed=destructive_allowed,
         # PER-PROGRAM comparator selection. A list of comparator names; anything not a
         # non-empty string is ignored, and the intersection with the closed set happens at
         # use (see hypothesis.active_comparators), so a name that is not a real comparator

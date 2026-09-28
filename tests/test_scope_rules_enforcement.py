@@ -372,3 +372,24 @@ def test_end_to_end_coindcx_like_scope():
     assert "sqli" in act and "dos" not in act
     assert bc.prover_enabled(s, "confirm_sqli") is True
     assert "no_automated_scanners" in s.envelope
+
+
+# --- spec §4.3 clause gap: read_only must force destructive_allowed=False ---
+
+def test_read_only_envelope_forces_destructive_disallowed():
+    import json, tempfile
+    from pathlib import Path
+    from brukal.scope import load_scope
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    # self-contradictory scope: read_only AND destructive_allowed:true
+    p.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                             "allowlisted_tools": "all",
+                             "envelope": {"read_only": True},
+                             "destructive_allowed": True}))
+    s = load_scope(p)
+    assert s.destructive_allowed is False        # read_only policy wins over the flag
+    # sanity: without read_only, destructive_allowed:true is honored
+    p2 = Path(tempfile.mkdtemp()) / "s2.json"
+    p2.write_text(json.dumps({"engagement": "t", "authorized_cidrs": ["10.0.0.1/32"],
+                              "allowlisted_tools": "all", "destructive_allowed": True}))
+    assert load_scope(p2).destructive_allowed is True
