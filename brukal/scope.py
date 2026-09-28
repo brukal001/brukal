@@ -162,12 +162,15 @@ class Scope:
         candidate hosts are `Host:` header values sent to an in-scope IP, and the
         actual network destination is still governed by the IP/CIDR check and the
         cage's nftables egress lock. A wildcard cannot authorise a different IP."""
-        h = (host or "").strip().lower()
+        # One normalization path with in_scope: _norm_host lowercases, drops a trailing
+        # FQDN dot, unwraps a bracketed IPv6 literal ([::1]:8443 -> ::1), and strips a
+        # host:port. Before this, contains_host had only the host:port strip, so a direct
+        # contains_host("[::1]:8443") denied an authorized IPv6 host (fail-closed, but
+        # inconsistent with in_scope, which normalizes first). Idempotent, so in_scope
+        # calling this on an already-normalized host is harmless.
+        h = self._norm_host(host)
         if not h:
             return False
-        # strip a :port if present (host:port)
-        if h.count(":") == 1 and not h.replace(":", "").isalpha():
-            h = h.split(":", 1)[0]
         if h in self.authorized_hosts:
             return True
         for a in self.authorized_hosts:

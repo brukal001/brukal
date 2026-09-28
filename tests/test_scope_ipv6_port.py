@@ -68,3 +68,30 @@ def test_authorized_but_excluded_ipv6_bracketed_port_is_out_of_scope():
     # gets the chance to win because the bracketed+port host now normalizes to `::1`.
     s = _scope(exclusions=frozenset({"::1"}))
     assert s.in_scope("[::1]:8443", "/") is False
+
+
+def test_contains_host_normalizes_a_bracketed_ipv6_port_like_norm_host():
+    # contains_host previously had only its own host:port strip (no bracket unwrap), so a
+    # direct call with a bracketed IPv6+port denied an authorized host. It now shares
+    # _norm_host, so authorization is consistent whether reached via contains_host or
+    # in_scope.
+    s = _scope()
+    assert s.contains_host("[::1]:8443") is True
+    assert s.contains_host("[::1]") is True
+    assert s.contains_host("::1") is True                # bare form still works
+
+
+def test_contains_host_regressions_preserved():
+    # A hostname scope: the pre-existing contains_host behavior (host:port strip, case,
+    # wildcard subdomain, fail-closed) must be unchanged by routing through _norm_host.
+    s = Scope(engagement="t", authorized_networks=(),
+              allowlisted_tools=frozenset({"*"}), rate_limit_per_min=60,
+              authorized_hosts=frozenset({"nexus.htb", "*.nexus.htb"}))
+    assert s.contains_host("nexus.htb") is True
+    assert s.contains_host("NEXUS.HTB:8080") is True     # case + port
+    assert s.contains_host("git.nexus.htb") is True      # wildcard subdomain
+    assert s.contains_host("nexus.htb.evil.com") is False
+    assert s.contains_host("") is False                  # fail-closed
+    # _norm_host adds trailing-FQDN-dot canonicalization, aligning contains_host with
+    # in_scope (previously contains_host would NOT have matched a trailing-dot host).
+    assert s.contains_host("nexus.htb.") is True
