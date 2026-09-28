@@ -1053,6 +1053,14 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `_norm_host` rejects junk-after-bracket (`82263f8`).** The bracket branch
+  returned the inside verbatim regardless of trailing text, so `[::1]evil.com` normalized to
+  `::1` (silent truncation, judging a junk authority on the IP's scope). `_norm_host` now
+  allows only an empty remainder or a numeric `:port` after `]`; other trailing text fails
+  closed to `""`. Valid `[::1]`/`[::1]:8443` unchanged; missing-bracket case still returned
+  as-is. Defense in depth — not reachable via the web door (`urlsplit.hostname` is clean).
+  2 tests. Full suite green (1938 passed). Second of the 3 review notes; NEXT.md top promoted
+  to the last one, the `cvss.grade()` no-raise contract.
 - **2026-09-28 — `contains_host` IPv6-bracket consistency (`2896761`).** `contains_host`
   had only its own `host:port` strip and never got the bracketed-IPv6 handling `_norm_host`
   gained in `e8afb63`, so a direct `contains_host("[::1]:8443")` denied an authorized IPv6

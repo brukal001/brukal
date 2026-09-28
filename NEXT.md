@@ -6,23 +6,23 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`_norm_host` reject junk-after-bracket** — in `brukal/scope.py`, `_norm_host` truncates
-  everything after the first `]`, so a malformed authority like `[::1]evil.com` normalizes to `::1`
-  (the trailing label is dropped rather than rejected). Not reachable via the web door
-  (`urlsplit.hostname` is already clean), so low risk — but the normalizer should reject a bracketed
-  host whose char after `]` is anything but `:` (a port), failing closed to `""`, instead of silently
-  truncating. Add a test. _(from `/code-review high`, 2026-09-28)_
+- **`cvss.grade()` no-raise contract** — `grade()`'s docstring still promises "Never raises", but
+  `score_from_vector` now raises `ValueError` on an incomplete vector (`b6ffd03`). All 24
+  `COMPARATOR_CVSS` entries are complete so it is safe today, but the contract is only contingently
+  true. Make it real: `grade()` should catch `ValueError` from a partial/malformed vector and fall
+  back to a safe default (or the class number) rather than raising mid-pipeline — preserving the
+  guarantee callers rely on — OR, if a raising `grade()` is actually desired, correct the docstring.
+  Decide, then add a test for the missing-metric path. _(from `/code-review high`, 2026-09-28)_
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-1. **`cvss.grade()` no-raise contract** — `grade()`'s docstring still promises "Never raises", but
-   `score_from_vector` now raises `ValueError` on an incomplete vector (`b6ffd03`). All 24
-   `COMPARATOR_CVSS` entries are complete so it is safe today, but the contract is only contingently
-   true. Make it real: `grade()` should catch `ValueError` from a partial/malformed vector and fall
-   back to a safe default (or the class number) rather than raising mid-pipeline — preserving the
-   guarantee callers rely on — OR, if a raising `grade()` is actually desired, correct the docstring.
-   Decide, then add a test for the missing-metric path. _(from `/code-review high`, 2026-09-28)_
+_(empty after the item above — refill from a fresh review or coverage pass; the loop must not
+invent scope-relevant work on its own)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `scope._norm_host` now rejects junk after a closing bracket: only an empty
+  remainder or a numeric `:port` may follow `]`, so `[::1]evil.com` / `[::1]:` / `[::1]:80x` fail
+  closed to `""` instead of truncating to `::1`. Valid `[::1]`/`[::1]:8443` unchanged. Defense in
+  depth (not reachable via the web door). From `/code-review high`. `82263f8`.
 - **2026-09-28** `scope.contains_host` now normalizes through `_norm_host` (one path with
   `in_scope`), so a direct `contains_host("[::1]:8443")` authorizes an in-scope IPv6 host instead of
   denying it; regressions preserved and trailing-dot FQDNs now align with `in_scope`. Fail-closed
