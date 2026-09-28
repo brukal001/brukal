@@ -1053,6 +1053,16 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `/code-review high` on `main...auto-improve` + one fix (`e6e77c7`).** Ran a
+  code review over this session's diff (the review first misfired on an unrelated `src/cos`
+  repo; re-pointed at the Brukal repo). Verdict: no safety-invariant regressions — the five
+  invariants hold across the CVSS/scope/web/bugclass changes. It found ONE real bug in
+  `c144ea3`: the evidence-CVSS merge was first-comparator-wins while severity/evidence beside
+  it are strongest/richest-wins, so a stronger comparator arriving second left a weaker score
+  and a mismatched basis. Fixed to strongest-wins in `e6e77c7` (+2 tests: stronger-second,
+  tie). Full suite green (1934 passed). **Queue refilled** with the review's 3 low-severity
+  notes: TOP = `contains_host` IPv6-bracket consistency; then `_norm_host` reject
+  junk-after-bracket; then `cvss.grade()` no-raise contract. All build+self-test only.
 - **2026-09-28 — evidence-CVSS merge on dedup (`c144ea3`).** `FindingStore._absorb` kept
   the first record's fields on a duplicate signature, so an un-comparatored sighting seen
   first permanently masked a later comparator-graded CVSS. It now merges the CVSS triple

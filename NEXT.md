@@ -6,15 +6,35 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **_Queue drained 2026-09-28._** No autonomous item is queued. **Refill before the loop can run
-  again**: take the top of a fresh `/code-review` pass or a coverage sweep, confirm it is
-  build+self-test only (nothing under HUMAN-GATED), and write it here as the new TOP. The loop MUST
-  NOT invent scope-relevant work on its own — a human or a review supplies the next item.
+- **`contains_host` IPv6-bracket consistency** — in `brukal/scope.py`, `contains_host` has its own
+  inline `host:port` strip but did NOT get the bracketed-IPv6 handling `_norm_host` gained in
+  `e8afb63`, so a direct `contains_host("[::1]:8443")` denies an authorized host. `in_scope` is fine
+  (it normalizes via `_norm_host` first), so this is a fail-closed consistency gap, not a scope
+  weakening. Fix by routing `contains_host` through `_norm_host` (or replicating the bracket unwrap),
+  keeping the existing normalization; add a test. Confirm no existing `contains_host` caller relied
+  on the old bracket behavior. _(from `/code-review high`, 2026-09-28)_
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-_(empty — refill from a review or a fresh coverage pass)_
+1. **`_norm_host` reject junk-after-bracket** — `_norm_host` truncates everything after the first
+   `]`, so a malformed authority like `[::1]evil.com` normalizes to `::1` (the trailing label is
+   dropped rather than rejected). Not reachable via the web door (`urlsplit.hostname` is already
+   clean), so low risk — but the normalizer should reject a bracketed host whose char after `]` is
+   anything but `:` (a port), failing closed to `""`, instead of silently truncating. Add a test.
+   _(from `/code-review high`, 2026-09-28)_
+2. **`cvss.grade()` no-raise contract** — `grade()`'s docstring still promises "Never raises", but
+   `score_from_vector` now raises `ValueError` on an incomplete vector (`b6ffd03`). All 24
+   `COMPARATOR_CVSS` entries are complete so it is safe today, but the contract is only contingently
+   true. Make it real: `grade()` should catch `ValueError` from a partial/malformed vector and fall
+   back to a safe default (or the class number) rather than raising mid-pipeline — preserving the
+   guarantee callers rely on — OR, if a raising `grade()` is actually desired, correct the docstring.
+   Decide, then add a test for the missing-metric path. _(from `/code-review high`, 2026-09-28)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `findings.FindingStore._absorb` evidence-CVSS merge corrected from first-wins to
+  STRONGEST-wins (fix of `c144ea3`, found by `/code-review high`): a stronger comparator arriving
+  second now raises the grade and swaps the whole triple, so the score no longer contradicts an
+  upgraded severity/evidence; weaker/absent later scores never lower or clear it, ties keep the
+  first. +2 tests (stronger-second, tie). `e6e77c7`.
 - **2026-09-28** `findings.FindingStore._absorb` now merges the evidence CVSS triple
   (`cvss`/`cvss_vector`/`cvss_basis`) all-or-nothing on dedup: a late comparator-graded confirmation
   fills a score an earlier un-comparatored sighting lacked (first-write-wins used to drop it), while
