@@ -127,6 +127,17 @@ class FindingStore:
         if len(f.evidence) > len(cur.evidence):
             cur.evidence = f.evidence                 # keep the richest evidence
         cur.ts = min(cur.ts, f.ts)                    # first-seen time
+        # Evidence CVSS is a unit (score + vector + basis) describing ONE comparator's
+        # proof, so it merges all-or-nothing. Adopt f's triple only when this signature
+        # has no evidence CVSS yet and f carries one: a later comparator-graded
+        # confirmation then supplies the score a first, un-comparatored sighting lacked
+        # (first-write-wins used to drop it). An existing evidence CVSS is never
+        # overwritten (first comparator wins, mirroring first-seen ts) and never cleared
+        # by a later un-comparatored sighting. Severity/dedup are untouched by this.
+        if cur.cvss is None and f.cvss is not None:
+            cur.cvss = f.cvss
+            cur.cvss_vector = f.cvss_vector
+            cur.cvss_basis = f.cvss_basis
         return False
 
     def add(self, finding: Finding) -> bool:
