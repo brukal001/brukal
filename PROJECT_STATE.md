@@ -1053,6 +1053,15 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `contains_host` IPv6-bracket consistency (`2896761`).** `contains_host`
+  had only its own `host:port` strip and never got the bracketed-IPv6 handling `_norm_host`
+  gained in `e8afb63`, so a direct `contains_host("[::1]:8443")` denied an authorized IPv6
+  host — fail-closed but inconsistent with `in_scope`. It now normalizes through `_norm_host`
+  (one path: lowercase, trailing-dot strip, bracket unwrap, port strip); `_norm_host` is
+  idempotent so `in_scope`'s pre-normalized call is harmless. Confirmed no caller relied on
+  the old bracket behavior. 2 tests (bracketed IPv6 authorized; regressions + trailing-dot
+  alignment). Full suite green (1936 passed). First of the 3 review notes; NEXT.md top
+  promoted to `_norm_host` reject-junk-after-bracket.
 - **2026-09-28 — `/code-review high` on `main...auto-improve` + one fix (`e6e77c7`).** Ran a
   code review over this session's diff (the review first misfired on an unrelated `src/cos`
   repo; re-pointed at the Brukal repo). Verdict: no safety-invariant regressions — the five

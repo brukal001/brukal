@@ -6,22 +6,15 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`contains_host` IPv6-bracket consistency** — in `brukal/scope.py`, `contains_host` has its own
-  inline `host:port` strip but did NOT get the bracketed-IPv6 handling `_norm_host` gained in
-  `e8afb63`, so a direct `contains_host("[::1]:8443")` denies an authorized host. `in_scope` is fine
-  (it normalizes via `_norm_host` first), so this is a fail-closed consistency gap, not a scope
-  weakening. Fix by routing `contains_host` through `_norm_host` (or replicating the bracket unwrap),
-  keeping the existing normalization; add a test. Confirm no existing `contains_host` caller relied
-  on the old bracket behavior. _(from `/code-review high`, 2026-09-28)_
+- **`_norm_host` reject junk-after-bracket** — in `brukal/scope.py`, `_norm_host` truncates
+  everything after the first `]`, so a malformed authority like `[::1]evil.com` normalizes to `::1`
+  (the trailing label is dropped rather than rejected). Not reachable via the web door
+  (`urlsplit.hostname` is already clean), so low risk — but the normalizer should reject a bracketed
+  host whose char after `]` is anything but `:` (a port), failing closed to `""`, instead of silently
+  truncating. Add a test. _(from `/code-review high`, 2026-09-28)_
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-1. **`_norm_host` reject junk-after-bracket** — `_norm_host` truncates everything after the first
-   `]`, so a malformed authority like `[::1]evil.com` normalizes to `::1` (the trailing label is
-   dropped rather than rejected). Not reachable via the web door (`urlsplit.hostname` is already
-   clean), so low risk — but the normalizer should reject a bracketed host whose char after `]` is
-   anything but `:` (a port), failing closed to `""`, instead of silently truncating. Add a test.
-   _(from `/code-review high`, 2026-09-28)_
-2. **`cvss.grade()` no-raise contract** — `grade()`'s docstring still promises "Never raises", but
+1. **`cvss.grade()` no-raise contract** — `grade()`'s docstring still promises "Never raises", but
    `score_from_vector` now raises `ValueError` on an incomplete vector (`b6ffd03`). All 24
    `COMPARATOR_CVSS` entries are complete so it is safe today, but the contract is only contingently
    true. Make it real: `grade()` should catch `ValueError` from a partial/malformed vector and fall
@@ -30,6 +23,10 @@
    Decide, then add a test for the missing-metric path. _(from `/code-review high`, 2026-09-28)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `scope.contains_host` now normalizes through `_norm_host` (one path with
+  `in_scope`), so a direct `contains_host("[::1]:8443")` authorizes an in-scope IPv6 host instead of
+  denying it; regressions preserved and trailing-dot FQDNs now align with `in_scope`. Fail-closed
+  direction unchanged. From `/code-review high`. `2896761`.
 - **2026-09-28** `findings.FindingStore._absorb` evidence-CVSS merge corrected from first-wins to
   STRONGEST-wins (fix of `c144ea3`, found by `/code-review high`): a stronger comparator arriving
   second now raises the grade and swaps the whole triple, so the score no longer contradicts an
