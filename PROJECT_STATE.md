@@ -1053,6 +1053,14 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `gated_by_class` docstring clarified (`cf8d738`).** Made explicit that a
+  `None` scope means UNRESTRICTED in the decorator (the prover runs, as under a scope with
+  no allowed/forbidden classes) and that this is not a scope bypass: `gated_by_class` only
+  tunes which bug classes a program invites; authorization and host/path scope are enforced
+  at the web door (`web.check_web`/the gate) on every request, so a prover that runs here
+  still cannot reach anything out of scope. Docstring only, no behavior change; full suite
+  green (1927 passed). NEXT.md top promoted to the `FindingStore` dedup+CVSS merge (queue
+  now empty — refill from a review pass).
 - **2026-09-28 — `check_web` single URL parse (`13acf81`).** The web door parsed the
   same URL three times (`_scheme_of`, `_host_of`, then an inline `urlsplit` for the path);
   it now splits once and reads scheme/host/path off that result. `urlsplit` raising
