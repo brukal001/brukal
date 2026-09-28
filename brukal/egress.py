@@ -60,6 +60,15 @@ def is_blocked_ip(ip: str) -> bool:
         or addr.is_multicast
         or addr.is_reserved
         or addr.is_unspecified
+        # Not covered by any of the above: CGNAT/shared address space
+        # (100.64.0.0/10, RFC 6598) is neither `is_private` nor `is_reserved` in
+        # `ipaddress` — but it is also not `is_global`, which is the IANA
+        # special-purpose registry's own summary judgement and catches this
+        # (and any other not-yet-named special-purpose block, e.g. TEST-NET,
+        # which `is_private` already covers here but `is_global` covers too) in
+        # one fail-closed sweep. A genuinely public address (1.1.1.1,
+        # 93.184.216.34, 2606:4700::1) is `is_global` True and unaffected.
+        or not addr.is_global
     )
 
 

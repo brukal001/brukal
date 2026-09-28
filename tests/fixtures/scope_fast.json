@@ -7,5 +7,6 @@
   ],
   "allowlisted_tools": "all",
   "rate_limit_per_min": 6000,
-  "_note": "same scope as scope.json but without a rate wall, for tests that make many governed probes"
+  "_note": "same scope as scope.json but without a rate wall, for tests that make many governed probes",
+  "authorization": "lab: authorized (test fixture)"
 }

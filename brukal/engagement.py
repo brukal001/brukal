@@ -26,16 +26,30 @@ from .trust import TrustModel
 
 def enforce_authorization(scope, audit, target) -> bool:
     """Pin the authorising scope into the audit chain at run start, then refuse a
-    stale engagement. Returns True to proceed, False to refuse (message printed).
+    stale OR unauthorised engagement. Returns True to proceed, False to refuse
+    (message printed). This is the ONE shared gate every live-run entry point calls
+    (`engagement.run`, and `assist_cli._prepare_session` behind `solve`/`auto`/the
+    wizard) — so a check added here, and only here, governs the whole fleet of run
+    paths rather than one of them.
 
     Fail-closed (invariant 2): an `expires` that is set but unparseable counts as
     expired, so we refuse rather than run on a validity window we cannot read. An
-    unset expiry never expires. The authorisation record is written regardless of
-    the outcome, so even a refused stale run leaves a receipt in the ledger."""
+    unset expiry never expires. `scope.is_authorized()` — a non-empty `authorization`
+    statement — is required independent of any operator flag: `--yes-authorised` is
+    the operator confirming a *live* run against an *already-authorised* scope, not a
+    substitute for the scope itself carrying an authorisation statement. A drafted
+    (SP-B) scope that was never approved (`authorization == ""`) is refused here,
+    directly, rather than only incidentally downstream (e.g. by `contains_ip` failing
+    on a host-only draft with no CIDRs). The authorisation record is written
+    regardless of the outcome, so even a refused run leaves a receipt in the ledger."""
     audit.append("authorization", authorization_record(scope, target))
     if scope.is_expired():
         print(f"Refused: this engagement's authorisation has expired ({scope.expires}). "
               f"Update 'expires' in the scope file to re-authorise before running.")
+        return False
+    if not scope.is_authorized():
+        print("Refused: this engagement's scope is not authorised (authorized:false / "
+              "no authorization statement) — refusing to run.")
         return False
     return True
 
@@ -89,17 +103,6 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     # Authorization artifact (Phase 5): record which scope authorised this run into
     # the ledger and refuse a stale engagement — before any other guard.
     if not enforce_authorization(scope, audit, target):
-        return 2
-
-    # Hard authorization gate (SP-C slice 1, closes the SP-B gap): today only
-    # `is_expired` (above) guards a live run; a drafted scope that was never approved
-    # (`authorization == ""`) has no expiry to trip and was previously refused only
-    # INCIDENTALLY, downstream, by e.g. `contains_ip` failing on a host-only draft.
-    # This makes the refusal direct and unconditional, before any cage/tool use —
-    # beside the expiry check, in the same place, for the same reason.
-    if not scope.is_authorized():
-        print("Refused: this engagement's scope is not authorised (authorized:false / "
-              "no authorization statement) — refusing to run.")
         return 2
     warn_if_unkeyed_audit(audit, fake)
 

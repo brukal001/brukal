@@ -41,6 +41,8 @@ from brukal.scope import Scope, load_scope
 @pytest.mark.parametrize("ip", [
     "10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "fe80::1", "fc00::1",
     "0.0.0.0", "172.16.0.5", "192.168.1.1", "224.0.0.1", "::",
+    "100.64.0.1",   # CGNAT / shared address space (RFC 6598) — not is_private,
+                    # not is_reserved, but not is_global either
 ])
 def test_is_blocked_ip_true_for_non_public(ip):
     assert is_blocked_ip(ip) is True
@@ -48,6 +50,8 @@ def test_is_blocked_ip_true_for_non_public(ip):
 
 @pytest.mark.parametrize("ip", ["1.1.1.1", "93.184.216.34", "2606:4700::1"])
 def test_is_blocked_ip_false_for_public(ip):
+    """Re-asserted alongside the CGNAT fix above: a real public address must stay
+    reachable — `not addr.is_global` must not have widened the block to public IPs."""
     assert is_blocked_ip(ip) is False
 
 
