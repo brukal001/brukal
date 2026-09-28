@@ -77,13 +77,24 @@ def impact_verdict(f) -> str:
 def _finding_md(f) -> str:
     from .knowledge import enrich
     kb = enrich(f.title, f.severity)
-    cvss = f"CVSS {kb['cvss']:.1f}" + (f" ({kb['vector']})" if kb["cvss"] else "")
+    # Evidence-based CVSS 3.1 (cvss.py) takes priority: a confirmed differential that
+    # named its comparator carries a score/vector graded on what it ACTUALLY proved,
+    # which is strictly more honest than the class-based knowledge.py number keyed
+    # only on the title. A finding with no evidence CVSS (no comparator, e.g. a
+    # config-shaped check, or a candidate) falls back to `enrich` exactly as before.
+    evidence_cvss = getattr(f, "cvss", None)
+    if evidence_cvss is not None:
+        cvss = f"CVSS {evidence_cvss:.1f}" + (f" ({f.cvss_vector})" if f.cvss_vector else "")
+    else:
+        cvss = f"CVSS {kb['cvss']:.1f}" + (f" ({kb['vector']})" if kb["cvss"] else "")
     lines = [f"### {_BADGE.get(f.severity, f.severity)} — {f.title}"
              f"{' *(candidate)*' if not f.confirmed else ''}"]
     lines.append(f"- **Severity:** {f.severity.upper()}  ·  **{cvss}**"
                  + (f"  ·  **Category:** {f.category}" if getattr(f, "category", "") else ""))
     lines.append(f"- **Target:** `{f.target or '-'}`"
                  + (f"  ·  **Parameter:** `{f.param}`" if f.param else ""))
+    if evidence_cvss is not None and getattr(f, "cvss_basis", ""):
+        lines.append(f"- **Demonstrated impact:** {f.cvss_basis}")
     lines.append(f"- **Impact:** {kb['impact']}")
     if f.evidence:
         lines.append(f"- **Evidence:**\n\n  ```\n  {f.evidence.strip()[:500]}\n  ```")

@@ -35,7 +35,7 @@ SEVERITIES = ("critical", "high", "medium", "low", "info")
 _SEV_ORDER = {s: i for i, s in enumerate(SEVERITIES)}
 
 _FIELDS = ("title", "severity", "target", "evidence", "source", "param",
-           "category", "confirmed", "ts")
+           "category", "confirmed", "ts", "cvss", "cvss_vector", "cvss_basis")
 
 
 def _norm(s: str) -> str:
@@ -64,6 +64,14 @@ class Finding:
     agent_claim: str = ""                   # the model's title — UNVERIFIED, never the claim
     agent_severity: str = ""                # the model's severity — UNVERIFIED, never used
     ts: float = field(default_factory=time.time)
+    # Evidence-based CVSS 3.1 (cvss.py): graded on what the CONFIRMING comparator
+    # actually proved, not on the finding's title/class. Set only by
+    # `_record_confirmed(..., comparator=...)` — a confirmation with no comparator
+    # (a config-shaped check like a missing header) leaves all three at their
+    # default, which is the signal report.py reads to fall back to knowledge.enrich.
+    cvss: float | None = None               # the evidence CVSS 3.1 base score
+    cvss_vector: str = ""                   # the vector it was computed from
+    cvss_basis: str = ""                    # one line: what the differential proved
 
     def __post_init__(self):
         if self.severity not in _SEV_ORDER:

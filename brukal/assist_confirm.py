@@ -237,11 +237,22 @@ class _ConfirmMixin:
             self._rate_limited = True
 
     def _record_confirmed(self, target, title, sev, param, evidence, category="web",
-                          comparator: str = "") -> None:
+                          comparator: str = "", cvss_facts: dict | None = None) -> None:
         from .findings import Finding
-        self.findings.add(Finding(title=title, severity=sev, target=target,
-                                  evidence=evidence, source=f"active confirmation · param={param}",
-                                  param=param, category=category, confirmed=True))
+        # Evidence-based CVSS 3.1 (cvss.py): only when the caller names a `comparator`
+        # (same opt-in as the experiment emission below) — a config-shaped confirmation
+        # (a missing header, CORS) attaches no CVSS, exactly as it attaches no experiment.
+        cvss_grade = None
+        if comparator:
+            from . import cvss as _cvss
+            cvss_grade = _cvss.grade(comparator, cvss_facts, title=title, severity=sev)
+        f = Finding(title=title, severity=sev, target=target,
+                   evidence=evidence, source=f"active confirmation · param={param}",
+                   param=param, category=category, confirmed=True,
+                   cvss=(cvss_grade["cvss"] if cvss_grade else None),
+                   cvss_vector=(cvss_grade["vector"] if cvss_grade else ""),
+                   cvss_basis=(cvss_grade["basis"] if cvss_grade else ""))
+        self.findings.add(f)
         self.highlights.append(("confirmed", f"{title}: {target} ({param})"))
         self.notes.append(f"[confirm] {title} CONFIRMED on {target} param '{param}' — {evidence}")
         # A confirm_* prover IS a differential experiment: a control side and a variant side
@@ -254,14 +265,19 @@ class _ConfirmMixin:
         # pair the model's own experiments leave, so the differential is counted as what it
         # already is. Recording the evidence, not inventing it — the finding above carries it.
         if comparator:
-            self._record_confirmed_experiment(target, title, comparator, evidence)
+            self._record_confirmed_experiment(target, title, comparator, evidence, cvss_grade)
 
-    def _record_confirmed_experiment(self, target, title, comparator, evidence) -> None:
+    def _record_confirmed_experiment(self, target, title, comparator, evidence,
+                                     cvss_grade: dict | None = None) -> None:
         """Emit the ledger pair a confirmed differential deserves: one `experiment_result`
         carrying the endpoint (buffered by the recall scorer's `group_experiments`) and the
         closing `experiment_outcome{outcome:"confirmed"}` it attaches to. Faithful to the
         model-experiment path in assist_hypothesis (`_record_experiment_result` /
-        `_record_experiment_outcome`); no LLM, no proposal — a deterministic prover held."""
+        `_record_experiment_outcome`); no LLM, no proposal — a deterministic prover held.
+        When `cvss_grade` is given (the caller named a comparator), the same evidence-based
+        CVSS 3.1 score/vector/basis stamped on the Finding rides along on the outcome, so a
+        reader of the audit log alone — without cross-referencing findings.jsonl — sees how
+        impactful the confirmed differential was, not just that it was confirmed."""
         audit = getattr(getattr(self, "executor", None), "_audit", None)
         if audit is None:
             return
@@ -271,11 +287,16 @@ class _ConfirmMixin:
             "role": "differential", "url": target, "status": None,
             "bytes": 0, "body": "", "truncated": False,
             "source": "confirm_prover", "target": tgt})
-        audit.append("experiment_outcome", {
+        outcome = {
             "title": title, "comparator": comparator, "outcome": "confirmed",
             "stage": _hyp.outcome_stage("confirmed"),
             "attribution": _hyp.attribution("confirmed"),
-            "source": "confirm_prover", "target": tgt})
+            "source": "confirm_prover", "target": tgt}
+        if cvss_grade:
+            outcome["cvss"] = cvss_grade["cvss"]
+            outcome["cvss_vector"] = cvss_grade["vector"]
+            outcome["cvss_basis"] = cvss_grade["basis"]
+        audit.append("experiment_outcome", outcome)
 
 
     @gated_by_class
