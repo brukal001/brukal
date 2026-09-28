@@ -1048,3 +1048,24 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 - **GAP #15** — the web-request path has no method check and never reads
   `destructive_allowed`; a fail-OPEN proven by executing both branches. Maintainer's call.
 - The intermittent `test_principal_switch_is_atomic` flake.
+
+---
+
+## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
+
+- **2026-09-28 — report evidence-CVSS rendering test (`9bd0997`).** Pinned `report.py`
+  `_finding_md`'s evidence-CVSS path with 3 tests: a finding's own `cvss`/`cvss_vector`
+  render and override the title-keyed `knowledge.enrich` class number; the
+  "Demonstrated impact:" line appears only when both an evidence score AND a
+  `cvss_basis` are present; a finding with no evidence CVSS falls back to the class
+  number with no Demonstrated-impact line. Test-only, no behavior change — closes the
+  rendering coverage gap flagged in the CVSS review. Full suite green (1922 passed).
+  NEXT.md top item promoted to the `_norm_host` IPv6 port-strip.
+- **2026-09-28 — `score_from_vector` fail-closed (`b6ffd03`).** Missing-metric CVSS
+  vectors previously defaulted (worst-case exploitability, N for C/I/A) though the
+  docstring claimed "worst-case" outright; now raises `ValueError` on any vector
+  missing AV/AC/PR/UI/S/C/I/A, docstring corrected to match. Every `COMPARATOR_CVSS`
+  table vector is already complete, so `grade()` is unaffected — only a
+  partial/malformed vector reaching `score_from_vector` directly changes behavior.
+  Full suite green (1919 passed). NEXT.md top item promoted to the report-CVSS
+  rendering test.

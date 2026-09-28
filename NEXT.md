@@ -6,28 +6,26 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **CVSS `score_from_vector` hardening (Minor, from the SP-A/CVSS reviews).** In `brukal/cvss.py`,
-  make `score_from_vector` **reject an incomplete CVSS vector** (missing any of AV/AC/PR/UI/S/C/I/A)
-  by raising `ValueError` — instead of defaulting missing metrics (the current asymmetric default is
-  safe for C/I/A→0 but the exploitability metrics fail toward most-severe, and the docstring wrongly
-  says "worst-case"). Fix the docstring to describe the real behavior. Add tests: a vector missing a
-  metric raises; all 24 `COMPARATOR_CVSS` vectors still score unchanged (they are complete). Keep the
-  full suite green.
+- **`_norm_host` IPv6 port-strip** — in `brukal/scope.py`, handle a bracketed IPv6 `host:port`
+  (`[::1]:8443` → `::1`) in `_norm_host` so an IPv6 exclusion with a port matches; add a test. (It
+  currently fails *closed* for authorization, so this is a correctness nicety, not a security fix.)
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-1. **Report evidence-CVSS rendering test** — add a test that `report.py`'s `_finding_md` prints the
-   finding's own `cvss`/`cvss_vector` + a "Demonstrated impact:" line when present, and falls back to
-   the class CVSS otherwise (coverage gap noted in the CVSS review).
-2. **`_norm_host` IPv6 port-strip** — in `brukal/scope.py`, handle a bracketed IPv6 `host:port`
-   (`[::1]:8443` → `::1`) in `_norm_host` so an IPv6 exclusion with a port matches; add a test. (It
-   currently fails *closed* for authorization, so this is a correctness nicety, not a security fix.)
-3. **`check_web` micro-cleanup** — reuse the `urlsplit(url)` result already computed by `_host_of`
+1. **`check_web` micro-cleanup** — reuse the `urlsplit(url)` result already computed by `_host_of`
    instead of parsing twice (pure refactor; behavior identical; keep tests green).
-4. **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
+2. **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
    from the web door, not the decorator); wording only, no behavior change.
-5. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
+3. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
    earlier un-comparatored sighting, merge in the evidence `cvss`/`cvss_vector`/`cvss_basis` (today
    first-write-wins drops them). Add a test. (Confirm this does not disturb severity/dedup semantics.)
+
+## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** Report `_finding_md` evidence-CVSS rendering pinned: 3 tests that the finding's own
+  `cvss`/`cvss_vector` + "Demonstrated impact:" line render and override the class number, the line
+  requires both a score and a basis, and absent an evidence CVSS it falls back to `knowledge.enrich`.
+  Test-only. `9bd0997`.
+- **2026-09-28** `score_from_vector` now raises `ValueError` on an incomplete CVSS vector instead of
+  defaulting missing metrics; docstring corrected. `b6ffd03`.
 
 ## HUMAN-GATED — do NOT touch in the autonomous loop
 - **SP-C real-internet containment** (scope-aware egress proxy / DNS handling) — changes the
