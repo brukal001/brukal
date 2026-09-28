@@ -1053,6 +1053,14 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `check_web` single URL parse (`13acf81`).** The web door parsed the
+  same URL three times (`_scheme_of`, `_host_of`, then an inline `urlsplit` for the path);
+  it now splits once and reads scheme/host/path off that result. `urlsplit` raising
+  `ValueError` is the same unparseable case the helpers swallowed to `""`, so it fails
+  closed to the identical "could not parse a host" denial — verdict, reason, and layer
+  unchanged. `_scheme_of`/`_host_of` remain (still called at web.py:638). Pure refactor,
+  no new test; equivalence spot-checked and full suite green (1927 passed). NEXT.md top
+  promoted to the `gated_by_class` docstring clarification.
 - **2026-09-28 — `_norm_host` bracketed-IPv6 port strip (`e8afb63`).** A request host
   arriving as `[::1]:8443` was left verbatim, so `contains_ip` could not parse it and it
   was denied as *unauthorized* (not judged on scope), and a bare-form IPv6 exclusion

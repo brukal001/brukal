@@ -6,17 +6,19 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`check_web` micro-cleanup** — reuse the `urlsplit(url)` result already computed by `_host_of`
-  instead of parsing twice (pure refactor; behavior identical; keep tests green).
+- **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
+  from the web door, not the decorator); wording only, no behavior change.
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-1. **`gated_by_class` docstring** — clarify that a `None` scope means "unrestricted" (safety comes
-   from the web door, not the decorator); wording only, no behavior change.
-2. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
+1. **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
    earlier un-comparatored sighting, merge in the evidence `cvss`/`cvss_vector`/`cvss_basis` (today
    first-write-wins drops them). Add a test. (Confirm this does not disturb severity/dedup semantics.)
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `web.check_web` now `urlsplit`s the URL once (scheme/host/path read off one parse)
+  instead of three times; `ValueError` fails closed to the identical host-parse denial, so verdict/
+  reason/layer are unchanged. Helpers `_scheme_of`/`_host_of` kept (still used at web.py:638). Pure
+  refactor, no new test. `13acf81`.
 - **2026-09-28** `scope._norm_host` now unwraps a bracketed IPv6 `host:port` (`[::1]:8443` → `::1`,
   `[2001:db8::1]:443` → `2001:db8::1`) so authorization and exclusion match a bare-form IPv6; a
   missing closing bracket stays verbatim (denied downstream). Correctness fix — prior behavior failed
