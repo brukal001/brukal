@@ -1053,6 +1053,16 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — evidence-CVSS merge on dedup (`c144ea3`).** `FindingStore._absorb` kept
+  the first record's fields on a duplicate signature, so an un-comparatored sighting seen
+  first permanently masked a later comparator-graded CVSS. It now merges the CVSS triple
+  (`cvss`/`cvss_vector`/`cvss_basis`) all-or-nothing — it is one comparator's proof, never
+  mixed: adopt a later score only when the stored finding has none yet; never overwrite an
+  existing one (first comparator wins, mirroring first-seen ts); never clear one with a
+  later un-comparatored sighting. Severity/dedup/confirmation logic untouched. 5 tests
+  (late fill, no-overwrite, no-clear, dedup/severity unchanged, append-only reload). Full
+  suite green (1932 passed). **NEXT.md queue is now DRAINED** — the loop needs a human/review
+  to supply the next item before it can run again (it must not invent scope-relevant work).
 - **2026-09-28 — `gated_by_class` docstring clarified (`cf8d738`).** Made explicit that a
   `None` scope means UNRESTRICTED in the decorator (the prover runs, as under a scope with
   no allowed/forbidden classes) and that this is not a scope bypass: `gated_by_class` only

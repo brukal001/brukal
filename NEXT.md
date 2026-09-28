@@ -6,14 +6,20 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`FindingStore` dedup + CVSS** — when a finding is re-confirmed with a comparator after an
-  earlier un-comparatored sighting, merge in the evidence `cvss`/`cvss_vector`/`cvss_basis` (today
-  first-write-wins drops them). Add a test. (Confirm this does not disturb severity/dedup semantics.)
+- **_Queue drained 2026-09-28._** No autonomous item is queued. **Refill before the loop can run
+  again**: take the top of a fresh `/code-review` pass or a coverage sweep, confirm it is
+  build+self-test only (nothing under HUMAN-GATED), and write it here as the new TOP. The loop MUST
+  NOT invent scope-relevant work on its own — a human or a review supplies the next item.
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
 _(empty — refill from a review or a fresh coverage pass)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-28** `findings.FindingStore._absorb` now merges the evidence CVSS triple
+  (`cvss`/`cvss_vector`/`cvss_basis`) all-or-nothing on dedup: a late comparator-graded confirmation
+  fills a score an earlier un-comparatored sighting lacked (first-write-wins used to drop it), while
+  an existing evidence CVSS is never overwritten or cleared. Severity/dedup untouched. 5 tests incl.
+  reload. `c144ea3`.
 - **2026-09-28** `bugclass.gated_by_class` docstring clarified: a `None` scope means UNRESTRICTED
   (prover runs), which is not a scope bypass — authorization + host/path scope are enforced at the
   web door (`web.check_web`/the gate) on every request, so this decorator is only a class-selection
