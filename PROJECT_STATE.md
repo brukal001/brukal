@@ -1053,6 +1053,13 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `_norm_host` ASCII-only port predicate (`5b9ebca`).** Pinned the bracket
+  branch's `:port` accept from `rest[1:].isdigit()` (which also accepts non-ASCII digits, so
+  `[::1]:80²` normalized to `::1`) to `.isascii() and .isdigit()` — ASCII 0-9 only; other
+  trailing text still fails closed. No security consequence (port discarded, inner IP still
+  gated by `contains_ip`/`contains_host`), an RFC-shaping robustness nicety implementing the
+  2nd review's informational non-finding. +2 assertions to the rejection test. Full suite green
+  (1939 passed). Queue drained again.
 - **2026-09-28 — 2nd `/code-review high` on `main...auto-improve`: CLEAN PASS (`[]`).** Reviewed
   the full current diff (HEAD `484b4a5`) and verified all four review-driven fixes by running
   the normalization logic and confirming the fallback path is total: `_absorb` strongest-wins
