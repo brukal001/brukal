@@ -216,7 +216,12 @@ def grade(comparator: str, facts: dict | None = None, title: str = "",
 
     `comparator` unknown → falls back to the class-based `knowledge.enrich(title,
     severity)`, exactly like every finding did before this module existed. Never
-    raises: an unmapped comparator or a bad title/severity still returns a dict."""
+    raises: an unmapped comparator, a bad title/severity, OR a comparator whose
+    (possibly facts-modified) vector is incomplete all still return a dict — the last
+    of these falls back to the class number rather than propagating the ValueError
+    that `score_from_vector` now raises. Today every COMPARATOR_CVSS vector is complete
+    so that path is unreachable, but the no-raise guarantee is now enforced here rather
+    than merely contingent on the table staying complete."""
     entry = COMPARATOR_CVSS.get(comparator)
     if entry is None:
         from . import knowledge
@@ -232,5 +237,15 @@ def grade(comparator: str, facts: dict | None = None, title: str = "",
             final_vector = _set_metric(final_vector, "C", "H")
         if facts.get("cross_scope"):
             final_vector = _set_metric(final_vector, "S", "C")
-    return {"cvss": score_from_vector(final_vector), "vector": final_vector,
-            "basis": basis}
+    try:
+        cvss = score_from_vector(final_vector)
+    except ValueError:
+        # A table vector (or a facts-modified one) that is somehow incomplete must not
+        # crash the grading pipeline: fall back to the class-based number, the same path
+        # an unmapped comparator takes, so grade()'s no-raise contract holds. Unreachable
+        # with today's complete COMPARATOR_CVSS table — a guard, not a live branch.
+        from . import knowledge
+        kb = knowledge.enrich(title, severity)
+        return {"cvss": kb["cvss"], "vector": kb["vector"],
+                "basis": f"{basis} (vector incomplete; class-based fallback)"}
+    return {"cvss": cvss, "vector": final_vector, "basis": basis}

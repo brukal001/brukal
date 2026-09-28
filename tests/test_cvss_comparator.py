@@ -80,6 +80,26 @@ def test_all_table_comparator_vectors_are_complete():
         assert cvss.score_from_vector(vector) >= 0.0, comparator
 
 
+def test_grade_never_raises_on_an_incomplete_comparator_vector(monkeypatch):
+    # grade()'s contract is "never raises". score_from_vector now DOES raise on an
+    # incomplete vector, so grade() must catch it and fall back to the class number
+    # rather than propagate. The real table is complete (asserted above), so inject a
+    # deliberately partial entry to exercise the guard, and confirm grade() returns the
+    # class-based dict instead of raising.
+    bad = dict(cvss.COMPARATOR_CVSS)
+    bad["__test_incomplete__"] = ("CVSS:3.1/AV:N/AC:L", "partial test vector")  # missing PR/UI/S/C/I/A
+    monkeypatch.setattr(cvss, "COMPARATOR_CVSS", bad)
+
+    from brukal import knowledge
+    kb = knowledge.enrich("SQL injection", "high")
+    g = cvss.grade("__test_incomplete__", title="SQL injection", severity="high")
+
+    assert g["cvss"] == kb["cvss"]                       # fell back to the class number
+    assert g["vector"] == kb["vector"]
+    assert "class-based fallback" in g["basis"]          # and said so, traceably
+    assert 0 <= g["cvss"] <= 10
+
+
 # --- 2. every table comparator is parseable and scores in (0, 10] ----------
 
 def test_every_comparator_has_a_parseable_vector_and_scores_in_range():
