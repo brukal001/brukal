@@ -70,18 +70,23 @@ def roundup(x: float) -> float:
 
 
 def score_from_vector(vector: str) -> float:
-    """CVSS 3.1 base score computed exactly per the published formula. Metrics not
-    present in the vector default to the most severe value for that metric (so a
-    partial/malformed vector never silently under-scores)."""
+    """CVSS 3.1 base score computed exactly per the published formula. Raises
+    `ValueError` if any of the eight base metrics (AV/AC/PR/UI/S/C/I/A) is
+    missing — fail-closed, since defaulting a missing metric would silently
+    score an incomplete vector rather than refuse it."""
     m = parse_vector(vector)
-    scope = m.get("S", "U")
-    av = _AV_W.get(m.get("AV", "N"), _AV_W["N"])
-    ac = _AC_W.get(m.get("AC", "L"), _AC_W["L"])
-    pr = _PR_W.get(scope, _PR_W["U"]).get(m.get("PR", "N"), 0.85)
-    ui = _UI_W.get(m.get("UI", "N"), _UI_W["N"])
-    c = _CIA_W.get(m.get("C", "N"), 0.0)
-    i = _CIA_W.get(m.get("I", "N"), 0.0)
-    a = _CIA_W.get(m.get("A", "N"), 0.0)
+    missing = [k for k in _METRICS if k not in m]
+    if missing:
+        raise ValueError(
+            f"incomplete CVSS vector, missing {missing}: {vector!r}")
+    scope = m["S"]
+    av = _AV_W.get(m["AV"], _AV_W["N"])
+    ac = _AC_W.get(m["AC"], _AC_W["L"])
+    pr = _PR_W.get(scope, _PR_W["U"]).get(m["PR"], 0.85)
+    ui = _UI_W.get(m["UI"], _UI_W["N"])
+    c = _CIA_W.get(m["C"], 0.0)
+    i = _CIA_W.get(m["I"], 0.0)
+    a = _CIA_W.get(m["A"], 0.0)
 
     iss = 1 - (1 - c) * (1 - i) * (1 - a)
     if scope == "C":

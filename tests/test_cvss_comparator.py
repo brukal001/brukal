@@ -56,6 +56,30 @@ def test_canonical_vectors_score_exactly():
         assert cvss.score_from_vector(vector) == expected, vector
 
 
+def test_incomplete_vector_raises_instead_of_defaulting():
+    # missing AC — must fail closed, not silently score with a defaulted metric
+    import pytest
+    with pytest.raises(ValueError):
+        cvss.score_from_vector("AV:N/PR:N/UI:N/S:U/C:H/I:H/A:H")
+
+
+def test_vector_missing_each_metric_in_turn_raises():
+    import pytest
+    full = "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    parts = full.split("/")
+    for i in range(len(parts)):
+        missing = "/".join(parts[:i] + parts[i + 1:])
+        with pytest.raises(ValueError):
+            cvss.score_from_vector(missing)
+
+
+def test_all_table_comparator_vectors_are_complete():
+    # score_from_vector now rejects any incomplete vector, so every table entry
+    # (and anything facts-modifiers can produce from it) must already be complete.
+    for comparator, (vector, _basis) in cvss.COMPARATOR_CVSS.items():
+        assert cvss.score_from_vector(vector) >= 0.0, comparator
+
+
 # --- 2. every table comparator is parseable and scores in (0, 10] ----------
 
 def test_every_comparator_has_a_parseable_vector_and_scores_in_range():
