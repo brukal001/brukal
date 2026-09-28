@@ -162,9 +162,17 @@ def prover_enabled(scope, method_name: str) -> bool:
 def gated_by_class(method):
     """Decorator for a confirm_* prover: skip it (return False, send nothing) when the
     scope's class policy does not allow the class it tests. Fail-closed: an unmapped
-    method under an active (restricted) policy is skipped. No-op (the prover runs
-    exactly as before) when the session has no scope or the scope is unrestricted —
-    this is what keeps the entire pre-existing test suite byte-identical."""
+    method under an active (restricted) policy is skipped.
+
+    A `None` scope means UNRESTRICTED here — the prover runs exactly as before (as it
+    also does under a scope with no allowed/forbidden classes). This is NOT a scope
+    bypass: this decorator only tunes WHICH bug classes a program invites, it is not a
+    security boundary. Authorization and host/path scope are enforced deterministically
+    at the web door (`web.check_web` / the gate) on every request the prover makes, so a
+    prover that runs here still cannot touch anything out of scope. Treating a missing
+    scope as unrestricted (rather than fail-closed) is therefore safe, and it is what
+    keeps the entire pre-existing test suite — much of which builds scope-less sessions
+    — byte-identical."""
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         scope = getattr(self, "scope", None)
