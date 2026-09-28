@@ -1,5 +1,9 @@
 # NEXT — Brukal improvement queue (read by brukal-improve-loop.sh)
 
+> **STATE 2026-09-29:** SP-A / evidence-CVSS / SP-B / SP-C **slice-1** all merged to main (2020 tests).
+> **Next human-gated task = SP-C slice-2** (kernel-mandatory in-cage proxy; needs Docker up). Resume prompt:
+> **`docs/HANDOFF-sp-c-slice2.md`**. The autonomous loop below is build+self-test-only; slice-2 is NOT for it.
+
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
 > ONLY — never a live pentest, never a real/external target, never a Docker/crAPI/DVWA run,
