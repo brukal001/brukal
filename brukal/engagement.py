@@ -90,6 +90,17 @@ def run(target: str, *, fake: bool = False, yes_authorised: bool = False,
     # the ledger and refuse a stale engagement — before any other guard.
     if not enforce_authorization(scope, audit, target):
         return 2
+
+    # Hard authorization gate (SP-C slice 1, closes the SP-B gap): today only
+    # `is_expired` (above) guards a live run; a drafted scope that was never approved
+    # (`authorization == ""`) has no expiry to trip and was previously refused only
+    # INCIDENTALLY, downstream, by e.g. `contains_ip` failing on a host-only draft.
+    # This makes the refusal direct and unconditional, before any cage/tool use —
+    # beside the expiry check, in the same place, for the same reason.
+    if not scope.is_authorized():
+        print("Refused: this engagement's scope is not authorised (authorized:false / "
+              "no authorization statement) — refusing to run.")
+        return 2
     warn_if_unkeyed_audit(audit, fake)
 
     # Scope + authorisation guard (belt and braces on top of the gate).

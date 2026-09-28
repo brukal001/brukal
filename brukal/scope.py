@@ -87,6 +87,21 @@ class Scope:
     # no_automated_scanners, no_high_traffic, pii_redaction).
     envelope: frozenset = frozenset()
 
+    def has_domain_asset(self) -> bool:
+        """True if any `authorized_hosts` entry is a domain/wildcard asset — i.e.
+        something DNS resolves, whose IP can therefore be rotated or poisoned —
+        rather than an IP literal. Used by `load_scope` to require `tls_verify`
+        for exactly the scopes where an unverified connection could be silently
+        MITM'd by a poisoned resolution; an IP-only lab scope has no such asset
+        and is unaffected."""
+        for h in self.authorized_hosts:
+            candidate = h[2:] if h.startswith("*.") else h
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                return True   # does not parse as an IP -> it's a hostname
+        return False
+
     def is_authorized(self) -> bool:
         """True if the scope file itself asserts authorization (a non-empty statement)."""
         return bool((self.authorization or "").strip())
@@ -370,7 +385,7 @@ def load_scope(path: str | Path) -> Scope:
     if "read_only" in env:
         destructive_allowed = False
 
-    return Scope(
+    scope = Scope(
         engagement=str(data["engagement"]),
         authorized_networks=tuple(nets),
         allowlisted_tools=tools,
@@ -396,6 +411,21 @@ def load_scope(path: str | Path) -> Scope:
         forbidden_classes=forbidden,
         envelope=env,
     )
+
+    # TLS-mandatory-for-domain-scopes (SP-C slice 1, fail-closed): a domain/wildcard
+    # asset is reached through the egress proxy by HOST NAME, and its IP can rotate
+    # (a CDN) or be poisoned (DNS). Without certificate verification a poisoned
+    # resolution is an undetectable MITM. An IP-only scope (a lab appliance reached
+    # by its literal address — crAPI, DVWA) has no such asset: its IP IS the
+    # authorisation, so there is nothing for TLS to additionally pin, and `tls_verify`
+    # stays whatever the operator disclosed (see the field's own docstring above).
+    if scope.has_domain_asset() and not scope.tls_verify:
+        raise ValueError(
+            "a domain-scoped engagement must verify TLS (tls_verify:true) so a "
+            "poisoned-IP MITM is caught — set tls_verify:true or remove the "
+            f"domain/wildcard host(s) from authorized_hosts: {sorted(scope.authorized_hosts)}")
+
+    return scope
 
 
 def authorization_record(scope: Scope, target: str) -> dict:
