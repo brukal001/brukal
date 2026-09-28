@@ -1053,6 +1053,15 @@ destroyed the single most valuable experiment the series has produced. **Fix it 
 
 ## Auto-improve loop log (build+self-test only — see NEXT.md; unrelated to the CR1 pentest series above)
 
+- **2026-09-28 — `cvss.grade()` no-raise contract made real (`484b4a5`).** `grade()` promised
+  "Never raises" but delegates to `score_from_vector`, which raises `ValueError` on an
+  incomplete vector (since `b6ffd03`) — a guarantee contingent on all 24 `COMPARATOR_CVSS`
+  entries staying complete. `grade()` now catches that `ValueError` and falls back to the
+  class-based `knowledge.enrich` number (the unmapped-comparator path) with a "class-based
+  fallback" basis; docstring updated. Test injects a partial comparator vector (real table
+  stays complete) and asserts a class dict rather than a raise. Full suite green (1939
+  passed). **Third and LAST of the 3 review notes — the `/code-review high` queue is fully
+  drained; refill from a fresh review/coverage pass before the loop runs again.**
 - **2026-09-28 — `_norm_host` rejects junk-after-bracket (`82263f8`).** The bracket branch
   returned the inside verbatim regardless of trailing text, so `[::1]evil.com` normalized to
   `::1` (silent truncation, judging a junk authority on the IP's scope). `_norm_host` now
