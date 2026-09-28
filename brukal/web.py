@@ -132,10 +132,19 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
         if not url:
             return deny(f"{kind} needs an in-scope page loaded first (navigate)")
 
-    scheme = _scheme_of(url)
+    # One parse of the URL, reused for scheme, host, and path below. `_scheme_of` and
+    # `_host_of` each urlsplit the same string and the path gate parsed it a third time;
+    # this door now splits once. urlsplit raising ValueError is the same unparseable case
+    # those helpers swallow to "" — so it fails closed to the identical host-parse denial
+    # (empty host below), keeping behavior byte-for-byte with the three-parse version.
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return deny("could not parse a host from the url")
+    scheme = (parts.scheme or "").lower()
     if scheme and scheme not in _OK_SCHEMES:
         return deny(f"scheme '{scheme}' not allowed (only http/https)", "hard:web-scheme")
-    host = _host_of(url)
+    host = (parts.hostname or "").lower()
     if not host:
         return deny("could not parse a host from the url")
     # PATH + EXCLUSION GATE. `in_scope` re-parses host/path from the URL itself (never
@@ -144,7 +153,6 @@ def check_web(action: WebAction, scope: Scope, current_url: str = "",
     # — and additionally denies a host that IS authorized but whose path (or a more
     # specific excluded subdomain) is carved out by `scope.exclusions`. Default-DENY,
     # fail-closed: an unparseable host already returned above.
-    parts = urlsplit(url)
     path = parts.path or "/"
     if not scope.in_scope(host, path):
         return deny(f"target out of scope: {host}{path}", layer="hard:scope")
