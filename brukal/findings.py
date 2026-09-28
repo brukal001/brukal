@@ -128,13 +128,15 @@ class FindingStore:
             cur.evidence = f.evidence                 # keep the richest evidence
         cur.ts = min(cur.ts, f.ts)                    # first-seen time
         # Evidence CVSS is a unit (score + vector + basis) describing ONE comparator's
-        # proof, so it merges all-or-nothing. Adopt f's triple only when this signature
-        # has no evidence CVSS yet and f carries one: a later comparator-graded
-        # confirmation then supplies the score a first, un-comparatored sighting lacked
-        # (first-write-wins used to drop it). An existing evidence CVSS is never
-        # overwritten (first comparator wins, mirroring first-seen ts) and never cleared
-        # by a later un-comparatored sighting. Severity/dedup are untouched by this.
-        if cur.cvss is None and f.cvss is not None:
+        # proof, so it merges all-or-nothing and STRONGEST-WINS — consistent with the
+        # strongest-severity and richest-evidence rules right above (an impact grade
+        # tracks the strongest demonstration, unlike `ts`, which is first-seen). Adopt
+        # f's triple when f carries a score and it is higher than what is stored (or
+        # nothing is stored yet): a later comparator-graded confirmation thus supplies a
+        # missing score AND can raise an understated one, so the score no longer
+        # contradicts an upgraded severity/evidence. A weaker or absent later score never
+        # lowers or clears the stored grade; a tie keeps the first (no churn).
+        if f.cvss is not None and (cur.cvss is None or f.cvss > cur.cvss):
             cur.cvss = f.cvss
             cur.cvss_vector = f.cvss_vector
             cur.cvss_basis = f.cvss_basis

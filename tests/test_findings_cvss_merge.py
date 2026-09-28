@@ -41,7 +41,7 @@ def test_later_comparator_fills_a_missing_evidence_cvss():
     assert f.confirmed is True                               # confirmation grows
 
 
-def test_existing_evidence_cvss_is_not_overwritten_by_a_second_comparator():
+def test_a_weaker_second_comparator_does_not_lower_the_cvss():
     store = FindingStore()
     store.add(_sighting(confirmed=True, cvss=9.6, cvss_vector=_VECTOR, cvss_basis=_BASIS))
     store.add(_sighting(confirmed=True, cvss=4.3,
@@ -49,6 +49,30 @@ def test_existing_evidence_cvss_is_not_overwritten_by_a_second_comparator():
                         cvss_basis="a weaker second comparator"))
     f = store.all()[0]
     assert f.cvss == 9.6 and f.cvss_vector == _VECTOR and f.cvss_basis == _BASIS
+
+
+def test_a_stronger_second_comparator_raises_the_cvss_and_swaps_the_whole_triple():
+    # A later, stronger comparator must raise the grade so it does not contradict the
+    # upgraded severity/evidence beside it. The triple swaps together (score+vector+basis).
+    store = FindingStore()
+    weak_vec = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
+    store.add(_sighting(severity="medium", confirmed=True, cvss=4.3,
+                        cvss_vector=weak_vec, cvss_basis="a weaker first comparator"))
+    store.add(_sighting(severity="critical", confirmed=True,
+                        cvss=9.6, cvss_vector=_VECTOR, cvss_basis=_BASIS))
+    f = store.all()[0]
+    assert f.cvss == 9.6 and f.cvss_vector == _VECTOR and f.cvss_basis == _BASIS
+    assert f.severity == "critical"          # score no longer contradicts severity
+
+
+def test_equal_scores_keep_the_first_triple():
+    store = FindingStore()
+    store.add(_sighting(confirmed=True, cvss=7.5, cvss_vector=_VECTOR, cvss_basis="first"))
+    store.add(_sighting(confirmed=True, cvss=7.5,
+                        cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                        cvss_basis="second, same score"))
+    f = store.all()[0]
+    assert f.cvss == 7.5 and f.cvss_basis == "first"     # tie -> no churn
 
 
 def test_a_later_uncomparatored_sighting_does_not_clear_the_cvss():
