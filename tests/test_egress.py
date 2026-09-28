@@ -368,3 +368,31 @@ def test_engagement_run_proceeds_past_authorization_check_when_authorized(
     assert "could not initialise the model client" in out   # got past the gate, into LLMClient
     assert rc == 2
     assert load_scope(scope_path).is_authorized() is True
+
+
+# --- slice-2 fix: an explicitly-authorised private CIDR (lab target) is reachable,
+#     but a domain that resolves to an UNauthorised private IP is still rebinding-denied.
+import ipaddress as _ipaddr
+
+
+def _scope_with_cidr(cidr):
+    return Scope("t", (_ipaddr.ip_network(cidr),), frozenset({"*"}), 60,
+                 authorized_hosts=frozenset())
+
+
+def test_egress_allows_in_scope_private_ip_lab_target():
+    scope = _scope_with_cidr("172.20.0.12/32")            # crAPI-style private /32
+    d = egress_decision(scope, "172.20.0.12", "/", ["172.20.0.12"])
+    assert d.allow is True, d.reason
+
+
+def test_egress_denies_domain_resolving_to_unauthorised_private_ip():
+    scope = _scope_with_host("api.x.com")                 # domain scope, no cidrs
+    d = egress_decision(scope, "api.x.com", "/", ["10.0.0.5"])   # rebinding to internal
+    assert d.allow is False and "not in scope" in d.reason
+
+
+def test_egress_denies_in_scope_private_cidr_but_ip_outside_it():
+    scope = _scope_with_cidr("172.20.0.12/32")            # authorises ONLY .12
+    d = egress_decision(scope, "172.20.0.12", "/", ["172.20.0.99"])  # different private ip
+    assert d.allow is False                               # .99 not authorised -> denied

@@ -202,9 +202,12 @@ def egress_decision(scope, host: str, path: str, resolved_ips: list) -> EgressDe
           re-implemented here);
       (c) `resolved_ips` is non-empty (an empty resolution is refused, not
           treated as "nothing to check");
-      (d) no IP in `resolved_ips` is `is_blocked_ip` — ANY private/metadata
-          resolution denies the whole request, which is what defeats
-          DNS-rebinding an in-scope host to an internal address.
+      (d) no IP in `resolved_ips` is `is_blocked_ip` UNLESS that exact IP is
+          explicitly authorised by the scope's own CIDRs — ANY private/metadata
+          resolution NOT in scope denies the whole request, which defeats
+          DNS-rebinding an in-scope host to an internal address; but a lab scope
+          that authorises a private CIDR (crAPI 172.20.0.12, DVWA 172.20.0.2)
+          may reach that exact IP, since the operator pinned it as the target.
     """
     h = (host or "").strip()
     p = path or ""
@@ -216,7 +219,11 @@ def egress_decision(scope, host: str, path: str, resolved_ips: list) -> EgressDe
     if not ips:
         return EgressDecision(False, "empty DNS resolution", h, p)
     for ip in ips:
-        if is_blocked_ip(ip):
+        # A blocked (private/metadata) IP is allowed ONLY when the scope's own
+        # CIDRs explicitly authorise that exact IP — the lab-target case. An
+        # in-scope DOMAIN that resolves to a private IP it does NOT authorise is
+        # a rebinding/SSRF attempt and is denied.
+        if is_blocked_ip(ip) and not scope.contains_ip(ip):
             return EgressDecision(
-                False, f"resolved ip {ip} is private/metadata/blocked", h, p)
-    return EgressDecision(True, "in-scope host, public resolution", h, p)
+                False, f"resolved ip {ip} is private/metadata and not in scope", h, p)
+    return EgressDecision(True, "in-scope host, resolution allowed", h, p)
