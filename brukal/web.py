@@ -781,7 +781,10 @@ class GovernedBrowser:
                             "queryString": [], "cookies": [],
                             "headersSize": -1, "bodySize": -1},
                 "response": {"status": c.status or 0, "statusText": "",
-                             "httpVersion": "HTTP/1.1", "headers": [], "cookies": [],
+                             "httpVersion": "HTTP/1.1",
+                             "headers": [{"name": k, "value": v}
+                                         for k, v in (getattr(c, "resp_headers", {}) or {}).items()],
+                             "cookies": [],
                              "content": {"size": c.resp_bytes or 0,
                                          "mimeType": c.content_type or "text/html"},
                              "redirectURL": "", "headersSize": -1,
