@@ -1075,6 +1075,62 @@ def _vault_for(vault_root, target: str) -> Path:
     return Path(vault_root) / safe
 
 
+def _target_host(target: str) -> str:
+    """The bare hostname of a run target given as a full URL, `host:port`, or bare
+    host. Returns "" when it parses to nothing. `Scope.contains_host` normalises any
+    `:port` / IPv6 brackets, so this only has to strip a scheme and path."""
+    from urllib.parse import urlsplit
+    t = (target or "").strip()
+    if not t:
+        return ""
+    if "://" in t:
+        return (urlsplit(t).hostname or "").strip().lower()
+    return t.split("/", 1)[0].strip().lower()   # host / host:port / host/path
+
+
+def _target_authorised(scope, target) -> bool:
+    """Is the run target already covered by the loaded scope? True for an in-scope IP
+    (IP/CIDR scopes — crAPI, DVWA, HTB) OR an authorised hostname (DOMAIN scopes — a
+    PortSwigger lab reached by its exact host through the egress proxy). Deterministic
+    membership only: no DNS, no widen, no wildcard synthesis. This is why a
+    single-exact-host domain scope no longer forces the IP-only `/32` 'authorise this
+    host?' prompt (whose only 'yes' path, `--host`, wildcard-expands to `*.parent` and
+    would authorise other users' instances). The per-request web gate still governs
+    every request regardless — this only decides whether to use the scope as-is."""
+    if scope.contains_ip(target):
+        return True
+    h = _target_host(target)
+    return bool(h) and scope.contains_host(h)
+
+
+def _context_objectives(context) -> list:
+    """Normalise the operator's --context brief (None / str / list[str]) into clean
+    objective lines: split on newlines, strip, drop blanks, de-dup preserving order."""
+    if not context:
+        return []
+    items = [context] if isinstance(context, str) else list(context)
+    out, seen = [], set()
+    for it in items:
+        for line in str(it).splitlines():
+            s = line.strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+    return out
+
+
+def _apply_context(session, context) -> list:
+    """Seed the planner's objective/focus channel from --context (the target's shape,
+    the app's behaviour, the bug classes to chase). RECOVERED INTENT ONLY: it steers
+    what the model PROPOSES; every proposal still passes the deterministic gate
+    unchanged (scope, injection, allowlist), so a brief can never widen scope or
+    authorise a host. Returns the objective lines it set."""
+    added = _context_objectives(context)
+    for c in added:
+        session.add_objective(c)
+    return added
+
+
 def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
                      vault_path, container, model, provider, base_url, lessons_path=None,
                      console, holder, hosts=(), login=None):
@@ -1105,7 +1161,9 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
     # 2) Scope — use the file if it already authorises this host, else offer to
     #    authorise just this one host for the session (a deliberate, confirmed act).
     scope = load_scope(scope_path)
-    if scope.contains_ip(target):
+    if _target_authorised(scope, target):
+        # In-scope IP (IP/CIDR scope) OR an authorised host (domain scope) — use the
+        # loaded scope as-is. No /32 prompt, no --host wildcard widening.
         session_scope = scope
     else:
         msg = (f"  ⚠ {target} is not in {scope_path}. Authorise this single host "
@@ -1453,7 +1511,7 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
              full_send=False, mode=None, no_research=False,
              packs_dir=None, source_dir=None, capture_path=None, fail_on=None,
              max_cost=None, max_research=None, max_time=None, resume=True,
-             login=None) -> int:
+             login=None, context=()) -> int:
     """Headless grounded agentic loop: Brukal autonomously drives the SAFE,
     in-scope enumeration. When it hands back (manual/escalation/stall/budget), and
     a human is present at a terminal, it drops straight into the interactive menu on
@@ -1479,6 +1537,18 @@ def run_auto(target=None, *, fake=False, yes_authorised=False, scope_path="scope
     if isinstance(prep, int):
         return prep
     session, audit, target, cage = prep
+    # Per-target briefing: seed the planner's focus from --context BEFORE the loop so
+    # the model aims at the target's real surface instead of wandering (recovered
+    # intent only — the gate is unchanged, see _apply_context). Warn on an empty brief:
+    # an unbriefed planner explores broadly and burns budget.
+    briefed = _apply_context(session, context)
+    if briefed:
+        _emit(console, f"  ✓ planner briefed with {len(briefed)} context line(s) — "
+                       "focus set (proposals still fully gated).")
+    else:
+        _emit(console, "  ⚠ no --context brief given: the planner has no focus and may "
+                       "explore broadly. Pass --context \"<scope / app behaviour / bug "
+                       "classes>\" to aim it.")
     if not getattr(session, "reachable", True):
         # Refuse to start rather than spend a budget assessing nothing. The report would
         # have said so honestly afterwards; saying so BEFORE costs one request.

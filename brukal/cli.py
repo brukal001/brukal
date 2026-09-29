@@ -275,7 +275,8 @@ def _cmd_auto(args) -> int:
         max_research=getattr(args, "max_research", None),
         max_time=getattr(args, "max_time", None),
         resume=not getattr(args, "no_resume", False),
-        login=_login_from_args(args))
+        login=_login_from_args(args),
+        context=getattr(args, "context", None) or ())
 
 
 def _cmd_apk(args) -> int:
@@ -702,6 +703,12 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--host", action="append", metavar="VHOST",
                     help="authorise a web vhost at scope time (e.g. --host nexus.htb); "
                          "repeatable. Lets auto render/request that vhost.")
+    pa.add_argument("--context", "--focus", action="append", dest="context", metavar="TEXT",
+                    help="brief the planner about THIS target so it does not wander: the "
+                         "scope shape, how the app behaves, the bug class(es) to focus on "
+                         "(e.g. --context \"SQLi in the product category filter; goal: show "
+                         "unreleased products\"). Repeatable. Recovered intent only — every "
+                         "proposal is still gated, so it can never widen scope.")
     _add_login_args(pa)
     pa.add_argument("--packs", default=None, metavar="DIR",
                     help="directory of contributed signature packs (*.json). Packs are "

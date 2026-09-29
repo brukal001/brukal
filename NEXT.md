@@ -1,13 +1,49 @@
 # NEXT — Brukal improvement queue (read by brukal-improve-loop.sh)
 
-> **STATE 2026-09-29:** SP-A / evidence-CVSS / SP-B / SP-C **slice-1** merged to main.
-> **SP-C slice-2 is BUILT + V1–V5 GREEN, committed LOCAL (`e90d1c7`, `66601d0`), NOT pushed.** Suite 2020
-> green (2021 with the new proxy test). **Remaining human step:** operator rebuilds the cage image
-> (`docker compose -f docker/docker-compose.yml build` — context is now the repo root) and
-> `--force-recreate`s `brukal-kali`, then pushes. Validated on a throwaway image; `brukal-kali` +
-> `docker-kali:latest` were left untouched. ⚠️ Docker Desktop crashed twice mid-build this session (stuck
-> `docker_data.vhdx`); recovery = quit Docker Desktop + `wsl --terminate docker-desktop` (NOT `--shutdown`,
-> which kills the Ubuntu session) + relaunch. The autonomous loop below is build+self-test-only.
+> **STATE 2026-09-30:** SP-A / evidence-CVSS / SP-B / SP-C slice-1 + **slice-2** all in `docker-kali:latest`
+> (cage runs the slice-2 proxy). **★ FIRST AUTHORIZED LIVE EXTERNAL RUN DONE** — PortSwigger Web Security
+> Academy, Apprentice SQLi "retrieval of hidden data" (a rotating-CDN DOMAIN target).
+> **Goal #1 CONTAINMENT PROVEN end-to-end**: `brukal verify` chain intact; **0 out-of-scope egress** (every
+> allowed request the exact lab host); per-request domain enforcement through the in-cage proxy (no IP pin,
+> survived CDN rotation); proxy-bypass kernel-dropped; metadata / portswigger.net / raw scanners (nmap,
+> `curl -k`, whatweb) all DENIED. **Goal #2 FINDING: lab SOLVED autonomously** — the *briefed* deepseek run
+> rendered `GET /filter?category=Gifts' OR 1=1--` and the lab shows `<p>Solved</p>` (`is-solved` banner);
+> host-side audit shows the `%20`-encoded injection = the autonomous browser, not the operator.
+> **Two fixes SHIPPED this session (tested, suite 2028 green, NOT committed):** (1) `auto`/`solve` accept a
+> single-exact-host DOMAIN scope (`_target_authorised` host-aware target auth — no `/32` prompt, no `--host`
+> `*.parent` wildcard); (2) `auto --context/--focus` planner brief (recovered intent only, gate untouched)
+> — the brief was DECISIVE: unbriefed deepseek wandered on nmap/whatweb and missed, briefed it went straight
+> to the category filter and solved it. ⚠️ Docker Desktop is UNSTABLE (cage exited 255 twice mid-session);
+> the domain run needed resolv.conf→1.1.1.1 in-cage (embedded 127.0.0.11 resolver was dead) + compose
+> `BRUKAL_DNS` default 1.1.1.1 — **both reverted at close; crAPI scope restored, cage left as found.**
+
+> One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
+> the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
+> ONLY — never a live pentest, never a real/external target, never a Docker/crAPI/DVWA run,
+> never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
+
+## ★ FOLLOW-UPS from the first live run (2026-09-30 — human/operator to prioritise)
+- **Finding-CAPTURE gap (highest value):** the briefed run SOLVED the lab but recorded **0 findings** — the
+  verify/finding detector did not recognise the PortSwigger `is-solved` banner (or the released-vs-unreleased
+  product differential) as a confirmed finding. Brukal *performed* the solving exploit but did not *register*
+  the win. A prover/verify signal for "the boolean-SQLi differential changed the result set" (and/or a
+  lab-solved banner recogniser) would close the loop for this whole lab class.
+- **Exploit-as-manual gap:** the strategist framed the injection as "next step is yours (intrusive)" even
+  though the recon/INPUT-VALIDATION agent had already rendered the payload. `--full-send` did not change this
+  (the model self-classified the exploit as a MANUAL note, not an executable web action). The exploit agent
+  should translate an identified payload into a governed request, not prose.
+- **Chrome-CDP + capture milestone (operator-directed):** web hunting used the raw-HTTP cage
+  (`DockerHttpWebCage`, curl-equivalent) for crawl/requests; Chrome (`DockerChromeCage`, real CDP) was used
+  only for navigate/screenshot. No live mitmproxy-style full request/response capture exists (`--capture` only
+  INGESTS an external HAR). Operator wants web hunting driven through Chrome CDP with full traffic capture so
+  provers work off real request/response. Design as its own tested milestone.
+- **Per-target briefing is now a first-class expectation:** `auto` warns when no `--context` is given. Consider
+  making the brief richer (feed it to prover selection / the web methodology, not only the strategist prompt).
+- **Cosmetic:** preflight builds `http://` + the already-`https://` target → `http://https://…` (non-fatal,
+  it continues). One-line fix in the preflight URL assembly.
+- **Domain-scope command-gate:** raw shell tools (nmap/whatweb/`curl -k`) are DENIED against a domain scope
+  (correct — only the governed web door reaches a domain host), but recon has *no* fingerprint tooling then.
+  Consider a domain-scope-aware recon that uses the web cage instead of shell scanners.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
@@ -25,6 +61,18 @@
 _(empty — refill from a review or a fresh coverage pass)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-30** `auto --context/--focus` — per-target planner brief (the distraction fix). Free-text lines
+  (`_context_objectives` normalise → `_apply_context` seeds the strategist objective channel) steer what the
+  model PROPOSES; the deterministic gate is untouched so a brief can never widen scope. `auto` warns when no
+  brief is given. `assist_cli.py` + `cli.py`; test `tests/test_auto_context_brief.py` (3). **Validated LIVE:**
+  briefed deepseek went straight to the category-filter SQLi and solved the lab; unbriefed it had wandered.
+  Suite 2028 green. NOT committed (operator to review/commit).
+- **2026-09-30** `auto`/`solve` accept a single-exact-host DOMAIN scope. `_target_authorised` (host-aware,
+  membership-only) replaces the IP-only `scope.contains_ip(target)` at the `_prepare_session` target gate, so
+  a pure domain scope (authorized_hosts, no CIDRs — a PortSwigger lab behind a CDN) is used as-is: no `/32`
+  "authorise this host?" prompt, and NO `--host` `_vhost_names` `*.parent` wildcard (which would authorise
+  other users' instances). Deterministic gate unchanged. `assist_cli.py`; test
+  `tests/test_auto_domain_target.py` (5). NOT committed.
 - **2026-09-29** SP-C **slice-2** — kernel-mandatory in-cage egress proxy. `66601d0` (infra) + `e90d1c7`
   (proxy-connects-to-authorised-private-lab-IP fix + test). Dockerfile bakes the minimal stdlib proxy
   package + `egress_proxy_cli.py` + a `brukalproxy` user (build context → repo root, `.dockerignore`
