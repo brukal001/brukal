@@ -1,8 +1,13 @@
 # NEXT — Brukal improvement queue (read by brukal-improve-loop.sh)
 
-> **STATE 2026-09-29:** SP-A / evidence-CVSS / SP-B / SP-C **slice-1** all merged to main (2020 tests).
-> **Next human-gated task = SP-C slice-2** (kernel-mandatory in-cage proxy; needs Docker up). Resume prompt:
-> **`docs/HANDOFF-sp-c-slice2.md`**. The autonomous loop below is build+self-test-only; slice-2 is NOT for it.
+> **STATE 2026-09-29:** SP-A / evidence-CVSS / SP-B / SP-C **slice-1** merged to main.
+> **SP-C slice-2 is BUILT + V1–V5 GREEN, committed LOCAL (`e90d1c7`, `66601d0`), NOT pushed.** Suite 2020
+> green (2021 with the new proxy test). **Remaining human step:** operator rebuilds the cage image
+> (`docker compose -f docker/docker-compose.yml build` — context is now the repo root) and
+> `--force-recreate`s `brukal-kali`, then pushes. Validated on a throwaway image; `brukal-kali` +
+> `docker-kali:latest` were left untouched. ⚠️ Docker Desktop crashed twice mid-build this session (stuck
+> `docker_data.vhdx`); recovery = quit Docker Desktop + `wsl --terminate docker-desktop` (NOT `--shutdown`,
+> which kills the Ubuntu session) + relaunch. The autonomous loop below is build+self-test-only.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
@@ -20,6 +25,15 @@
 _(empty — refill from a review or a fresh coverage pass)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-09-29** SP-C **slice-2** — kernel-mandatory in-cage egress proxy. `66601d0` (infra) + `e90d1c7`
+  (proxy-connects-to-authorised-private-lab-IP fix + test). Dockerfile bakes the minimal stdlib proxy
+  package + `egress_proxy_cli.py` + a `brukalproxy` user (build context → repo root, `.dockerignore`
+  added); entrypoint starts the proxy as `brukalproxy` then builds **uid-segmented nftables** (only that
+  uid egresses to public tcp {80,443}, private/metadata dropped even for it; every other uid gets lo+DNS
+  only ⇒ a tool that ignores `HTTP(S)_PROXY` cannot reach a target); compose sets the proxy env. Domain
+  hosts are proxy-enforced per-request (no longer IP-pinned). **V1–V5 all passed on a throwaway image**
+  (brukal-kali untouched). Suite 2020 green. **Committed local, NOT pushed; operator rebuilds+recreates
+  the cage and pushes.** HANDOFF `docs/HANDOFF-sp-c-slice2.md` is now spent.
 - **2026-09-28** `scope._norm_host` port predicate pinned to ASCII digits (`.isascii() and
   .isdigit()`), so a non-ASCII-digit port like `[::1]:80²` rejects to `""` instead of normalizing to
   `::1`. No security consequence (port discarded, inner IP still gated) — RFC-shaping nicety from the
@@ -67,9 +81,10 @@ _(empty — refill from a review or a fresh coverage pass)_
   defaulting missing metrics; docstring corrected. `b6ffd03`.
 
 ## HUMAN-GATED — do NOT touch in the autonomous loop
-- **SP-C real-internet containment** (scope-aware egress proxy / DNS handling) — changes the
-  containment boundary for real external targets; needs explicit maintainer sign-off. Draft:
-  the operator's scratch design (sp-c-design-draft).
+- **SP-C real-internet containment** — slice-1 (proxy core) AND slice-2 (kernel-mandatory in-cage proxy)
+  are BUILT + merged/committed. What remains is human-only: (a) operator rebuilds + `--force-recreate`s
+  `brukal-kali` from the new image and pushes; (b) a real-target dry run — still needs explicit
+  per-session authorization (CLAUDE.md) AND an SP-B draft+approve; the loop must never do it.
 - **SP-B scope-parser** — being built/merged on branch `sp-b-scope-parser`; leave it to the human.
 - **Any live run** against crAPI / DVWA / a real program — requires explicit per-session
   authorization (CLAUDE.md). The loop is build+self-test only.
