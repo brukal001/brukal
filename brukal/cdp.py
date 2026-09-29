@@ -2,12 +2,20 @@
 
 Task 1 (of 3): RFC 6455 WebSocket handshake helpers + client-masked frame
 encoding / decoding. This is transport framing ONLY — no socket I/O, no CDP
-session/client logic, no Network-domain capture. Those are Tasks 2 and 3.
+session/client logic, no Network-domain capture.
 
-Zero third-party dependencies: base64, hashlib, os, struct only.
+Task 2 (of 3): CDPClient — the WebSocket transport built on Task 1's framing:
+connect() does the real handshake, call() sends an id-tagged CDP command and
+blocks for its id-matched result while demuxing unsolicited CDP events into
+_events, and pick_debugger_url() picks a page target out of a `/json` listing.
+Task 3 (later) adds Network.* capture on top of this client.
+
+Zero third-party dependencies: base64, hashlib, json, os, socket, struct,
+time, urllib.parse only.
 """
 from __future__ import annotations
-import base64, hashlib, os, struct
+import base64, hashlib, json, os, socket, struct, time
+from urllib.parse import urlsplit
 
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_FRAME = 8_000_000            # bounded read: a target cannot make us allocate unbounded
@@ -71,3 +79,127 @@ def decode_frames(buf: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
         frames.append((opcode, data))
         i = j + ln
     return frames, buf[i:]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: CDPClient transport + /json target discovery
+# ---------------------------------------------------------------------------
+
+def pick_debugger_url(json_text: str) -> str:
+    """Pick a webSocketDebuggerUrl out of a Chrome `/json` target listing.
+    Prefers a `page` target; falls back to any target that has a debugger URL.
+    Fail-closed: raises CDPError if none is found or the JSON is malformed."""
+    try:
+        targets = json.loads(json_text or "[]")
+    except ValueError as e:
+        raise CDPError(f"malformed /json target listing: {e}") from e
+    pages = [t for t in targets if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    chosen = pages or [t for t in targets if t.get("webSocketDebuggerUrl")]
+    if not chosen:
+        raise CDPError("no CDP page target with a webSocketDebuggerUrl")
+    return chosen[0]["webSocketDebuggerUrl"]
+
+
+class CDPClient:
+    """Dependency-free CDP-over-WebSocket transport. Mirrors FakeCDP's call()/wait_load()
+    so ChromeCage does not know which it holds. Fail-closed: any malformed frame raises
+    CDPError, which the cage swallows into a WebResult note (never an ungated request).
+
+    Fragmented-message reassembly: Chrome may split a large CDP message across an
+    initial text frame (opcode 0x1, FIN=0) and one or more continuation frames
+    (opcode 0x0), ending at a frame with FIN set. Task 1's decode_frames() returns
+    (opcode, data) without exposing the FIN bit, so reassembly happens here: an
+    opcode-0x1/0x2 frame starts a pending message buffer, each following opcode-0x0
+    frame appends to it, and after every append we try json.loads() on the
+    accumulated bytes — a ValueError means the message is still incomplete (keep
+    buffering), success means it is a complete message (dispatch it, clear the
+    buffer). A single unfragmented text frame is just the n=1 case of this loop, so
+    the brief's plain single-frame behaviour keeps working unchanged.
+    """
+
+    def __init__(self, ws_url: str, timeout: float = 20.0):
+        self._ws_url = ws_url
+        self._timeout = timeout
+        self._sock: socket.socket | None = None
+        self._buf = b""
+        self._id = 0
+        self._events: list[tuple[str, dict]] = []
+        self._frag_buf: bytes | None = None   # pending (possibly incomplete) message bytes
+
+    def connect(self) -> None:
+        parts = urlsplit(self._ws_url)
+        self._sock = socket.create_connection((parts.hostname, parts.port or 80), self._timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = parts.path + (("?" + parts.query) if parts.query else "")
+        self._sock.sendall(ws_handshake_headers(f"{parts.hostname}:{parts.port}", path, key).encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise CDPError("CDP handshake closed early")
+            resp += chunk
+        head = resp.split(b"\r\n\r\n", 1)[0].decode(errors="replace")
+        accepts = [l.split(": ", 1)[1] for l in head.split("\r\n")
+                   if l.lower().startswith("sec-websocket-accept")]
+        if not accepts or accepts[0] != ws_accept(key):
+            raise CDPError("CDP handshake failed Sec-WebSocket-Accept check")
+        self._buf = resp.split(b"\r\n\r\n", 1)[1]
+
+    def call(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        if not self._sock:
+            raise CDPError("CDP not connected")
+        self._id += 1
+        want = self._id
+        self._sock.sendall(encode_frame(json.dumps({"id": want, "method": method,
+                                                     "params": params or {}})))
+        deadline = time.time() + (timeout or self._timeout)
+        while time.time() < deadline:
+            frames, self._buf = decode_frames(self._buf)
+            for op, data in frames:
+                if op == 0x8:                          # close
+                    raise CDPError("CDP connection closed")
+                if op in (0x9, 0xA):                    # ping/pong — not a message
+                    continue
+                if op in (0x1, 0x2):                    # initial text/binary frame
+                    self._frag_buf = data
+                elif op == 0x0:                         # continuation frame
+                    if self._frag_buf is None:
+                        raise CDPError("CDP continuation frame with no initial frame")
+                    self._frag_buf += data
+                else:
+                    continue
+                try:
+                    msg = json.loads(self._frag_buf)
+                except ValueError:
+                    continue                            # message still incomplete — buffer more
+                self._frag_buf = None
+                if "method" in msg:
+                    self._events.append((msg["method"], msg.get("params", {})))
+                elif msg.get("id") == want:
+                    if "error" in msg:
+                        raise CDPError(f"CDP error: {msg['error']}")
+                    return msg.get("result", {})
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                raise CDPError("CDP connection closed")
+            self._buf += chunk
+        raise CDPError(f"CDP call {method} timed out")
+
+    def wait_load(self, timeout: float = 20.0) -> None:
+        # navigate settle is handled by the caller's Page.navigate + a short poll; kept for
+        # interface parity with FakeCDP. No-op read to drain any queued events.
+        try:
+            self._sock.settimeout(0.3); self._buf += self._sock.recv(65536)
+        except Exception:
+            pass
+        finally:
+            if self._sock: self._sock.settimeout(self._timeout)
+
+    def close(self) -> None:
+        try:
+            if self._sock:
+                self._sock.sendall(encode_frame("", opcode=0x8))
+                self._sock.close()
+        except Exception:
+            pass
+        self._sock = None
