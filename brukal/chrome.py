@@ -59,6 +59,18 @@ class FakeCDP:
     def methods(self) -> list[str]:
         return [m for m, _ in self.calls]
 
+    def queue_network(self, url, status=200, resp_body="", method="GET"):
+        """Queue a fake Network.requestWillBeSent/responseReceived pair for a test
+        to assert on via drain_network()."""
+        self._net = getattr(self, "_net", [])
+        self._net.append({"method": method, "url": url, "req_headers": {}, "req_body": None,
+                          "status": status, "resp_headers": {}, "resp_body": resp_body})
+
+    def drain_network(self) -> list[dict]:
+        net = getattr(self, "_net", [])
+        self._net = []
+        return net
+
 
 class ChromeCage:
     """Runs an already-APPROVED WebAction against a real (or fake) Chrome via CDP.
@@ -74,11 +86,24 @@ class ChromeCage:
                           "returnByValue": True})
         return str(r.get("result", {}).get("value", ""))
 
+    def drain_capture(self) -> list:
+        """Return the full-capture request/response pairs collected by the transport
+        since the last drain (empty list when the transport doesn't support capture).
+        Never raises — a capture failure must never break a run."""
+        drain = getattr(self._t, "drain_network", None)
+        if not callable(drain):
+            return []
+        try:
+            return drain()
+        except Exception:
+            return []
+
     def run(self, action) -> WebResult:
         k = (action.kind or "").lower()
 
         if k in ("navigate", "get"):
             self._t.call("Page.enable")
+            self._t.call("Network.enable")
             self._t.call("Page.navigate", {"url": action.url})
             self._t.wait_load()
             return WebResult(status=200, url=action.url, body=self._dom(),
