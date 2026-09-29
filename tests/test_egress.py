@@ -259,6 +259,44 @@ def test_proxy_tunnels_in_scope_host_and_returns_origin_body(monkeypatch):
     assert len(allows) == 1 and len(denies) == 1
 
 
+def test_proxy_tunnels_to_in_scope_private_lab_ip_without_relaxing_guard():
+    """The lab-target path, tested for REAL — NO is_blocked_ip override. A scope
+    authorises 127.0.0.1/32 (a crAPI-style private /32) and the origin server runs
+    on 127.0.0.1, a normally-BLOCKED address. The proxy must still tunnel to it,
+    because the scope's own CIDR authorises that exact IP — the case
+    `_first_allowed_ip` exists for. Without the fix the guard refuses every blocked
+    IP and the proxy 403s its own lab target. Regression guard for SP-C slice-2 V5."""
+    origin = _start_origin_server()
+    origin_port = origin.server_address[1]
+
+    scope = Scope("lab", (_ipaddr.ip_network("127.0.0.1/32"),), frozenset({"*"}), 6000,
+                  authorized_hosts=frozenset())
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    from brukal.audit import AuditLog
+    audit = AuditLog(Path(tmp) / "audit.jsonl")
+
+    def resolver(host):
+        return ["127.0.0.1"] if host == "127.0.0.1" else []
+
+    proxy_port = _free_port()
+    server = build_server(scope, proxy_port, audit, resolver=resolver)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        raw = _http_get_via_proxy(server.server_address[1], f"127.0.0.1:{origin_port}")
+        assert b"200" in raw.splitlines()[0]
+        assert b"hello-from-origin" in raw
+    finally:
+        server.shutdown()
+        server.server_close()
+        origin.shutdown()
+        origin.server_close()
+
+    data = [json.loads(l)["data"] for l in open(audit.path) if l.strip()]
+    assert any(d.get("allow") is True for d in data), "lab /32 must be ALLOWED and tunnelled"
+
+
 # --------------------------------------------------------------------------- #
 # tls rule — domain/wildcard scopes must verify TLS
 # --------------------------------------------------------------------------- #

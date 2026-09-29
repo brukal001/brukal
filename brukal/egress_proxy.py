@@ -9,10 +9,11 @@ parsed by `egress.parse_http_target` / `egress.parse_connect_target`, resolved
 through the injected resolver, and judged by `egress.egress_decision` against
 the frozen `Scope` the proxy was started with — exactly the same scope object
 the rest of the engagement uses, never re-derived or re-parsed here. On ALLOW
-we tunnel to a resolved PUBLIC ip; on DENY we answer 403 and close. Belt and
-suspenders: even after an ALLOW, we connect only to a resolved address that
-`egress.is_blocked_ip` itself says is not blocked — the decision already
-excludes them, so this can only ever be a no-op, never a widening.
+we tunnel to a resolved ip the policy permits; on DENY we answer 403 and close.
+Belt and suspenders: even after an ALLOW, we connect only to a resolved address
+`egress` permits to be dialled — public, or a blocked/private IP the scope's own
+CIDRs explicitly authorise (the lab-target case). The decision already guarantees
+that, so this can only ever re-confirm it, never widen it.
 
 Every module-level lookup below goes through `egress.<name>` (not a bare
 imported name) so a test can monkeypatch `brukal.egress.is_blocked_ip` (or any
@@ -97,12 +98,16 @@ def _relay(a: socket.socket, b: socket.socket, timeout: float = _IDLE_TIMEOUT) -
                 pass
 
 
-def _first_public_ip(ips) -> str | None:
-    """Belt-and-suspenders: pick a resolved address that is not blocked, even
-    though `egress_decision` having ALLOWed already means none of them are.
-    Never connects to a blocked ip regardless of the decision."""
+def _first_allowed_ip(scope, ips) -> str | None:
+    """Belt-and-suspenders: pick a resolved address the egress policy permits to
+    be dialled — one that is either public, OR a private/blocked IP the scope's
+    own CIDRs explicitly authorise (the lab-target case, e.g. crAPI's 172.20.0.12
+    /32). `egress_decision` having ALLOWed already guarantees every blocked IP in
+    the resolved list is in-scope, so this only re-confirms that; it never widens
+    the decision (a blocked IP the scope does NOT authorise is still refused), it
+    only stops the guard from wrongly refusing an authorised lab /32."""
     for ip in ips:
-        if not egress.is_blocked_ip(ip):
+        if not egress.is_blocked_ip(ip) or scope.contains_ip(ip):
             return ip
     return None
 
@@ -167,7 +172,7 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
         if not decision.allow:
             self._deny()
             return
-        target_ip = _first_public_ip(ips)
+        target_ip = _first_allowed_ip(self.server.scope, ips)
         if target_ip is None:                       # belt-and-suspenders, unreachable on ALLOW
             self._deny()
             return
@@ -194,7 +199,7 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
         if not decision.allow:
             self._deny()
             return
-        target_ip = _first_public_ip(ips)
+        target_ip = _first_allowed_ip(self.server.scope, ips)
         if target_ip is None:                        # belt-and-suspenders, unreachable on ALLOW
             self._deny()
             return
