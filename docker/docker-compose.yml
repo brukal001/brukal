@@ -12,8 +12,11 @@
 services:
   kali:
     build:
-      context: .
-      dockerfile: Dockerfile.kali
+      # Context is the REPO ROOT (one level up from this compose file) so the
+      # Dockerfile can COPY the real brukal/*.py egress-proxy modules rather than
+      # vendoring stale duplicates. A repo-root .dockerignore keeps it lean.
+      context: ..
+      dockerfile: docker/Dockerfile.kali
     container_name: brukal-kali
     # A real init as PID 1 reaps zombie processes — headless chromium (the governed
     # web renderer) leaves <defunct> children that otherwise pile up in the cage.
@@ -70,6 +73,15 @@ services:
       # resolver egress is permitted to (blank => the container's default nameserver).
       - BRUKAL_SCOPE=${BRUKAL_SCOPE:-/scope.json}
       - BRUKAL_DNS=${BRUKAL_DNS:-}
+      # SP-C slice-2: route the cage's HTTP(S) tools (curl / DockerHttpWebCage /
+      # the GovernedBrowser) through the in-cage scope-aware egress proxy on
+      # 127.0.0.1:8888. curl honours these; a tool that ignores them still cannot
+      # egress directly — the uid-segmented nftables lock (entrypoint.sh) drops
+      # any non-proxy-uid packet to a target, making the proxy kernel-mandatory.
+      - HTTP_PROXY=http://127.0.0.1:8888
+      - HTTPS_PROXY=http://127.0.0.1:8888
+      - http_proxy=http://127.0.0.1:8888
+      - https_proxy=http://127.0.0.1:8888
     # No published ports: nothing inbound. The only way in is `docker exec`,
     # which the executor uses for approved commands.
 

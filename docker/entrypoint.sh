@@ -21,8 +21,55 @@ LOCKDOWN="${BRUKAL_EGRESS_LOCK:-1}"
 RESOLVER="${BRUKAL_DNS:-$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)}"
 RESOLVER="${RESOLVER:-127.0.0.11}"
 
+# SP-C slice-2: the in-cage scope-aware egress proxy. Its uid is the ONLY one the
+# nftables ruleset lets egress to the wider internet, so a tool that ignores the
+# HTTP(S)_PROXY env cannot reach a target directly — it MUST use the proxy.
+PROXY_UID="$(id -u brukalproxy 2>/dev/null || true)"
+PROXY_PORT="${BRUKAL_PROXY_PORT:-8888}"
+
 _family() {   # echo "ip" or "ip6" for an address/CIDR
     case "$1" in *:*) echo ip6 ;; *) echo ip ;; esac
+}
+
+start_egress_proxy() {
+    # Launch the scope-aware egress proxy as the unprivileged brukalproxy user.
+    # It loads /scope.json through the SAME deterministic, fail-closed loader the
+    # host uses and REFUSES (exits non-zero) on a missing/unparseable/unauthorized
+    # scope — so a failure to come up is meaningful, not noise. Binds 127.0.0.1
+    # only; the cage's HTTP(S)_PROXY env points tools at it.
+    # Not a proxy-capable environment — no brukalproxy user or the CLI is not
+    # baked in (e.g. the offline entrypoint test runs the RAW script with no
+    # image). Nothing to start, and NOT an error: the nftables lock stands on its
+    # own. In the real image both are always present (the Dockerfile build-checks
+    # the package), so a genuine failure below is still fatal under the lock.
+    if [ -z "$PROXY_UID" ] || ! id brukalproxy >/dev/null 2>&1 \
+            || [ ! -f /opt/brukalproxy/egress_proxy_cli.py ]; then
+        echo "[cage] egress proxy not installed in this environment — skipping (nft lock stands)."
+        return 0
+    fi
+    mkdir -p /var/log/brukal 2>/dev/null || true
+    chown brukalproxy /var/log/brukal 2>/dev/null || true
+    echo "[cage] starting scope-aware egress proxy as brukalproxy on 127.0.0.1:$PROXY_PORT ..."
+    runuser -u brukalproxy -- \
+        python3 /opt/brukalproxy/egress_proxy_cli.py "$SCOPE_FILE" \
+        >/var/log/brukal/egress-proxy.log 2>&1 &
+    PROXY_PID=$!
+    i=0
+    while [ "$i" -lt 20 ]; do
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "[cage] egress proxy exited during startup (fail-closed on scope). Log:"
+            sed 's/^/[proxy] /' /var/log/brukal/egress-proxy.log 2>/dev/null
+            return 1
+        fi
+        if python3 -c "import socket; socket.create_connection(('127.0.0.1', $PROXY_PORT), 0.5).close()" 2>/dev/null; then
+            echo "[cage] egress proxy up (pid $PROXY_PID)."
+            return 0
+        fi
+        i=$((i + 1)); sleep 0.5
+    done
+    echo "[cage] egress proxy did not bind 127.0.0.1:$PROXY_PORT in time. Log:"
+    sed 's/^/[proxy] /' /var/log/brukal/egress-proxy.log 2>/dev/null
+    return 1
 }
 
 lock_drop_all() {
@@ -75,17 +122,17 @@ PY
     # result as a /32 (or /128) allow rule. This is scope-TIME resolution: a hostile
     # DNS answer later cannot widen the pinned set (the ruleset is fixed until the
     # cage is restarted). Matches Brukal's "resolve at scope-time, never at runtime".
+    # SP-C slice-2: authorised DOMAIN/vhost assets are NO LONGER IP-pinned. A real
+    # program lives behind rotating CDN IPs, so a scope-time /32 pin is both stale
+    # (rotation breaks reachability) AND a direct bypass path for a tool (it could
+    # dial the pinned IP without the proxy). Instead the egress proxy (brukalproxy
+    # uid) enforces the host PER REQUEST — surviving rotation — and the
+    # uid-segmented rules below bound it to public 80/443 minus private ranges.
+    # Only IP scopes (labs) still get a kernel CIDR accept (the $CIDRS loop above).
+    # PINNED stays empty on purpose; the loop below is then a no-op.
     PINNED=""
     for h in $HOSTS; do
-        got=""
-        for ip in $(getent ahosts "$h" 2>/dev/null | awk '{print $1}' | sort -u); do
-            PINNED="$PINNED $ip"; got="$got $ip"
-        done
-        if [ -n "$got" ]; then
-            echo "[cage] pinned vhost $h ->$got"
-        else
-            echo "[cage] WARNING: could not resolve vhost $h (no pin added)."
-        fi
+        echo "[cage] domain asset $h — enforced per-request by the egress proxy (not IP-pinned; survives CDN rotation)."
     done
 
     # Build the ruleset. Default-drop output; allow loopback, established flows, DNS
@@ -127,6 +174,28 @@ $TUN    ct state established,related accept
         RULES="$RULES    $(_family "$ip") daddr $ip accept
 "
     done
+    # --- SP-C slice-2: uid-segmented egress -----------------------------------
+    # Everything above is uid-agnostic: loopback, return traffic, DNS to the one
+    # resolver, the VPN server, and the explicitly-authorised lab CIDRs / pinned
+    # host IPs. A lab IP scope therefore keeps working EXACTLY as before (V5, no
+    # regression). But a tool (running as brukalop) now has NO path to an
+    # arbitrary target: only the loopback proxy and those authorised lab IPs.
+    #
+    # ONLY the brukalproxy uid may reach the wider internet — and even then any
+    # private / loopback / link-local / metadata / CGNAT / ULA / reserved daddr is
+    # DROPPED (defence in depth with slice-1's is_blocked_ip; the authorised lab
+    # CIDRs above already matched first, so an authorised private /32 is
+    # unaffected). Public egress is bounded to tcp {80,443}. This is the
+    # kernel-mandatory guarantee: a domain/wildcard scope is contained despite
+    # rotating CDN IPs, and a tool that ignores HTTP(S)_PROXY simply cannot send.
+    if [ -n "$PROXY_UID" ]; then
+        RULES="$RULES    meta skuid $PROXY_UID ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, 100.64.0.0/10, 0.0.0.0/8, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4 } drop
+    meta skuid $PROXY_UID ip6 daddr { ::1, ::/128, fe80::/10, fc00::/7, ff00::/8, 2001:db8::/32 } drop
+    meta skuid $PROXY_UID tcp dport { 80, 443 } accept
+"
+    else
+        echo "[cage] WARNING: brukalproxy uid not found — emitting NO internet egress path (fully contained)."
+    fi
     RULES="$RULES    log prefix \"brukal-egress-drop \" counter drop
   }
 }
@@ -171,8 +240,21 @@ if [ "$LOCKDOWN" = "1" ]; then
         echo "[cage]  software-gate-only; you then lose the kernel-enforced scope guarantee.)"
         exit 1
     fi
+    # The uid-segmented lock makes the proxy the ONLY internet gateway, so it is
+    # mandatory when the lock is on: if it refuses (bad/unauthorized scope), fall
+    # back to drop-all and refuse to run rather than come up half-open.
+    if ! start_egress_proxy; then
+        echo "[cage] FATAL: the egress proxy is mandatory under the kernel lock — refusing to run."
+        lock_drop_all
+        exit 1
+    fi
 else
     echo "[cage] WARNING: BRUKAL_EGRESS_LOCK=0 — egress NOT locked (software gate only)."
+    # HTTP(S)_PROXY still points tools at the proxy; start it best-effort so they
+    # have a working gateway. In this degraded mode a proxy failure is not fatal.
+    if ! start_egress_proxy; then
+        echo "[cage] WARNING: egress proxy did not start — HTTP(S)_PROXY tools will fail until the scope is valid."
+    fi
 fi
 
 # --- 4. Idle so the executor can exec approved commands in -------------------

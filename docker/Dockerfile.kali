@@ -67,6 +67,30 @@ RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap
 # entrypoint can bring up the VPN and install the nftables egress lock (NET_ADMIN).
 RUN useradd -m -s /usr/sbin/nologin brukalop
 
-COPY entrypoint.sh /entrypoint.sh
+# --- SP-C slice-2: the in-cage scope-aware egress proxy -----------------------
+# A SECOND unprivileged user, `brukalproxy`. Its UID is the ONLY one the
+# entrypoint's nftables ruleset lets egress to a target on the public internet —
+# so a tool (running as brukalop) that ignores the HTTP(S)_PROXY env cannot send
+# a packet to a target directly; it MUST go through the proxy. That is the
+# kernel-mandatory guarantee for a domain/wildcard scope behind rotating IPs.
+#
+# The minimal, stdlib-only brukal package (scope/hostmatch/bugclass/egress/
+# egress_proxy + an EMPTY __init__, so it imports WITHOUT the pydantic-heavy real
+# brukal/__init__.py) plus the CLI are baked in at /opt/brukalproxy. The full
+# brukal package stays on the HOST and is never shipped into the cage.
+RUN useradd -m -s /usr/sbin/nologin brukalproxy
+COPY brukal/scope.py brukal/hostmatch.py brukal/bugclass.py \
+     brukal/egress.py brukal/egress_proxy.py \
+     /opt/brukalproxy/brukal/
+COPY docker/egress_proxy_cli.py /opt/brukalproxy/egress_proxy_cli.py
+RUN : > /opt/brukalproxy/brukal/__init__.py \
+    # Fail the BUILD if the baked minimal package is not self-contained: import
+    # every module explicitly (lazy intra-package imports would otherwise hide a
+    # missing file until runtime).
+    && python3 -c "import sys; sys.path.insert(0, '/opt/brukalproxy'); \
+from brukal import scope, hostmatch, bugclass, egress, egress_proxy; print('[build] proxy package OK')" \
+    && python3 -m py_compile /opt/brukalproxy/egress_proxy_cli.py
+
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

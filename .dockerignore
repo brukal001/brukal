@@ -1,0 +1,16 @@
+# Build context for docker/Dockerfile.kali is the REPO ROOT (so the Dockerfile can
+# COPY the real brukal/*.py egress-proxy modules instead of vendoring stale copies).
+# Keep the context lean: only brukal/*.py and docker/* are actually COPYed in.
+.git
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+*.egg-info
+tests
+docs
+*.log
+docker/vpn
+docker/vault
