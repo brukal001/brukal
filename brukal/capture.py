@@ -53,7 +53,9 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 @dataclass(frozen=True)
 class CapturedRequest:
-    """One request/response pair, in scope and carrying no secret."""
+    """One request/response pair, in scope and carrying no secret: request credentials
+    are stripped, and response headers (`resp_headers`) are credential-stripped and
+    redacted, as the response body already is."""
 
     method: str
     url: str
@@ -176,11 +178,21 @@ def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
             safe_response = redact.text(str(response))[:_MAX_RESPONSE_KEPT]
         except Exception:
             safe_response = str(response)[:_MAX_RESPONSE_KEPT]
+    # Response headers carry credentials too (Set-Cookie is the live session). Same two
+    # steps as the request side: drop credential-named headers, then redact what remains
+    # in case a token is disclosed under an innocuous name (X-Session-Token).
+    safe_resp_headers = {str(k): v for k, v in (resp_headers or {}).items()
+                         if str(k).lower() not in _CREDENTIAL_HEADERS}
+    try:
+        from . import redact
+        safe_resp_headers = {k: redact.text(str(v)) for k, v in safe_resp_headers.items()}
+    except Exception:
+        pass
     return CapturedRequest(
         method=str(method or "GET").upper(), url=url, headers=clean, body=safe_body,
         status=status, resp_bytes=resp_bytes, content_type=content_type or "",
         auth_kind=kind, source=source, response=safe_response,
-        resp_headers=dict(resp_headers or {}))
+        resp_headers=safe_resp_headers)
 
 
 def parse_har(text: str, scope, max_entries: int = 2000) -> tuple:

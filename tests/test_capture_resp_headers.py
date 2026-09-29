@@ -42,3 +42,24 @@ def test_resp_headers_defaults_to_empty_dict_when_omitted():
                           _scope(), capture.IngestReport(), "self")
     assert rec is not None
     assert rec.resp_headers == {}
+
+
+_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijk"
+
+
+def test_response_credentials_do_not_survive_into_resp_headers():
+    """A response carries the live session (Set-Cookie) — the same credential class the
+    request-header strip exists for. Named credential headers are dropped; a token under a
+    non-credential name (X-Session-Token) is caught by redaction. Benign headers stay."""
+    rec = capture._record(
+        "POST", "http://lab.example/login", {}, None, 200, 4, "application/json",
+        _scope(), capture.IngestReport(), "self",
+        resp_headers={"Set-Cookie": "session=deadbeefcafe0123; HttpOnly",
+                      "Authorization": "Bearer " + _JWT,
+                      "X-Session-Token": _JWT,
+                      "Content-Type": "application/json"})
+    assert rec is not None
+    blob = str(rec.resp_headers)
+    assert "deadbeefcafe0123" not in blob and _JWT not in blob
+    assert not any(k.lower() in ("set-cookie", "authorization") for k in rec.resp_headers)
+    assert rec.resp_headers["Content-Type"] == "application/json"
