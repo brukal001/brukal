@@ -203,3 +203,71 @@ class CDPClient:
         except Exception:
             pass
         self._sock = None
+
+    def drain_network(self) -> list[dict]:
+        """Fold demuxed Network.* events through a NetworkCapture and resolve each
+        drained pair's response body via Network.getResponseBody. Consumed events are
+        removed from self._events; non-Network events are left for the caller."""
+        nc = NetworkCapture()
+        for method, params in self._events:
+            if method.startswith("Network."):
+                nc.ingest(method, params)
+        self._events = [(m, p) for m, p in self._events if not m.startswith("Network.")]
+
+        def _body(rid):
+            r = self.call("Network.getResponseBody", {"requestId": rid})
+            return r.get("body", ""), bool(r.get("base64Encoded"))
+
+        return nc.drain(_body)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Network.* capture accumulator + drain()
+# ---------------------------------------------------------------------------
+
+class NetworkCapture:
+    """Pairs Network.* events by requestId. Only requests that reached loadingFinished
+    with a response are drained — an in-flight request is not evidence (mirrors the
+    'an absence is not a control' rule at the web door)."""
+
+    def __init__(self):
+        self._req: dict[str, dict] = {}
+        self._resp: dict[str, dict] = {}
+        self._done: set[str] = set()
+
+    def ingest(self, method: str, params: dict) -> None:
+        rid = params.get("requestId")
+        if not rid:
+            return
+        if method == "Network.requestWillBeSent":
+            r = params.get("request", {})
+            self._req[rid] = {"method": r.get("method", "GET"), "url": r.get("url", ""),
+                              "headers": dict(r.get("headers", {})),
+                              "body": r.get("postData")}
+        elif method == "Network.responseReceived":
+            r = params.get("response", {})
+            self._resp[rid] = {"status": r.get("status"), "headers": dict(r.get("headers", {}))}
+        elif method == "Network.loadingFinished":
+            self._done.add(rid)
+
+    def drain(self, fetch_body) -> list[dict]:
+        out = []
+        for rid in list(self._done):
+            req, resp = self._req.get(rid), self._resp.get(rid)
+            if not req or not resp:
+                continue
+            try:
+                body, is_b64 = fetch_body(rid)
+                if is_b64:
+                    try:
+                        body = base64.b64decode(body).decode("utf-8", "replace")
+                    except Exception:
+                        body = ""              # binary/unreadable — drop the body, keep the pair
+            except Exception:
+                body = ""
+            out.append({"method": req["method"], "url": req["url"],
+                        "req_headers": req["headers"], "req_body": req["body"],
+                        "status": resp["status"], "resp_headers": resp["headers"],
+                        "resp_body": body})
+            self._done.discard(rid); self._req.pop(rid, None); self._resp.pop(rid, None)
+        return out
