@@ -72,6 +72,54 @@ start_egress_proxy() {
     return 1
 }
 
+start_chromium() {
+    # Launch headless, debuggable chromium as the unprivileged brukalop user —
+    # deliberately NOT brukalproxy — so the browser is bound by the SAME
+    # uid-segmented nftables lock as any other tool in the cage: it has no
+    # direct path to the internet and MUST egress through the proxy at
+    # 127.0.0.1:$PROXY_PORT for every request, exactly like curl or a
+    # governed web cage.
+    #
+    # --proxy-bypass-list="<-loopback>" is a SECURITY REQUIREMENT, not a
+    # convenience flag. Chromium's default behaviour is to bypass whatever
+    # proxy is configured for loopback destinations. Combined with CDP
+    # listening on 127.0.0.1:9222, that default would let a malicious page
+    # loaded in the browser run page-JS that calls the loopback CDP endpoint
+    # directly (bypassing the proxy entirely), and from there drive the
+    # devtools protocol itself — an SSRF-into-CDP path turning a hostile
+    # target page into control of the browser session. Passing
+    # "<-loopback>" removes that implicit bypass so even a page's
+    # loopback-targeted request is routed through 127.0.0.1:$PROXY_PORT,
+    # whose egress guard denies loopback/private destinations outright,
+    # closing the path. (This only changes how REQUEST TARGETS from pages
+    # are routed — chromium's own connection to the proxy process is always
+    # made directly, as it must be.) If chromium in the built image does not
+    # honour the exact "<-loopback>" token, the flag still documents the
+    # intent and is still asserted present by the shape test; confirming the
+    # live behaviour requires a running container, which is human-gated (see
+    # docs/HANDOFF-chrome-cdp-bringup.md) — this session only shape-tests.
+    #
+    # Certificate verification stays ON: no flag here disables TLS cert
+    # checking in any form. TLS relaxation, if ever needed, is a Brukal-side
+    # scope.tls_verify concern — never baked into the cage image.
+    if ! id brukalop >/dev/null 2>&1 || ! command -v chromium >/dev/null 2>&1; then
+        echo "[cage] chromium not installed in this environment — skipping (not an error)."
+        return 0
+    fi
+    mkdir -p /var/log/brukal 2>/dev/null || true
+    chown brukalop /var/log/brukal 2>/dev/null || true
+    echo "[cage] starting headless chromium as brukalop (CDP on 0.0.0.0:9222, proxied via 127.0.0.1:$PROXY_PORT) ..."
+    runuser -u brukalop -- \
+        chromium --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+        --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
+        --proxy-server="http://127.0.0.1:${PROXY_PORT}" \
+        --proxy-bypass-list="<-loopback>" \
+        about:blank \
+        >/var/log/brukal/chromium.log 2>&1 &
+    CHROMIUM_PID=$!
+    echo "[cage] chromium launched in background (pid $CHROMIUM_PID); log at /var/log/brukal/chromium.log."
+}
+
 lock_drop_all() {
     # Fail-closed ruleset: drop ALL egress except loopback.
     nft flush ruleset 2>/dev/null || true
@@ -256,6 +304,10 @@ else
         echo "[cage] WARNING: egress proxy did not start — HTTP(S)_PROXY tools will fail until the scope is valid."
     fi
 fi
+
+# --- 3b. Debuggable chromium (only after the proxy is up AND nftables is
+# applied — the browser must come up already contained, never before) -------
+start_chromium
 
 # --- 4. Idle so the executor can exec approved commands in -------------------
 exec sleep infinity
