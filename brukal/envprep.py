@@ -146,3 +146,41 @@ def plan_vpn(ovpn_path, targets, provider, model, scope_path, vault, audit,
         verify_steps=("tun_up", "scope_matches", "target_routable"),
         dispatch=Dispatch("engagement", str(targets[0]), "", provider, model, vault, audit),
     )
+
+
+def execute(plan: BringUpPlan, runner) -> BringUpResult:
+    """Apply the plan via the runner, in order, stopping at the first failure.
+    Assumes the scope file at plan.scope_path is ALREADY frozen (authorized:true)."""
+    steps = []
+    if plan.vpn_file:
+        steps.append(runner.stage_vpn(plan.vpn_file))
+        if not steps[-1].ok:
+            return BringUpResult(False, tuple(steps))
+    if plan.cage_action == "recreate":
+        steps.append(runner.compose_recreate(plan.scope_path, plan.resolver))
+        if not steps[-1].ok:
+            return BringUpResult(False, tuple(steps))
+        steps.append(runner.set_resolver(plan.resolver))
+        if not steps[-1].ok:
+            return BringUpResult(False, tuple(steps))
+    return BringUpResult(all(s.ok for s in steps), tuple(steps))
+
+
+def _scope_match_token(plan: BringUpPlan) -> str:
+    hosts = plan.scope_draft.get("authorized_hosts") or []
+    cidrs = plan.scope_draft.get("authorized_cidrs") or []
+    return (hosts[0] if hosts else cidrs[0].split("/")[0])
+
+
+def verify(plan: BringUpPlan, runner) -> BringUpResult:
+    steps = []
+    for name in plan.verify_steps:
+        if name == "scope_matches":
+            steps.append(runner.scope_matches(_scope_match_token(plan)))
+        elif name == "http_probe_via_proxy":
+            steps.append(runner.http_probe_via_proxy(plan.dispatch.target))
+        elif name == "target_routable":
+            steps.append(runner.target_routable(plan.dispatch.target))
+        else:
+            steps.append(getattr(runner, name)())
+    return BringUpResult(all(s.ok for s in steps), tuple(steps))
