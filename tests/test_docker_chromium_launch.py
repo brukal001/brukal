@@ -21,3 +21,14 @@ def test_entrypoint_launches_proxied_chromium_as_nonproxy_uid():
 def test_compose_publishes_cdp_on_host_loopback_only():
     text = Path("docker/docker-compose.yml").read_text()
     assert "127.0.0.1:9222:9222" in text
+
+
+def test_entrypoint_bridges_cdp_to_host_with_socat():
+    # Chromium 150+ ignores --remote-debugging-address and binds CDP to the
+    # container's loopback only, so the published port cannot reach it without a
+    # raw-TCP forwarder from the bridge interface to 127.0.0.1:9222. Live-validated
+    # 2026-10-01; asserted here so a future edit can't silently drop it.
+    text = Path("docker/entrypoint.sh").read_text()
+    assert "socat" in text
+    assert "TCP-LISTEN:9222" in text
+    assert "TCP:127.0.0.1:9222" in text
