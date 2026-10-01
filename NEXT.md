@@ -33,6 +33,22 @@
 > needed an admin `POST /login` → 302 /my-account, driven manually). **Capture pipeline fires but
 > registered 0 findings** — 5 gaps found (see TOP + full write-up in vault `Brukal.md` 2026-10-01). No
 > code changed; bring-up (compose `BRUKAL_DNS` default + scope-mount swap) reverted, cage left on crAPI.
+>
+> **STATE 2026-10-02 (base CONVERGED on local `main`; NOT pushed — main 36 ahead of origin):** two branches
+> merged, then deleted. (1) `feat/hunt-wizard-envprep` — guided `brukal hunt` wizard (web: URL+context /
+> VPN: .ovpn+targets) over new `cage.py`/`keys.py`/`envprep.py`/`hunt_wizard.py`: auto-draft scope → one
+> `[y/N]` → freeze → cage bring-up → dispatch, no separate shell commands; five invariants intact (brainstorm
+> → spec → plan → SDD 6 TDD tasks + opus whole-branch review). (2) `feat/chrome-cdp-capture` — the full
+> milestone (domain-auth + `auto --context` = `b3af852`, CDP capture, capture_confirm provers,
+> proxied-chromium docker) after an opus whole-branch review + a fix wave for 3 live-CDP robustness bugs
+> (`CDPError` fail-closed in `ChromeCage.run`; split probe-2s / session-20s timeout; `_MAX_MESSAGE` bounded
+> fragment reassembly). **Clean 3-way merge; merged full suite 2114 pass/1 skip.** The wizard's 3 live
+> blockers are now ON main (domain-auth, `auto --context`, egress-proxy/CDP/VPN) ⇒ it is build-complete and
+> live-ready MODULO a cage rebuild + a human-gated run. ◻ **Small enabled follow-up** (build+self-test): wire
+> `hunt_wizard._default_dispatch`'s web path to forward the brief via `run_auto(context=[…])` (the param now
+> exists post-merge), drop the now-stale "awaits the auto --context feature" comment, and monkeypatch the 4
+> `test_hunt_wizard.py` tests that leak keys into the pytest-process env. The **TOP** below
+> (capture_confirm solve/auth-success prover) is unchanged and still the highest-value next build.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
