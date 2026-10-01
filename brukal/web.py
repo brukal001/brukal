@@ -62,6 +62,8 @@ class WebAction:
     selector: str = ""                          # for click/fill
     value: str = ""                             # for fill (an attack payload, NOT sanitised)
     expression: str = ""                        # for eval (JS in page context)
+    via: str = "auto"                           # auto | raw | browser — routing hint ONLY;
+                                                 # the GATE (check_web) ignores this field entirely
 
     def describe(self) -> str:
         if self.kind in _URL_ACTIONS:
@@ -426,29 +428,42 @@ class DockerHttpWebCage:
 
 def parse_web_action(text: str) -> "WebAction | None":
     """Parse a strategist `WEB:` line into a WebAction. Grammar (verb first):
-      navigate|get|render <url>      · request <METHOD> <url> [body]
+      [via:browser|via:raw] navigate|get|render <url>  · request <METHOD> <url> [body]
       fill <selector> <payload...>   · click <selector>   · eval <js...>
       screenshot <url>               · intercept <url-pattern>
-    A bare http(s) URL is treated as `get`. Returns None if unparseable."""
+    A bare http(s) URL is treated as `get`. An optional leading `via:browser` /
+    `via:raw` token sets `.via` as a routing HINT for CompositeWebCage — the gate
+    (check_web) re-reads the action itself and ignores `.via` entirely.
+    Returns None if unparseable."""
     toks = (text or "").strip().split()
+    if not toks:
+        return None
+    via = "auto"
+    if toks[0].lower().startswith("via:"):
+        via = toks[0].split(":", 1)[1].lower() or "auto"
+        toks = toks[1:]
     if not toks:
         return None
     verb = toks[0].lower()
     rest = toks[1:]
+    act: "WebAction | None" = None
     if verb in ("navigate", "get", "render", "screenshot", "intercept"):
-        return WebAction(kind={"render": "get"}.get(verb, verb), url=rest[0] if rest else "")
-    if verb == "eval":
-        return WebAction(kind="eval", expression=" ".join(rest))
-    if verb in ("click", "fill"):
-        return WebAction(kind=verb, selector=rest[0] if rest else "",
-                         value=" ".join(rest[1:]))
-    if verb == "request":
+        act = WebAction(kind={"render": "get"}.get(verb, verb), url=rest[0] if rest else "")
+    elif verb == "eval":
+        act = WebAction(kind="eval", expression=" ".join(rest))
+    elif verb in ("click", "fill"):
+        act = WebAction(kind=verb, selector=rest[0] if rest else "",
+                        value=" ".join(rest[1:]))
+    elif verb == "request":
         method = rest[0].upper() if rest else "GET"
         url = rest[1] if len(rest) > 1 else ""
-        return WebAction(kind="request", url=url, method=method, body=" ".join(rest[2:]))
-    if verb.startswith("http://") or verb.startswith("https://"):
-        return WebAction(kind="get", url=verb)
-    return None
+        act = WebAction(kind="request", url=url, method=method, body=" ".join(rest[2:]))
+    elif verb.startswith("http://") or verb.startswith("https://"):
+        act = WebAction(kind="get", url=verb)
+    if act is None:
+        return None
+    act.via = via
+    return act
 
 
 class CompositeWebCage:
@@ -473,18 +488,30 @@ class CompositeWebCage:
 
     def run(self, action: WebAction) -> WebResult:
         k = (action.kind or "").lower()
-        # `get` goes to the HTTP cage, not Chrome: it is jar-aware (carries the
+        via = (getattr(action, "via", "auto") or "auto").lower()
+        # `get`/`request` default to the HTTP cage: it is jar-aware (carries the
         # GovernedBrowser session cookie jar, so authenticated pages are reachable
         # after login) and returns the RAW HTML/JS — which is what the crawl needs
-        # to mine forms, params and API routes from the JS bundle. Chrome render
-        # (`navigate`) stays for when JS execution / a screenshot is actually needed.
+        # to mine forms, params and API routes from the JS bundle. `via="browser"`
+        # is a routing HINT ONLY (never a gate input — check_web re-reads the action
+        # itself) that lets a prover DEMAND the real browser for a get/request, e.g.
+        # to see post-JS DOM state or trigger a client-side sink raw HTTP can't reach.
+        if k in ("get", "request"):
+            if via == "browser":
+                return self._render.run(action)
+            return self._request.run(action)          # auto + raw
         if k in ("navigate", "screenshot"):
             return self._render.run(action)
-        if k in ("get", "request"):
-            return self._request.run(action)
-        return WebResult(url=action.url,
-                         note=f"'{k}' needs the live CDP browser (interactive) — "
-                              f"not wired live yet; use navigate/get/request/screenshot")
+        # interactive: click/fill/eval/intercept — only the live CDP render cage
+        # can do these. If CDP isn't up it raises NotImplementedError; fail closed
+        # to the explanatory note rather than silently falling back to raw HTTP
+        # (which cannot click/fill/eval) or letting the exception escape.
+        try:
+            return self._render.run(action)
+        except NotImplementedError:
+            return WebResult(url=action.url,
+                             note=f"'{k}' needs the live CDP browser (interactive) — "
+                                  f"CDP not available; use navigate/get/request/screenshot")
 
 
 def map_cage_host(host: str, ip: str, container: str = "brukal-kali") -> bool:

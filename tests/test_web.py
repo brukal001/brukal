@@ -184,7 +184,13 @@ def test_composite_cage_routes_by_action_kind():
     from brukal.web import CompositeWebCage, WebResult
 
     class Render:
-        def run(self, a): return WebResult(note="render", url=a.url)
+        def run(self, a):
+            # interactive kinds need the live CDP backend; this stub stands in
+            # for "CDP not available" the same way the real render cage does
+            # before Task 9 wires a live ChromeCage in.
+            if a.kind in ("click", "fill", "eval", "intercept"):
+                raise NotImplementedError("CDP not available")
+            return WebResult(note="render", url=a.url)
 
     class Request:
         def run(self, a): return WebResult(note="request", url=a.url)
@@ -196,7 +202,7 @@ def test_composite_cage_routes_by_action_kind():
     # scanning) and returns raw HTML/JS for the crawl to mine; `navigate` stays render.
     assert cage.run(WebAction("get", url="http://x/")).note == "request"
     assert cage.run(WebAction("request", url="http://x/")).note == "request"
-    # a live-interactive action returns an explanatory note, not a crash
+    # a live-interactive action with CDP down returns an explanatory note, not a crash
     assert "CDP" in cage.run(WebAction("fill", selector="#a")).note
 
 
