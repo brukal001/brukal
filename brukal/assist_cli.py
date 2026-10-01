@@ -1259,7 +1259,7 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
             from .cdp import CDPClient, pick_debugger_url
             from .chrome import ChromeCage
             j = urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=2).read().decode()
-            client = CDPClient(pick_debugger_url(j))
+            client = CDPClient(pick_debugger_url(j), timeout=2)
             client.connect()
             render_cage = ChromeCage(client)                  # live CDP: interactive + Network capture
         except Exception:

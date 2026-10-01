@@ -271,20 +271,39 @@ class _ConfirmMixin:
         """Register wins from CAPTURED traffic: an exploit the model already performed
         (lab-solved banner), a boolean-SQLi body differential, or an unescaped reflection.
         LLM-free; reads only what the gated door captured; dedup is FindingStore's job.
-        Issues no requests of its own — safe to call unconditionally, every round."""
+        Issues no requests of its own — safe to call unconditionally, every round.
+
+        `browser.captured()` is the CUMULATIVE, never-cleared capture list, and this
+        method is called every round — so without its own per-signature memory, a
+        capture made in round 1 would be re-offered to `_record_confirmed` in every
+        later round. FindingStore dedups the STORE, but `_record_confirmed`
+        unconditionally appends to `self.highlights`/`self.notes` and (every capture
+        finding names a comparator) emits a fresh `experiment_result`/
+        `experiment_outcome` pair into the audit log regardless of whether the Finding
+        was new — so re-offering the same signature would re-pollute the audit ledger
+        and report narration every round even though the Finding store itself stayed
+        at one. `self._capture_confirmed_sigs` is this method's own memory, keyed the
+        same way `Finding.signature` is, so each unique capture-finding is recorded
+        (and its highlight/note/experiment-outcome emitted) AT MOST ONCE per run."""
         from . import capture_confirm as cc
+        from .findings import _norm
         browser = getattr(self, "browser", None)
         if browser is None:
             return 0
+        sigs = getattr(self, "_capture_confirmed_sigs", None)
+        if sigs is None:
+            sigs = self._capture_confirmed_sigs = set()
         caps = browser.captured()
         n = 0
         for f in cc.findings_from_capture(caps, self.scope):
-            before = len(self.findings)
+            sig = (_norm(f["title"]), _norm(f["target"]), _norm(f["param"]))
+            if sig in sigs:
+                continue
             self._record_confirmed(f["target"], f["title"], f["severity"], f["param"],
                                    f["evidence"], category=f.get("category", "web"),
                                    comparator=f.get("comparator", ""))
-            if len(self.findings) > before:
-                n += 1
+            sigs.add(sig)
+            n += 1
         return n
 
     def _record_confirmed_experiment(self, target, title, comparator, evidence,

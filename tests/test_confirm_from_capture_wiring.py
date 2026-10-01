@@ -8,9 +8,18 @@ gated door already captured, but nothing called it. This test proves:
   2. A second call does NOT double-record (FindingStore dedup by signature).
   3. `confirm_surface()` — the method the hunt loop already calls once per round —
      invokes it too, unconditionally (always-on, no env flag).
+  4. (fix round 1) `browser.captured()` is cumulative and never cleared, and
+     `_confirm_from_capture` runs every round — so the SAME capture must not be
+     re-recorded on every later round. FindingStore already dedups the store, but
+     `_record_confirmed` unconditionally appends to `highlights`/`notes` and emits a
+     fresh `experiment_result`/`experiment_outcome` audit pair regardless of whether
+     the Finding was new. `_confirm_from_capture` must therefore emit each unique
+     capture-finding signature AT MOST ONCE across the whole run, not just dedupe the
+     FindingStore.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -39,18 +48,25 @@ class _SolvedCage:
 
 
 def _session():
+    audit_path = Path(tempfile.mkdtemp()) / "a.jsonl"
     scope = load_scope(SCOPE)
-    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    audit = AuditLog(audit_path)
     s = AssistSession(TARGET, Executor(Gate(scope), FakeKali(), audit, approver=lambda d: True),
                       StrategistAgent(type("L", (), {"propose": lambda s, *a, **k: ""})()),
                       browser=GovernedBrowser(scope, _SolvedCage(), audit))
     s.allow_intrusive = True
     s.surface = AttackSurface(seed=f"{BASE}/")
-    return s
+    return s, audit_path
+
+
+def _rows(audit_path):
+    if not Path(audit_path).exists():
+        return []
+    return [json.loads(l) for l in open(audit_path) if l.strip()]
 
 
 def test_confirm_from_capture_records_exactly_one_finding_and_dedups():
-    s = _session()
+    s, _ = _session()
     # Populate browser.captured() the same way any confirm_* reflex does: one governed
     # request through the one door.
     s.browser.run(WebAction("request", url=SOLVED_URL, method="GET"))
@@ -70,13 +86,13 @@ def test_confirm_from_capture_records_exactly_one_finding_and_dedups():
 
 
 def test_confirm_from_capture_is_llm_free_and_safe_with_no_browser():
-    s = _session()
+    s, _ = _session()
     s.browser = None
     assert s._confirm_from_capture() == 0
 
 
 def test_confirm_surface_invokes_confirm_from_capture_every_round():
-    s = _session()
+    s, _ = _session()
     s.browser.run(WebAction("request", url=SOLVED_URL, method="GET"))
     # confirm_surface short-circuits to 0 immediately when surface is None, which is
     # exactly the early-return path the always-on capture read must survive.
@@ -85,3 +101,38 @@ def test_confirm_surface_invokes_confirm_from_capture_every_round():
     confirmed = s.findings.confirmed()
     assert len(confirmed) == 1
     assert confirmed[0].title == "Lab solved (exploit succeeded)"
+
+
+def test_a_persistent_capture_is_not_reemitted_every_round():
+    """The regression this fix round closes: `captured()` never clears, so a single
+    captured is-solved banner is still sitting there on round 2 and round 3. Driving
+    `confirm_surface()` (the real per-round call site) three times over that ONE
+    persistent capture must leave the FindingStore AND every side-effect channel
+    (`highlights`, `notes`, audit `experiment_outcome`) at exactly ONE — not three."""
+    s, audit_path = _session()
+    s.browser.run(WebAction("request", url=SOLVED_URL, method="GET"))
+    s.surface = None   # keep confirm_surface's active sweep out of the way
+
+    for _ in range(3):
+        s.confirm_surface()
+
+    assert len(s.findings.confirmed()) == 1
+
+    capture_highlights = [h for h in s.highlights
+                          if h[0] == "confirmed" and "Lab solved" in h[1]]
+    assert len(capture_highlights) == 1, (
+        f"expected exactly 1 highlight for the one capture-finding, got "
+        f"{len(capture_highlights)} over 3 rounds")
+
+    capture_notes = [note for note in s.notes
+                     if "Lab solved" in note and "[confirm]" in note]
+    assert len(capture_notes) == 1, (
+        f"expected exactly 1 [confirm] note, got {len(capture_notes)} over 3 rounds")
+
+    outcomes = [r for r in _rows(audit_path)
+               if r.get("kind") == "experiment_outcome"
+               and r["data"].get("comparator") == "lab_solved_banner"]
+    assert len(outcomes) == 1, (
+        f"expected exactly 1 experiment_outcome for the one capture-finding, got "
+        f"{len(outcomes)} over 3 rounds — the audit ledger must not be repolluted "
+        f"by re-offering the same persistent capture")
