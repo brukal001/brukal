@@ -734,6 +734,7 @@ class GovernedBrowser:
         if action.kind == "navigate" and result.status:
             self.current_url = action.url      # now interaction actions are in-scope
         self._self_capture(action, result)
+        self._fold_cdp_capture()
         return decision, result
 
     # ---- SELF-CAPTURE ---------------------------------------------------- #
@@ -779,16 +780,64 @@ class GovernedBrowser:
             return
         try:
             from . import capture as _capture
+            resp_headers = dict(getattr(result, "headers", None) or {})
             rec = _capture._record(
                 getattr(action, "method", None) or "GET", action.url,
                 dict(getattr(action, "headers", None) or {}),
                 getattr(action, "body", None), result.status,
                 len(getattr(result, "body", "") or ""),
-                "", self._scope, _capture.IngestReport(), "self")
+                resp_headers.get("Content-Type", ""),
+                self._scope, _capture.IngestReport(), "self",
+                response=getattr(result, "body", "") or None,
+                resp_headers=resp_headers)
         except Exception:
             return                             # capture must never break a run
         if rec is not None:
             store.append(rec)
+
+    # ---- CDP DRAIN FOLD ---------------------------------------------------- #
+    # The door's own `_self_capture` records only the ONE request `run()` made (the
+    # top-level navigate/get). A real browser loading that page issues many more —
+    # CSS, XHR/fetch, images — which Chrome's Network domain observes and the CDP
+    # cage accumulates (Task 4's `drain_capture`). Folding those through the SAME
+    # `_record` gate they'd have hit as a top-level request means an out-of-scope
+    # sub-request (a third-party host the page embedded) is dropped here exactly as
+    # it would be at the gate — scope is enforced once, in one function, for both
+    # the door's own fetch and everything the browser fetched underneath it.
+    _SELF_CAPTURE_MAX_CDP = 200  # browser sub-resources are many; _record also
+                                 # drops static assets and out-of-scope hosts first.
+
+    def _fold_cdp_capture(self) -> None:
+        drain = getattr(self._cage, "drain_capture", None)
+        if not callable(drain):
+            return                             # raw/fake cages have no CDP accumulator
+        try:
+            pairs = drain() or []
+        except Exception:
+            return                             # capture must never break a run
+        store = getattr(self, "_captured_self", None)
+        if store is None:
+            store = self._captured_self = []
+        from . import capture as _capture
+        for p in pairs:
+            if len(store) >= self._SELF_CAPTURE_MAX_CDP:
+                break
+            st = p.get("status")
+            if not st or st == 404 or st >= 500:
+                continue                       # same floor as _self_capture: no absence
+            resp_headers = dict(p.get("resp_headers") or {})
+            try:
+                rec = _capture._record(
+                    p.get("method", "GET"), p.get("url", ""),
+                    dict(p.get("req_headers") or {}), p.get("req_body"), st,
+                    len(p.get("resp_body", "") or ""),
+                    resp_headers.get("Content-Type", ""),
+                    self._scope, _capture.IngestReport(), "self",
+                    response=p.get("resp_body") or None, resp_headers=resp_headers)
+            except Exception:
+                continue
+            if rec is not None:
+                store.append(rec)
 
     def write_har(self, path) -> int:
         """Write what Brukal did as a HAR — importable into Burp or ZAP, and readable by
