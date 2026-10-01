@@ -4,9 +4,8 @@ Never imports kali/executor/agents."""
 from __future__ import annotations
 import ipaddress
 import json
-import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
