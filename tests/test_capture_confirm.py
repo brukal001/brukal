@@ -33,3 +33,18 @@ def test_positive_control_law_no_baseline_no_finding():
     # only a single injected request, no benign 200 control → nothing to prove against
     caps = [_cr("http://lab/filter", "", q="category=x' AND '1'='2")]
     assert cc.boolean_sqli_differential(caps) == []
+
+
+def test_reflected_unescaped_not_fooled_by_unrelated_raw_tags():
+    # the MARKER's own reflection is escaped (&lt;b&gt;...&lt;/b&gt;); the real <p>/</p>
+    # tags around it are unrelated page chrome and must not trigger a false positive.
+    caps = [_cr("http://lab/s", "<p>Your search: &lt;b&gt;zqx941&lt;/b&gt;</p>", q="q=zqx941")]
+    assert cc.reflected_executed(caps) == []
+
+
+def test_reflected_unescaped_checks_every_occurrence():
+    # first occurrence is escaped, second is genuinely raw/executable — the second
+    # occurrence must still be caught even though find() would stop at the first.
+    body = "echo1: &lt;b&gt;zqx941&lt;/b&gt;" + "x" * 40 + "<script>zqx941</script>"
+    caps = [_cr("http://lab/s", body, q="q=zqx941")]
+    assert cc.reflected_executed(caps)

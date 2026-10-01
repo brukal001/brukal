@@ -37,11 +37,7 @@ _SOLVED_MARKERS = ("is-solved", "congratulations, you solved the lab", "solved t
 _TRUTHY_MARKERS = ("' and '1'='1", "' or '1'='1", " or 1=1", "' or 1=1--")
 _FALSY_MARKERS = ("' and '1'='2", "' or '1'='2", " and 1=2")
 
-# How far either side of a reflected marker we look for a literal (unescaped) angle
-# bracket. Wide enough to see the tag the application wrapped the marker in
-# ("<b>MARKER</b>"), narrow enough that unrelated markup elsewhere on the page cannot
-# manufacture a false positive.
-_REFLECTION_WINDOW = 24
+_RAW_TAG_CHARS = ("<", ">")
 
 
 def is_solved_banner(body: str) -> bool:
@@ -150,30 +146,68 @@ def boolean_sqli_differential(caps) -> list[dict]:
     return out
 
 
+def _nearest_non_space(body: str, start: int, step: int) -> str:
+    """Walk from `start` in direction `step` (+1 or -1), skipping whitespace, and
+    return the first non-whitespace character found — or "" if the walk runs off
+    either end of the string. Skipping whitespace lets `<div>  MARKER  </div>` still
+    see its real neighbor (`>` / `<`) past incidental padding, without widening the
+    search into unrelated page chrome the way a fixed-width window did."""
+    i = start
+    n = len(body)
+    while 0 <= i < n and body[i].isspace():
+        i += step
+    return body[i] if 0 <= i < n else ""
+
+
 def _reflected_unescaped(body: str, marker: str) -> bool:
-    """True if `marker` appears in `body` surrounded by a literal, unescaped angle
-    bracket — i.e. the application rendered it as live markup rather than text.
+    """True if ANY occurrence of `marker` in `body` sits with a literal, unescaped
+    `<` or `>` as its immediate (whitespace-skipped) neighbor — i.e. that occurrence
+    was rendered as live markup rather than text.
 
     Why not just `marker in body`: an HTML-escaped reflection (`&lt;b&gt;MARKER&lt;/b&gt;`)
     still contains the literal marker substring verbatim, because escaping rewrites `<`
-    and `>`, not the alphanumeric marker itself. So presence of the marker alone proves
-    nothing about escaping either way — it is the load-bearing false-positive this
-    predicate exists to rule out.
+    and `>`, not the alphanumeric marker itself. Presence of the marker alone proves
+    nothing about escaping either way.
 
-    Why not `html.escape(window) == window` either: an already-escaped reflection
-    contains literal `&` characters (from `&lt;`), and `html.escape` rewrites `&` to
-    `&amp;` too — so that comparison is never stable across escaped text and would
-    flag the escaped case as "changed" just as readily as the unescaped one. The
-    control that actually distinguishes them is a literal `<` or `>` in the body
-    itself: escaping always removes those bytes, raw markup always keeps them.
+    Why not a fixed-width window around the first occurrence (the first cut of this
+    predicate): two failure modes, both execution-verified —
+      - FALSE POSITIVE: an escaped reflection sitting inside ordinary page chrome,
+        e.g. `<p>Your search: &lt;b&gt;zqx941&lt;/b&gt;</p>` — the window around the
+        marker still contains the real `<p>`/`</p>` tags, which are unrelated to
+        whether the MARKER's own reflection was escaped, so a window-based "does `<`
+        or `>` appear anywhere nearby" check wrongly fires.
+      - FALSE NEGATIVE: `body.find(marker)` only ever inspects the FIRST occurrence.
+        A marker reflected twice — once escaped, once later as raw, executable
+        markup (`<script>MARKER</script>`) — was judged purely on the first (escaped)
+        occurrence and the real, later finding was missed entirely.
+
+    The fix anchors on the marker's OWN immediate neighbor character (skipping
+    incidental whitespace), checked at EVERY occurrence, not a window of surrounding
+    page content:
+      - raw markup: the character touching the marker is a literal `<` or `>`
+        (`<b>MARKER</b>` → `>` immediately before, `<` immediately after).
+      - escaped markup: the character touching the marker is always part of an HTML
+        ENTITY's text, never a bare bracket — `&lt;b&gt;MARKER&lt;/b&gt;` → `;`
+        immediately before (end of `&gt;`) and `&` immediately after (start of
+        `&lt;/b&gt;`). HTML escaping rewrites every literal `<`/`>` into multi-char
+        entity text ending in `;` or starting with `&`; it can never leave a bare
+        `<`/`>` character adjacent to the thing it escaped. That asymmetry — raw
+        markup always touches the marker with a bare bracket, escaped markup never
+        does — is what makes the single-neighbor check correct rather than
+        coincidental.
     """
-    idx = body.find(marker)
-    if idx == -1:
-        return False
-    start = max(0, idx - _REFLECTION_WINDOW)
-    end = idx + len(marker) + _REFLECTION_WINDOW
-    window = body[start:end]
-    return "<" in window or ">" in window
+    pos = 0
+    marker_len = len(marker)
+    while True:
+        idx = body.find(marker, pos)
+        if idx == -1:
+            return False
+        before = _nearest_non_space(body, idx - 1, step=-1)
+        after = _nearest_non_space(body, idx + marker_len, step=1)
+        if before in _RAW_TAG_CHARS or after in _RAW_TAG_CHARS:
+            return True
+        pos = idx + 1  # advance past this occurrence (by 1, not marker_len, so
+        # adjacent/overlapping repeats of the marker are still each inspected)
 
 
 def reflected_executed(caps) -> list[dict]:
