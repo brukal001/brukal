@@ -35,9 +35,12 @@ def _default_dispatch(args):
     selected with `mode="web"` (it would otherwise auto-detect from whether
     `target` looks like a URL/hostname or an IP — see assist_cli.run_auto's
     `set_resolver`/`set_methodology` call). `run_auto` also has no free-text
-    `context` parameter — the operator's one-line brief is shown/logged by the
-    wizard but is not currently plumbed into the engine's seeded objective;
-    that would need a separate change to `run_auto`'s signature."""
+    `context` parameter on this branch's base — the operator's one-line brief
+    is shown at the approval gate and persisted into the frozen scope
+    (`_context`) so the record carries it, but it is NOT fed into the
+    engine's seeded objective here: that needs the `auto --context`/
+    `_apply_context` feature, which is not committed to this branch's base,
+    and assist_cli is out of scope for this module to touch."""
     from brukal.assist_cli import run_auto
     from brukal.engagement import run as run_engagement
 
@@ -61,7 +64,9 @@ def _default_dispatch(args):
 def run_hunt(args, *, prompt=input, runner=None, dispatch=None, resolve_key=None) -> int:
     resolve_key = resolve_key or keys_mod.resolve_key
     runner = runner or DockerCageRunner(container=args.container)
-    dispatch = dispatch or _default_dispatch(args)
+    # `dispatch` is resolved lazily, right before it is actually called — not here —
+    # so an invalid --mode, a missing key, or a declined [y/N] never pays the cost of
+    # importing assist_cli/engagement (the real run engines) for a run that never starts.
 
     mode = (args.mode or _ask(prompt, "  Mode — web or vpn? ")).lower()
     if mode not in ("web", "vpn"):
@@ -101,11 +106,18 @@ def run_hunt(args, *, prompt=input, runner=None, dispatch=None, resolve_key=None
           + (f" · stage {plan.vpn_file}" if plan.vpn_file else ""))
     print(f"    then verify: {', '.join(plan.verify_steps)}")
     print(f"  DISPATCH: {plan.dispatch.kind} -> {plan.dispatch.target}")
+    if plan.dispatch.context:
+        print(f"  CONTEXT: {plan.dispatch.context}")
 
     if _ask(prompt, "\n  Approve bring-up and start the run? [y/N] ").lower() not in ("y", "yes"):
         print("  aborted — nothing recreated.")
         return 1
 
+    if plan.dispatch.context:
+        # Record the operator's brief on the frozen scope itself (same "_note field"
+        # idiom as plan_vpn's `_vpn_server`) so the run this launches carries it, even
+        # though run_auto has no kwarg to receive it yet (see _default_dispatch).
+        plan.scope_draft["_context"] = plan.dispatch.context
     envprep.freeze_scope(plan.scope_path, plan.scope_draft, approver="operator")
 
     ex = envprep.execute(plan, runner)
@@ -120,4 +132,5 @@ def run_hunt(args, *, prompt=input, runner=None, dispatch=None, resolve_key=None
         print(f"  verification failed at: {bad} — not dispatching.")
         return 1
 
+    dispatch = dispatch or _default_dispatch(args)
     return dispatch(plan)

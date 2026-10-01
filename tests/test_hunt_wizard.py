@@ -25,7 +25,9 @@ def test_web_path_freezes_then_executes_then_dispatches(tmp_path, monkeypatch):
                   dispatch=lambda plan: dispatched.setdefault("plan", plan) and 0,
                   resolve_key=lambda _prov, **k: ("sk-x", None))
     assert rc == 0
-    assert json.loads((tmp_path / "s.json").read_text())["authorized"] is True
+    frozen = json.loads((tmp_path / "s.json").read_text())
+    assert frozen["authorized"] is True
+    assert frozen["_context"] == "find sqli"   # the operator's brief is persisted
     names = [c[0] for c in runner.calls]
     assert names[:2] == ["compose_recreate", "set_resolver"]   # executed
     assert dispatched["plan"].mode == "web"                     # dispatched last
