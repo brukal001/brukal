@@ -25,6 +25,14 @@
 > warnings elsewhere, dated before this milestone, not its concern). 14 commits, **committed to the
 > branch, NOT merged to main, NOT pushed, cage NOT rebuilt.** See `DONE` below for the full summary and
 > `HUMAN-GATED` for what live validation remains.
+>
+> **STATE 2026-10-01 (live validation DONE, HITL, operator-approved):** first live CDP run of the
+> milestone against a fresh PortSwigger Practitioner lab (UNION "retrieving data from other tables").
+> **Containment PROVEN** (nmap+curl DENY on domain scope; every ALLOW in-scope; proxy-enforced per-request;
+> 2 hash-chained ledgers). **Exploit CONFIRMED + lab SOLVED** (UNION dumped the users table; the solve
+> needed an admin `POST /login` → 302 /my-account, driven manually). **Capture pipeline fires but
+> registered 0 findings** — 5 gaps found (see TOP + full write-up in vault `Brukal.md` 2026-10-01). No
+> code changed; bring-up (compose `BRUKAL_DNS` default + scope-mount swap) reverted, cage left on crAPI.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
@@ -58,14 +66,25 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **_Queue drained 2026-10-01 (Chrome-CDP + full-capture milestone landed and verified; that pass was
-  otherwise clean)._** No autonomous item is queued. The milestone's own remaining work
-  (cage rebuild + a fresh-lab live CDP validation run) is HUMAN-GATED, not for this loop. **Refill
-  before the loop can run again**: a human should first do a whole-branch review of
-  `feat/chrome-cdp-capture` (14 commits, not yet merged to main) and/or run the live validation: once
-  either lands, take the top of a fresh `/code-review` pass or a coverage sweep, confirm it is
-  build+self-test only (nothing under HUMAN-GATED), and write it here as the new TOP. The loop MUST
-  NOT invent scope-relevant work on its own — a human or a review supplies the next item.
+- **`capture_confirm`: add a deterministic SOLVE / auth-success prover (from the 2026-10-01 live validation).**
+  The live CDP run proved capture + the always-on pipeline fire, but `capture_confirm` registered **0
+  findings** on a practitioner UNION lab because its provers (`is_solved_banner`, blind-boolean
+  differential, reflected-XSS) match **none** of: (a) UNION / direct data-retrieval, (b) an
+  **auth-success** solve — the lab's real solve was `POST /login` as admin → `302 /my-account?id=administrator`
+  ("Congratulations…"), and the `is_solved_banner` prover can't see that banner (it's behind a login
+  session the cage browser never holds). Add a prover over the ALREADY-captured response that recognises
+  an authentication-success / privilege transition (e.g. a login-form POST answered by a 302 to an
+  own-account path, or a login→authed-page content differential carrying an authenticated marker) and
+  registers it as a CONFIRMED finding. **Deterministic string/redirect check over captured text — NO LLM
+  in the gate; `via`/capture plumbing unchanged.** Build + self-test ONLY: unit tests against `FakeCDP`,
+  positive-control-enforced like the existing provers. Full validation write-up + the other gaps: vault
+  `Brukal.md` 2026-10-01 entry.
+  _Related gaps surfaced the same run (candidates once the prover lands, NOT this item): exploit-as-manual
+  (planner handed back); no multi-step/stateful exploit chaining (UNION→login); captured body truncated
+  (~800 B stored vs `capture.py:_MAX_RESPONSE_KEPT=4000`, cut before the creds); MANUAL REPL parses a
+  `via:browser get <url>` line as an instruction (first token not a known tool) and never runs it; and a
+  crash bug — `assist_cli._authorise_host` does `ip_network(url+"/32")` on a URL when the host isn't
+  pre-authorised in scope (ValueError). Each is a separate tested milestone; none is a live-run item._
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
 _(empty — refill from a review or a fresh coverage pass)_
@@ -181,15 +200,17 @@ _(empty — refill from a review or a fresh coverage pass)_
   defaulting missing metrics; docstring corrected. `b6ffd03`.
 
 ## HUMAN-GATED — do NOT touch in the autonomous loop
-- **Chrome-CDP + full-capture milestone — live validation (new, 2026-10-01).** `feat/chrome-cdp-capture`
-  is build+self-tested only (suite 2072 green, benchmark invariant, pyflakes clean — see DONE). What
-  remains, human-only: (a) rebuild the cage image (the new `docker/` proxied-chromium launch +
-  loopback-9222-publish) and `--force-recreate` it, per `docs/HANDOFF-chrome-cdp-bringup.md`; (b) a
-  fresh PortSwigger-lab live run driven through the real CDP path end-to-end, to prove `Network.*`
-  capture + `_confirm_from_capture` finding-registration actually fire on live traffic (the suite only
-  proves this against `FakeCDP`) — needs explicit per-session authorization (CLAUDE.md) AND an SP-B
-  draft+approve, same as any live run; (c) a whole-branch review of the 14 commits before merging to
-  main. The loop must never do any of this on its own.
+- **Chrome-CDP + full-capture milestone — live validation (DONE 2026-10-01; merge review still pending).**
+  ✅ The fresh-lab live CDP run was executed HITL (operator-approved) — see the STATE block above and the
+  vault `Brukal.md` 2026-10-01 entry. **Proven live:** `Network.*` capture populates, the always-on
+  `_confirm_from_capture` runs every round, containment holds (nmap/curl DENY on domain scope,
+  proxy-enforced egress, hash-chained ledgers). **Not proven / needs work:** finding-REGISTRATION did
+  not fire (0 findings) — the provers don't cover UNION-retrieval or auth-success solves (now the TOP
+  item). The cage was recreated for the run from the EXISTING `docker-kali` image (CDP already live on
+  9222) with scope + DNS bring-up, then reverted to crAPI at close. **Still human-only:** (a) a
+  whole-branch review of the 14 commits before merging `feat/chrome-cdp-capture` to main; (b) if a from-
+  scratch `docker build` of the new image is wanted, that rebuild per `docs/HANDOFF-chrome-cdp-bringup.md`.
+  The loop must never do a live run on its own.
 - **SP-C real-internet containment** — slice-1 (proxy core) AND slice-2 (kernel-mandatory in-cage proxy)
   are BUILT + merged/committed. What remains is human-only: (a) operator rebuilds + `--force-recreate`s
   `brukal-kali` from the new image and pushes; (b) a real-target dry run — still needs explicit
