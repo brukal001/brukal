@@ -115,3 +115,34 @@ def freeze_scope(scope_path: str, draft: dict, *, approver: str = "operator") ->
         "draft pending approval", f"approved by {approver} on {now}")
     Path(scope_path).write_text(json.dumps(frozen, indent=2) + "\n", encoding="utf-8")
     return frozen
+
+
+def _summary(draft: dict) -> str:
+    where = draft["authorized_hosts"] or draft["authorized_cidrs"]
+    return (f"{', '.join(where)} · tls_verify={draft['tls_verify']} · "
+            f"{draft['rate_limit_per_min']}/min · forbidden={draft['forbidden_classes']}")
+
+
+def plan_web(url, context, provider, model, scope_path, vault, audit, *, rate=_RATE_DEFAULT):
+    _host, draft = build_web_scope_draft(url, rate=rate)
+    return BringUpPlan(
+        mode="web", scope_path=scope_path, scope_draft=draft,
+        scope_summary=_summary(draft), cage_action="recreate", resolver="1.1.1.1",
+        vpn_file=None,
+        verify_steps=("cdp_probe", "scope_matches", "http_probe_via_proxy"),
+        dispatch=Dispatch("auto_web", url, context, provider, model, vault, audit),
+    )
+
+
+def plan_vpn(ovpn_path, targets, provider, model, scope_path, vault, audit,
+             *, rate=_RATE_DEFAULT, read_text=None):
+    read_text = read_text or (lambda p: Path(p).read_text(encoding="utf-8"))
+    server = parse_ovpn_remote(read_text(ovpn_path))
+    draft = build_vpn_scope_draft(targets, server, rate=rate)
+    return BringUpPlan(
+        mode="vpn", scope_path=scope_path, scope_draft=draft,
+        scope_summary=_summary(draft), cage_action="recreate", resolver="1.1.1.1",
+        vpn_file=ovpn_path,
+        verify_steps=("tun_up", "scope_matches", "target_routable"),
+        dispatch=Dispatch("engagement", str(targets[0]), "", provider, model, vault, audit),
+    )
