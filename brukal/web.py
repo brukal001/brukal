@@ -477,6 +477,24 @@ class CompositeWebCage:
         self._render = render_cage
         self._request = request_cage
 
+    def drain_capture(self) -> list:
+        """Forward to the render cage's CDP accumulator. The production stack is
+        `GovernedBrowser -> CompositeWebCage -> ChromeCage`: `GovernedBrowser._fold_
+        cdp_capture` looks for `drain_capture` on `self._cage`, which IS the
+        composite, not the render half — without this method the composite has no
+        `drain_capture` attribute at all, `getattr(..., None)` silently returns None,
+        and the entire CDP Network.* fold no-ops in the real stack even though it is
+        fully wired and tested against a bare `ChromeCage`. Never raises — a capture
+        failure must never break a run (same discipline as `ChromeCage.drain_
+        capture` and the fold itself)."""
+        drain = getattr(self._render, "drain_capture", None)
+        if not callable(drain):
+            return []
+        try:
+            return drain()
+        except Exception:
+            return []
+
     def set_tls_verify(self, verify: bool) -> None:
         """Delegate the engagement's TLS policy to both halves. A composite that
         forwarded it to one of them would leave a plane verifying while the other did
@@ -754,7 +772,11 @@ class GovernedBrowser:
     _SELF_CAPTURE_MAX = 25
 
     def captured(self) -> list:
-        return list(getattr(self, "_captured_self", []) or [])
+        """Door captures first, then CDP-fold captures — kept in SEPARATE bounded
+        lists (see the note at `_SELF_CAPTURE_MAX_CDP`) so a page that folds many
+        sub-resources can never evict an earlier top-level door capture."""
+        return (list(getattr(self, "_captured_door", []) or []) +
+               list(getattr(self, "_captured_cdp", []) or []))
 
     def _self_capture(self, action, result) -> None:
         if getattr(self, "_in_experiment", False):
@@ -773,9 +795,9 @@ class GovernedBrowser:
         # another principal may be allowed.
         if st == 404 or st >= 500:
             return
-        store = getattr(self, "_captured_self", None)
+        store = getattr(self, "_captured_door", None)
         if store is None:
-            store = self._captured_self = []
+            store = self._captured_door = []
         if len(store) >= self._SELF_CAPTURE_MAX:
             return
         try:
@@ -804,6 +826,17 @@ class GovernedBrowser:
     # sub-request (a third-party host the page embedded) is dropped here exactly as
     # it would be at the gate — scope is enforced once, in one function, for both
     # the door's own fetch and everything the browser fetched underneath it.
+    #
+    # SEPARATE STORE FROM THE DOOR, ON PURPOSE. `_self_capture` (door) and this fold
+    # used to append to the SAME list while bailing at asymmetric caps (25 vs 200) —
+    # once one page folded more than 24 sub-resources, every LATER top-level door
+    # capture was silently dropped, because the shared list was already past 25. That
+    # matters specifically for the PortSwigger is-solved banner: it is injected into
+    # the DOM and stored by `_self_capture` (`result.body` from the Chrome render),
+    # NOT in the raw Network document body the fold stores — so headline "register
+    # the win" detection on a later navigation could be starved out by CDP
+    # sub-resource noise from an earlier one. A page can only ever evict its OWN
+    # kind of capture now.
     _SELF_CAPTURE_MAX_CDP = 200  # browser sub-resources are many; _record also
                                  # drops static assets and out-of-scope hosts first.
 
@@ -815,9 +848,9 @@ class GovernedBrowser:
             pairs = drain() or []
         except Exception:
             return                             # capture must never break a run
-        store = getattr(self, "_captured_self", None)
+        store = getattr(self, "_captured_cdp", None)
         if store is None:
-            store = self._captured_self = []
+            store = self._captured_cdp = []
         from . import capture as _capture
         for p in pairs:
             if len(store) >= self._SELF_CAPTURE_MAX_CDP:

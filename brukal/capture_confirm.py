@@ -88,6 +88,11 @@ def boolean_sqli_differential(caps) -> list[dict]:
     """Group captures by endpoint; confirm boolean-blind SQLi only where a working
     positive control exists. See the module docstring for why the control is mandatory.
 
+    SCOPE NOTE: this reads QUERY-STRING params only (`_query_values`/`_is_truthy`/
+    `_is_falsy`/`_injected_param` all parse `urlsplit(cap.url).query`). POST-body
+    SQLi — a payload in a form/JSON body rather than the URL — is not inspected here;
+    that is a known follow-up, out of this milestone's scope.
+
     Confirmed when, for one endpoint:
       - a BASELINE request exists: status 200, non-empty body, no truthy/falsy marker
         in its own query (it is genuinely benign, not itself a payload that happened
@@ -235,11 +240,24 @@ def _reflected_unescaped(body: str, marker: str) -> bool:
         pos = idx + 1  # advance past this occurrence (by 1, not marker_len, so
         # adjacent/overlapping repeats of the marker are still each inspected)
 
+    # KNOWN RESIDUAL (accepted, not fixed): a bare literal `<`/`>` sitting in ordinary
+    # PLAIN TEXT within `_MAX_PAD_SKIP` of the marker — e.g. "Reflected: MARK <3 users"
+    # — reads as the marker's "raw tag" neighbor and over-reports, the mirror image of
+    # the documented newline-split under-report above. Accepted because (a) the
+    # finding this feeds is medium-severity and framed as a CANDIDATE, not a proven
+    # exploit, and (b) it is the safe direction: paired with the newline-split
+    # under-report, erring toward reporting a candidate that needs a human glance beats
+    # silently dropping a real unescaped reflection.
+
 
 def reflected_executed(caps) -> list[dict]:
     """For each captured request, for each query param value that is a distinct marker
     (alphanumeric, length >= 4), record a finding only if that marker comes back as
     unescaped markup. A marker reflected only inside HTML-escaped text records nothing.
+
+    SCOPE NOTE: markers are read from `_query_values(cap.url)` — QUERY-STRING params
+    only. Reflected input carried in a POST body is not inspected here; that is a
+    known follow-up, out of this milestone's scope.
     """
     out: list[dict] = []
     for cap in caps:
@@ -271,6 +289,13 @@ def findings_from_capture(caps, scope) -> list[dict]:
     ingest (see capture.py's `_record`), so it is not re-checked here.
     """
     out: list[dict] = []
+    # ONCE PER RUN, not once per endpoint. The is-solved banner is injected into the
+    # page chrome, so once a lab is solved it appears on EVERY subsequent captured
+    # page (the nav bar, every follow-on GET) — without the break below this loop
+    # emitted a separate "Lab solved" finding for each captured endpoint that
+    # happened to carry it, which is the same fact recorded N times, not N facts.
+    # The other two provers stay per-endpoint on purpose: each boolean-SQLi /
+    # reflected-XSS confirmation IS a distinct endpoint-scoped claim.
     for cap in caps:
         if cap.response and is_solved_banner(cap.response):
             out.append(
@@ -284,6 +309,7 @@ def findings_from_capture(caps, scope) -> list[dict]:
                     "comparator": "lab_solved_banner",
                 }
             )
+            break
     out.extend(boolean_sqli_differential(caps))
     out.extend(reflected_executed(caps))
     return out

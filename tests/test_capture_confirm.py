@@ -50,6 +50,22 @@ def test_reflected_unescaped_checks_every_occurrence():
     assert cc.reflected_executed(caps)
 
 
+def test_findings_from_capture_dedups_lab_solved_to_one_per_run():
+    # MINOR #3 — the is-solved banner is page chrome: it appears on EVERY page after
+    # a lab is solved, not just the one that triggered it. Without dedup this emitted
+    # one "Lab solved" finding per captured endpoint carrying the banner (the same
+    # fact recorded N times). Three different pages all carry the banner here; only
+    # ONE lab-solved finding must come out.
+    caps = [
+        _cr("http://lab/page1", "<div class='is-solved'>Solved</div>"),
+        _cr("http://lab/page2", "<div class='is-solved'>Solved</div>"),
+        _cr("http://lab/page3", "<div class='is-solved'>Solved</div>"),
+    ]
+    out = cc.findings_from_capture(caps, scope=None)
+    lab_solved = [f for f in out if f["comparator"] == "lab_solved_banner"]
+    assert len(lab_solved) == 1
+
+
 def test_reflected_unescaped_not_fooled_by_distant_unrelated_tag():
     # marker reflected as plain text; a long run of whitespace separates it from a
     # wholly unrelated tag far down the page — that tag is not the marker's neighbor.
