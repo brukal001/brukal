@@ -7,6 +7,8 @@ come in (lazily) inside `_default_dispatch`, which is the one place that talks
 to the real run engines."""
 from __future__ import annotations
 
+import os
+
 from brukal import envprep
 from brukal import keys as keys_mod
 from brukal.cage import DockerCageRunner
@@ -68,22 +70,34 @@ def run_hunt(args, *, prompt=input, runner=None, dispatch=None, resolve_key=None
     # so an invalid --mode, a missing key, or a declined [y/N] never pays the cost of
     # importing assist_cli/engagement (the real run engines) for a run that never starts.
 
+    # Coalesce ONCE, the same way the old _cmd_hunt did — args.provider defaults to
+    # None on the `hunt` parser, and keys._env_var does provider.upper(), so a bare
+    # `brukal hunt` with no --provider would otherwise crash with AttributeError
+    # before anything else runs.
+    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
+
     mode = (args.mode or _ask(prompt, "  Mode — web or vpn? ")).lower()
     if mode not in ("web", "vpn"):
         print("  unknown mode — choose web or vpn.")
         return 1
 
-    key, _res = resolve_key(args.provider)
+    key, _res = resolve_key(provider)
     if key is None:
         print("  no API key and none provided — aborting (set <PROVIDER>_API_KEY "
               "or use a local model).")
         return 1
+    # A key resolved from runs/<provider>.env or an interactive prompt only lives in
+    # KeyResolution/the local `key` so far — run_auto/run_engagement read it from
+    # os.environ via LLMClient, so without this the wizard would report success,
+    # bring up the cage, and then the dispatched run would fail for want of a key.
+    if key:
+        os.environ[f"{provider.upper()}_API_KEY"] = key
 
     if mode == "web":
         url = args.url or _ask(prompt, "  Target URL: ")
         context = args.context or _ask(prompt, "  One-line context (what to focus on): ")
         try:
-            plan = envprep.plan_web(url, context, args.provider, args.model,
+            plan = envprep.plan_web(url, context, provider, args.model,
                                     args.scope, args.vault, args.audit)
         except ValueError as e:
             print(f"  cannot build web scope: {e}")
@@ -93,7 +107,7 @@ def run_hunt(args, *, prompt=input, runner=None, dispatch=None, resolve_key=None
         targets = [t for t in _ask(prompt, "  Target IP/CIDR(s), comma-separated: ").split(",")
                    if t.strip()]
         try:
-            plan = envprep.plan_vpn(ovpn, targets, args.provider, args.model,
+            plan = envprep.plan_vpn(ovpn, targets, provider, args.model,
                                     args.scope, args.vault, args.audit)
         except (ValueError, OSError) as e:
             print(f"  cannot build vpn scope: {e}")

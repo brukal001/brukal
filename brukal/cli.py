@@ -585,7 +585,8 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
-    ph = sub.add_parser("hunt", help="guided engagement (prompts for key + target)")
+    ph = sub.add_parser(
+        "hunt", help="guided engagement — web (URL+context) or VPN (.ovpn+targets)")
     ph.add_argument("target", nargs="?", help="target IP/CIDR (prompted if omitted)")
     ph.add_argument("--fake", action="store_true", help="fake cage (no Docker)")
     ph.add_argument("--tui", action=argparse.BooleanOptionalAction, default=True,

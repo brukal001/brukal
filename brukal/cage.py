@@ -85,7 +85,7 @@ class DockerCageRunner:
         return self._sh("stage_vpn", argv, detail=ovpn_src)
 
     def scope_matches(self, expect_substr):
-        argv = ["docker", "exec", self.container, "grep", "-q", expect_substr, "/scope.json"]
+        argv = ["docker", "exec", self.container, "grep", "-qF", expect_substr, "/scope.json"]
         return self._sh("scope_matches", argv, detail=expect_substr)
 
     def cdp_probe(self):
