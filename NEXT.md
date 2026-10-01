@@ -16,6 +16,15 @@
 > to the category filter and solved it. ⚠️ Docker Desktop is UNSTABLE (cage exited 255 twice mid-session);
 > the domain run needed resolv.conf→1.1.1.1 in-cage (embedded 127.0.0.11 resolver was dead) + compose
 > `BRUKAL_DNS` default 1.1.1.1 — **both reverted at close; crAPI scope restored, cage left as found.**
+>
+> **STATE 2026-10-01:** the Chrome-CDP + full-capture milestone (branch `feat/chrome-cdp-capture`, this
+> file's §Follow-ups item "Chrome-CDP + capture milestone") is BUILT, self-tested and VERIFIED
+> (Task 11 of its own SDD plan): full suite 2072 green; four-metric benchmark is **bit-identical**
+> branch-vs-baseline (`run_experiments.py` never builds a `GovernedBrowser` — `_confirm_from_capture`
+> is structurally inert on that harness); pyflakes clean on every new/changed file (2 pre-existing
+> warnings elsewhere, dated before this milestone, not its concern). 14 commits, **committed to the
+> branch, NOT merged to main, NOT pushed, cage NOT rebuilt.** See `DONE` below for the full summary and
+> `HUMAN-GATED` for what live validation remains.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
@@ -32,11 +41,9 @@
   though the recon/INPUT-VALIDATION agent had already rendered the payload. `--full-send` did not change this
   (the model self-classified the exploit as a MANUAL note, not an executable web action). The exploit agent
   should translate an identified payload into a governed request, not prose.
-- **Chrome-CDP + capture milestone (operator-directed):** web hunting used the raw-HTTP cage
-  (`DockerHttpWebCage`, curl-equivalent) for crawl/requests; Chrome (`DockerChromeCage`, real CDP) was used
-  only for navigate/screenshot. No live mitmproxy-style full request/response capture exists (`--capture` only
-  INGESTS an external HAR). Operator wants web hunting driven through Chrome CDP with full traffic capture so
-  provers work off real request/response. Design as its own tested milestone.
+- **Chrome-CDP + capture milestone (operator-directed) — DONE 2026-10-01, see DONE below.** Built,
+  self-tested and suite/benchmark-verified on `feat/chrome-cdp-capture`. Still needs the HUMAN-GATED
+  live validation (cage rebuild + fresh-lab live CDP run) before merge.
 - **Per-target briefing is now a first-class expectation:** `auto` warns when no `--context` is given. Consider
   making the brief richer (feed it to prover selection / the web methodology, not only the strategist prompt).
 - **Cosmetic:** preflight builds `http://` + the already-`https://` target → `http://https://…` (non-fatal,
@@ -51,16 +58,61 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **_Queue drained 2026-09-28 (2nd review's only note handled; that pass was otherwise clean)._** No
-  autonomous item is queued. **Refill before the loop can run again**: take the top of a fresh
-  `/code-review` pass or a coverage sweep, confirm it is build+self-test only (nothing under
-  HUMAN-GATED), and write it here as the new TOP. The loop MUST NOT invent scope-relevant work on its
-  own — a human or a review supplies the next item.
+- **_Queue drained 2026-10-01 (Chrome-CDP + full-capture milestone landed and verified; that pass was
+  otherwise clean)._** No autonomous item is queued. The milestone's own remaining work
+  (cage rebuild + a fresh-lab live CDP validation run) is HUMAN-GATED, not for this loop. **Refill
+  before the loop can run again**: a human should first do a whole-branch review of
+  `feat/chrome-cdp-capture` (14 commits, not yet merged to main) and/or run the live validation: once
+  either lands, take the top of a fresh `/code-review` pass or a coverage sweep, confirm it is
+  build+self-test only (nothing under HUMAN-GATED), and write it here as the new TOP. The loop MUST
+  NOT invent scope-relevant work on its own — a human or a review supplies the next item.
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
 _(empty — refill from a review or a fresh coverage pass)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-10-01** **Chrome-CDP + full-capture milestone** (branch `feat/chrome-cdp-capture`, 14 commits,
+  Tasks 1–11 of its own SDD plan — `.superpowers/sdd/2026-09-30-chrome-cdp-capture/`). Real stdlib
+  CDP-over-WebSocket client (`brukal/cdp.py`: RFC6455 handshake + client-masked framing, call
+  id-matching + event demux, `Network.*` capture accumulator with base64-body decode and in-flight
+  exclusion, fail-closed on an oversized frame) replaces the old navigate/screenshot-only CDP use.
+  `ChromeCage.drain_capture` + `FakeCDP` emit real `Network.*` pairs. Door-level full request/response
+  capture now works for BOTH raw and CDP paths: `CapturedRequest.resp_headers` (credential-stripped +
+  redacted, e.g. `Set-Cookie`) and `_record` support in `brukal/capture.py` (`write_har` fills
+  response headers); `GovernedBrowser`'s door stores response body/headers and folds in-scope CDP
+  `Network.*` pairs via `_record`, re-applying scope + redaction (an out-of-scope pair is dropped, not
+  folded). `WebAction.via` (`auto|raw|browser`) routes `CompositeWebCage` between the curl-equivalent
+  door and the real browser per-need; the gate ignores `via` (routing is not a security boundary — the
+  web door's scope check is). LLM-free, capture-driven finding registration
+  (`brukal/capture_confirm.py`): is-solved banner, boolean-SQLi differential, and reflected-XSS provers,
+  each positive-control-enforced (two false-positive/negative rounds fixed pre-merge). Always-on wiring
+  in `brukal/assist_confirm.py`/`assist_cli.py`: `_confirm_from_capture` runs after every hunt round,
+  deduped per `Finding.signature()`, fixed to not re-emit the same capture every round; it only reads
+  what the gated door already captured — it never proposes or issues a request. A live CDP render cage
+  with `DockerChromeCage`-primary / subprocess fallback was built for the always-on path. `docker/`:
+  proxied debuggable chromium launched as the unprivileged `brukalop` uid (nftables-enforced, not the
+  `--proxy-server` flag) with `--proxy-bypass-list="<-loopback>"` — **a security requirement, not a
+  convenience flag**, closing an SSRF→CDP hole (a hostile page could otherwise reach loopback `:9222`
+  directly and drive devtools itself); CDP published `127.0.0.1:9222:9222` host-loopback-only; a shape
+  test asserts the flag is present; bring-up documented in `docs/HANDOFF-chrome-cdp-bringup.md`.
+  **Task 11 verification (this session):** full suite **2072 green**. Four-metric benchmark
+  (`run_experiments.py`) is **bit-identical** branch-vs-baseline-`b3af852` (`interception_rate=1.0`,
+  `unsafe_actions_prevented=5`, `context_reduction=0.976`, `adaptive_trust_final=0.343`) — confirmed
+  both empirically (throwaway worktree A/B) and structurally (`experiment.py` imports only `FakeKali`,
+  never builds a `GovernedBrowser`, so `_confirm_from_capture` cannot fire on it; the always-on
+  registration prover is correctly inert on the fake-cage harness). A ±2-3 byte wobble in the
+  intermediate `context_bytes_multi` diagnostic is pre-existing `time.time()`-serialization noise
+  (reproduced on a single commit across repeated runs), not a milestone effect. pyflakes clean on
+  every file this milestone touched (`cdp.py`, `capture_confirm.py`, `web.py`, `chrome.py`,
+  `capture.py`, `assist_confirm.py`, `assist_cli.py`); 2 pre-existing warnings (one each in
+  `capture.py`/`assist_confirm.py`, dated 2026-09-21 and 2026-09-25, both before this milestone) are
+  not new and not touched. Spec correction: `docs/superpowers/specs/2026-09-30-chrome-cdp-capture-
+  design.md` §4.5 corrected — the loopback proxy-bypass was wrongly documented as "harmless and left
+  as-is"; now states the `--proxy-bypass-list="<-loopback>"` requirement and the SSRF→CDP rationale,
+  matching what `docker/entrypoint.sh` actually implements. **Build+self-test only. NOT merged to
+  main, NOT pushed, cage NOT rebuilt/recreated from the new image.** All five safety invariants intact
+  (no LLM inside the gate — the new provers are deterministic string/regex/diff checks over already-
+  captured text; `via` routing and CDP capture are pre-gate/post-gate plumbing, not gate logic).
 - **2026-09-30** `auto --context/--focus` — per-target planner brief (the distraction fix). Free-text lines
   (`_context_objectives` normalise → `_apply_context` seeds the strategist objective channel) steer what the
   model PROPOSES; the deterministic gate is untouched so a brief can never widen scope. `auto` warns when no
@@ -129,6 +181,15 @@ _(empty — refill from a review or a fresh coverage pass)_
   defaulting missing metrics; docstring corrected. `b6ffd03`.
 
 ## HUMAN-GATED — do NOT touch in the autonomous loop
+- **Chrome-CDP + full-capture milestone — live validation (new, 2026-10-01).** `feat/chrome-cdp-capture`
+  is build+self-tested only (suite 2072 green, benchmark invariant, pyflakes clean — see DONE). What
+  remains, human-only: (a) rebuild the cage image (the new `docker/` proxied-chromium launch +
+  loopback-9222-publish) and `--force-recreate` it, per `docs/HANDOFF-chrome-cdp-bringup.md`; (b) a
+  fresh PortSwigger-lab live run driven through the real CDP path end-to-end, to prove `Network.*`
+  capture + `_confirm_from_capture` finding-registration actually fire on live traffic (the suite only
+  proves this against `FakeCDP`) — needs explicit per-session authorization (CLAUDE.md) AND an SP-B
+  draft+approve, same as any live run; (c) a whole-branch review of the 14 commits before merging to
+  main. The loop must never do any of this on its own.
 - **SP-C real-internet containment** — slice-1 (proxy core) AND slice-2 (kernel-mandatory in-cage proxy)
   are BUILT + merged/committed. What remains is human-only: (a) operator rebuilds + `--force-recreate`s
   `brukal-kali` from the new image and pushes; (b) a real-target dry run — still needs explicit
