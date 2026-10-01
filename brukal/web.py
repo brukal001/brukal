@@ -62,6 +62,8 @@ class WebAction:
     selector: str = ""                          # for click/fill
     value: str = ""                             # for fill (an attack payload, NOT sanitised)
     expression: str = ""                        # for eval (JS in page context)
+    via: str = "auto"                           # auto | raw | browser — routing hint ONLY;
+                                                 # the GATE (check_web) ignores this field entirely
 
     def describe(self) -> str:
         if self.kind in _URL_ACTIONS:
@@ -426,29 +428,42 @@ class DockerHttpWebCage:
 
 def parse_web_action(text: str) -> "WebAction | None":
     """Parse a strategist `WEB:` line into a WebAction. Grammar (verb first):
-      navigate|get|render <url>      · request <METHOD> <url> [body]
+      [via:browser|via:raw] navigate|get|render <url>  · request <METHOD> <url> [body]
       fill <selector> <payload...>   · click <selector>   · eval <js...>
       screenshot <url>               · intercept <url-pattern>
-    A bare http(s) URL is treated as `get`. Returns None if unparseable."""
+    A bare http(s) URL is treated as `get`. An optional leading `via:browser` /
+    `via:raw` token sets `.via` as a routing HINT for CompositeWebCage — the gate
+    (check_web) re-reads the action itself and ignores `.via` entirely.
+    Returns None if unparseable."""
     toks = (text or "").strip().split()
+    if not toks:
+        return None
+    via = "auto"
+    if toks[0].lower().startswith("via:"):
+        via = toks[0].split(":", 1)[1].lower() or "auto"
+        toks = toks[1:]
     if not toks:
         return None
     verb = toks[0].lower()
     rest = toks[1:]
+    act: "WebAction | None" = None
     if verb in ("navigate", "get", "render", "screenshot", "intercept"):
-        return WebAction(kind={"render": "get"}.get(verb, verb), url=rest[0] if rest else "")
-    if verb == "eval":
-        return WebAction(kind="eval", expression=" ".join(rest))
-    if verb in ("click", "fill"):
-        return WebAction(kind=verb, selector=rest[0] if rest else "",
-                         value=" ".join(rest[1:]))
-    if verb == "request":
+        act = WebAction(kind={"render": "get"}.get(verb, verb), url=rest[0] if rest else "")
+    elif verb == "eval":
+        act = WebAction(kind="eval", expression=" ".join(rest))
+    elif verb in ("click", "fill"):
+        act = WebAction(kind=verb, selector=rest[0] if rest else "",
+                        value=" ".join(rest[1:]))
+    elif verb == "request":
         method = rest[0].upper() if rest else "GET"
         url = rest[1] if len(rest) > 1 else ""
-        return WebAction(kind="request", url=url, method=method, body=" ".join(rest[2:]))
-    if verb.startswith("http://") or verb.startswith("https://"):
-        return WebAction(kind="get", url=verb)
-    return None
+        act = WebAction(kind="request", url=url, method=method, body=" ".join(rest[2:]))
+    elif verb.startswith("http://") or verb.startswith("https://"):
+        act = WebAction(kind="get", url=verb)
+    if act is None:
+        return None
+    act.via = via
+    return act
 
 
 class CompositeWebCage:
@@ -462,6 +477,24 @@ class CompositeWebCage:
         self._render = render_cage
         self._request = request_cage
 
+    def drain_capture(self) -> list:
+        """Forward to the render cage's CDP accumulator. The production stack is
+        `GovernedBrowser -> CompositeWebCage -> ChromeCage`: `GovernedBrowser._fold_
+        cdp_capture` looks for `drain_capture` on `self._cage`, which IS the
+        composite, not the render half — without this method the composite has no
+        `drain_capture` attribute at all, `getattr(..., None)` silently returns None,
+        and the entire CDP Network.* fold no-ops in the real stack even though it is
+        fully wired and tested against a bare `ChromeCage`. Never raises — a capture
+        failure must never break a run (same discipline as `ChromeCage.drain_
+        capture` and the fold itself)."""
+        drain = getattr(self._render, "drain_capture", None)
+        if not callable(drain):
+            return []
+        try:
+            return drain()
+        except Exception:
+            return []
+
     def set_tls_verify(self, verify: bool) -> None:
         """Delegate the engagement's TLS policy to both halves. A composite that
         forwarded it to one of them would leave a plane verifying while the other did
@@ -473,18 +506,30 @@ class CompositeWebCage:
 
     def run(self, action: WebAction) -> WebResult:
         k = (action.kind or "").lower()
-        # `get` goes to the HTTP cage, not Chrome: it is jar-aware (carries the
+        via = (getattr(action, "via", "auto") or "auto").lower()
+        # `get`/`request` default to the HTTP cage: it is jar-aware (carries the
         # GovernedBrowser session cookie jar, so authenticated pages are reachable
         # after login) and returns the RAW HTML/JS — which is what the crawl needs
-        # to mine forms, params and API routes from the JS bundle. Chrome render
-        # (`navigate`) stays for when JS execution / a screenshot is actually needed.
+        # to mine forms, params and API routes from the JS bundle. `via="browser"`
+        # is a routing HINT ONLY (never a gate input — check_web re-reads the action
+        # itself) that lets a prover DEMAND the real browser for a get/request, e.g.
+        # to see post-JS DOM state or trigger a client-side sink raw HTTP can't reach.
+        if k in ("get", "request"):
+            if via == "browser":
+                return self._render.run(action)
+            return self._request.run(action)          # auto + raw
         if k in ("navigate", "screenshot"):
             return self._render.run(action)
-        if k in ("get", "request"):
-            return self._request.run(action)
-        return WebResult(url=action.url,
-                         note=f"'{k}' needs the live CDP browser (interactive) — "
-                              f"not wired live yet; use navigate/get/request/screenshot")
+        # interactive: click/fill/eval/intercept — only the live CDP render cage
+        # can do these. If CDP isn't up it raises NotImplementedError; fail closed
+        # to the explanatory note rather than silently falling back to raw HTTP
+        # (which cannot click/fill/eval) or letting the exception escape.
+        try:
+            return self._render.run(action)
+        except NotImplementedError:
+            return WebResult(url=action.url,
+                             note=f"'{k}' needs the live CDP browser (interactive) — "
+                                  f"CDP not available; use navigate/get/request/screenshot")
 
 
 def map_cage_host(host: str, ip: str, container: str = "brukal-kali") -> bool:
@@ -707,6 +752,7 @@ class GovernedBrowser:
         if action.kind == "navigate" and result.status:
             self.current_url = action.url      # now interaction actions are in-scope
         self._self_capture(action, result)
+        self._fold_cdp_capture()
         return decision, result
 
     # ---- SELF-CAPTURE ---------------------------------------------------- #
@@ -726,7 +772,11 @@ class GovernedBrowser:
     _SELF_CAPTURE_MAX = 25
 
     def captured(self) -> list:
-        return list(getattr(self, "_captured_self", []) or [])
+        """Door captures first, then CDP-fold captures — kept in SEPARATE bounded
+        lists (see the note at `_SELF_CAPTURE_MAX_CDP`) so a page that folds many
+        sub-resources can never evict an earlier top-level door capture."""
+        return (list(getattr(self, "_captured_door", []) or []) +
+               list(getattr(self, "_captured_cdp", []) or []))
 
     def _self_capture(self, action, result) -> None:
         if getattr(self, "_in_experiment", False):
@@ -745,23 +795,82 @@ class GovernedBrowser:
         # another principal may be allowed.
         if st == 404 or st >= 500:
             return
-        store = getattr(self, "_captured_self", None)
+        store = getattr(self, "_captured_door", None)
         if store is None:
-            store = self._captured_self = []
+            store = self._captured_door = []
         if len(store) >= self._SELF_CAPTURE_MAX:
             return
         try:
             from . import capture as _capture
+            resp_headers = dict(getattr(result, "headers", None) or {})
             rec = _capture._record(
                 getattr(action, "method", None) or "GET", action.url,
                 dict(getattr(action, "headers", None) or {}),
                 getattr(action, "body", None), result.status,
                 len(getattr(result, "body", "") or ""),
-                "", self._scope, _capture.IngestReport(), "self")
+                resp_headers.get("Content-Type", ""),
+                self._scope, _capture.IngestReport(), "self",
+                response=getattr(result, "body", "") or None,
+                resp_headers=resp_headers)
         except Exception:
             return                             # capture must never break a run
         if rec is not None:
             store.append(rec)
+
+    # ---- CDP DRAIN FOLD ---------------------------------------------------- #
+    # The door's own `_self_capture` records only the ONE request `run()` made (the
+    # top-level navigate/get). A real browser loading that page issues many more —
+    # CSS, XHR/fetch, images — which Chrome's Network domain observes and the CDP
+    # cage accumulates (Task 4's `drain_capture`). Folding those through the SAME
+    # `_record` gate they'd have hit as a top-level request means an out-of-scope
+    # sub-request (a third-party host the page embedded) is dropped here exactly as
+    # it would be at the gate — scope is enforced once, in one function, for both
+    # the door's own fetch and everything the browser fetched underneath it.
+    #
+    # SEPARATE STORE FROM THE DOOR, ON PURPOSE. `_self_capture` (door) and this fold
+    # used to append to the SAME list while bailing at asymmetric caps (25 vs 200) —
+    # once one page folded more than 24 sub-resources, every LATER top-level door
+    # capture was silently dropped, because the shared list was already past 25. That
+    # matters specifically for the PortSwigger is-solved banner: it is injected into
+    # the DOM and stored by `_self_capture` (`result.body` from the Chrome render),
+    # NOT in the raw Network document body the fold stores — so headline "register
+    # the win" detection on a later navigation could be starved out by CDP
+    # sub-resource noise from an earlier one. A page can only ever evict its OWN
+    # kind of capture now.
+    _SELF_CAPTURE_MAX_CDP = 200  # browser sub-resources are many; _record also
+                                 # drops static assets and out-of-scope hosts first.
+
+    def _fold_cdp_capture(self) -> None:
+        drain = getattr(self._cage, "drain_capture", None)
+        if not callable(drain):
+            return                             # raw/fake cages have no CDP accumulator
+        try:
+            pairs = drain() or []
+        except Exception:
+            return                             # capture must never break a run
+        store = getattr(self, "_captured_cdp", None)
+        if store is None:
+            store = self._captured_cdp = []
+        from . import capture as _capture
+        for p in pairs:
+            if len(store) >= self._SELF_CAPTURE_MAX_CDP:
+                break
+            st = p.get("status")
+            if not st or st == 404 or st >= 500:
+                continue                       # same floor as _self_capture: no absence
+            resp_headers = dict(p.get("resp_headers") or {})
+            try:
+                rec = _capture._record(
+                    p.get("method", "GET"), p.get("url", ""),
+                    dict(p.get("req_headers") or {}), p.get("req_body"), st,
+                    len(p.get("resp_body", "") or ""),
+                    resp_headers.get("Content-Type", ""),
+                    self._scope, _capture.IngestReport(), "self",
+                    response=p.get("resp_body") or None, resp_headers=resp_headers)
+            except Exception:
+                continue
+            if rec is not None:
+                store.append(rec)
 
     def write_har(self, path) -> int:
         """Write what Brukal did as a HAR — importable into Burp or ZAP, and readable by
@@ -781,7 +890,10 @@ class GovernedBrowser:
                             "queryString": [], "cookies": [],
                             "headersSize": -1, "bodySize": -1},
                 "response": {"status": c.status or 0, "statusText": "",
-                             "httpVersion": "HTTP/1.1", "headers": [], "cookies": [],
+                             "httpVersion": "HTTP/1.1",
+                             "headers": [{"name": k, "value": v}
+                                         for k, v in (getattr(c, "resp_headers", {}) or {}).items()],
+                             "cookies": [],
                              "content": {"size": c.resp_bytes or 0,
                                          "mimeType": c.content_type or "text/html"},
                              "redirectURL": "", "headersSize": -1,

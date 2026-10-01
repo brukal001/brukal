@@ -267,6 +267,45 @@ class _ConfirmMixin:
         if comparator:
             self._record_confirmed_experiment(target, title, comparator, evidence, cvss_grade)
 
+    def _confirm_from_capture(self) -> int:
+        """Register wins from CAPTURED traffic: an exploit the model already performed
+        (lab-solved banner), a boolean-SQLi body differential, or an unescaped reflection.
+        LLM-free; reads only what the gated door captured; dedup is FindingStore's job.
+        Issues no requests of its own — safe to call unconditionally, every round.
+
+        `browser.captured()` is the CUMULATIVE, never-cleared capture list, and this
+        method is called every round — so without its own per-signature memory, a
+        capture made in round 1 would be re-offered to `_record_confirmed` in every
+        later round. FindingStore dedups the STORE, but `_record_confirmed`
+        unconditionally appends to `self.highlights`/`self.notes` and (every capture
+        finding names a comparator) emits a fresh `experiment_result`/
+        `experiment_outcome` pair into the audit log regardless of whether the Finding
+        was new — so re-offering the same signature would re-pollute the audit ledger
+        and report narration every round even though the Finding store itself stayed
+        at one. `self._capture_confirmed_sigs` is this method's own memory, keyed the
+        same way `Finding.signature` is, so each unique capture-finding is recorded
+        (and its highlight/note/experiment-outcome emitted) AT MOST ONCE per run."""
+        from . import capture_confirm as cc
+        from .findings import _norm
+        browser = getattr(self, "browser", None)
+        if browser is None:
+            return 0
+        sigs = getattr(self, "_capture_confirmed_sigs", None)
+        if sigs is None:
+            sigs = self._capture_confirmed_sigs = set()
+        caps = browser.captured()
+        n = 0
+        for f in cc.findings_from_capture(caps, self.scope):
+            sig = (_norm(f["title"]), _norm(f["target"]), _norm(f["param"]))
+            if sig in sigs:
+                continue
+            self._record_confirmed(f["target"], f["title"], f["severity"], f["param"],
+                                   f["evidence"], category=f.get("category", "web"),
+                                   comparator=f.get("comparator", ""))
+            sigs.add(sig)
+            n += 1
+        return n
+
     def _record_confirmed_experiment(self, target, title, comparator, evidence,
                                      cvss_grade: dict | None = None) -> None:
         """Emit the ledger pair a confirmed differential deserves: one `experiment_result`
@@ -4018,6 +4057,15 @@ class _ConfirmMixin:
         FORM fields the crawl discovered — turning candidates into CONFIRMED findings
         without waiting for the model. Bounded (cost) and governed (scope+scheme).
         Returns how many were confirmed."""
+        # Always-on, before any early return: this reads traffic the gated door already
+        # captured (no new requests), so it must run every round the loop calls this
+        # method — including the no_automated_scanners / no-surface short-circuits below,
+        # which only narrow the ACTIVE sweep, not this passive read. Defensively wrapped
+        # so a malformed capture can never throw out of the confirm reflex.
+        try:
+            self._confirm_from_capture()
+        except Exception:
+            pass
         if self.browser is None or self.surface is None:
             return 0
         _scope = getattr(self, "scope", None)

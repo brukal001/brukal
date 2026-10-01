@@ -168,15 +168,21 @@ captured.
 - **Dockerfile.kali / entrypoint:** launch, in the background, as **`brukalop`** (a non-proxy uid):
   `chromium --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage
   --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
-  --proxy-server=http://127.0.0.1:<PROXY_PORT>`. No `--ignore-certificate-errors` — cert
-  verification stays on; a tls_verify=false scope is the only thing that may relax it, handled on
-  the Brukal side, not baked into the image.
+  --proxy-server=http://127.0.0.1:<PROXY_PORT> --proxy-bypass-list="<-loopback>"`. No
+  `--ignore-certificate-errors` — cert verification stays on; a tls_verify=false scope is the only
+  thing that may relax it, handled on the Brukal side, not baked into the image.
 - **Rationale (containment):** the `--proxy-server` flag *tells* chromium to use the proxy;
   **nftables is the enforcement.** Under SP-C slice-2 only the `brukalproxy` uid egresses;
   `brukalop` gets lo+DNS only, so even a chromium that tried a direct connection would be dropped —
   it **cannot reach the target except through the scope-enforcing in-cage proxy**, gated exactly
-  like curl's. (CDP control on `:9222` is loopback, not target egress, so chromium's default
-  localhost proxy-bypass is harmless and left as-is.)
+  like curl's. CDP control on `:9222` is loopback — but chromium's *default* behaviour is to bypass
+  its configured proxy for loopback destinations, and that default is **not** harmless here: a
+  malicious page loaded in the browser could run page-JS that reaches `127.0.0.1:9222` directly,
+  bypassing the proxy entirely, and from there drive the devtools protocol itself — an SSRF-into-CDP
+  path handing a hostile target control of the browser session. The launch **MUST** pass
+  `--proxy-bypass-list="<-loopback>"` to remove that implicit bypass, so even a page's
+  loopback-targeted request is routed through `127.0.0.1:<PROXY_PORT>`, whose egress guard denies
+  loopback/private destinations outright, closing the hole.
 - **compose:** publish `127.0.0.1:9222:9222` (host-loopback only) so Brukal on the host can drive
   CDP; the control channel is not target egress.
 - **Bring-up recipe** documented alongside the existing domain-lab recipe in NEXT.md / a HANDOFF.

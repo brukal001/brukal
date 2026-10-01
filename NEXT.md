@@ -1,13 +1,64 @@
 # NEXT — Brukal improvement queue (read by brukal-improve-loop.sh)
 
-> **STATE 2026-09-29:** SP-A / evidence-CVSS / SP-B / SP-C **slice-1** merged to main.
-> **SP-C slice-2 is BUILT + V1–V5 GREEN, committed LOCAL (`e90d1c7`, `66601d0`), NOT pushed.** Suite 2020
-> green (2021 with the new proxy test). **Remaining human step:** operator rebuilds the cage image
-> (`docker compose -f docker/docker-compose.yml build` — context is now the repo root) and
-> `--force-recreate`s `brukal-kali`, then pushes. Validated on a throwaway image; `brukal-kali` +
-> `docker-kali:latest` were left untouched. ⚠️ Docker Desktop crashed twice mid-build this session (stuck
-> `docker_data.vhdx`); recovery = quit Docker Desktop + `wsl --terminate docker-desktop` (NOT `--shutdown`,
-> which kills the Ubuntu session) + relaunch. The autonomous loop below is build+self-test-only.
+> **STATE 2026-09-30:** SP-A / evidence-CVSS / SP-B / SP-C slice-1 + **slice-2** all in `docker-kali:latest`
+> (cage runs the slice-2 proxy). **★ FIRST AUTHORIZED LIVE EXTERNAL RUN DONE** — PortSwigger Web Security
+> Academy, Apprentice SQLi "retrieval of hidden data" (a rotating-CDN DOMAIN target).
+> **Goal #1 CONTAINMENT PROVEN end-to-end**: `brukal verify` chain intact; **0 out-of-scope egress** (every
+> allowed request the exact lab host); per-request domain enforcement through the in-cage proxy (no IP pin,
+> survived CDN rotation); proxy-bypass kernel-dropped; metadata / portswigger.net / raw scanners (nmap,
+> `curl -k`, whatweb) all DENIED. **Goal #2 FINDING: lab SOLVED autonomously** — the *briefed* deepseek run
+> rendered `GET /filter?category=Gifts' OR 1=1--` and the lab shows `<p>Solved</p>` (`is-solved` banner);
+> host-side audit shows the `%20`-encoded injection = the autonomous browser, not the operator.
+> **Two fixes SHIPPED this session (tested, suite 2028 green, NOT committed):** (1) `auto`/`solve` accept a
+> single-exact-host DOMAIN scope (`_target_authorised` host-aware target auth — no `/32` prompt, no `--host`
+> `*.parent` wildcard); (2) `auto --context/--focus` planner brief (recovered intent only, gate untouched)
+> — the brief was DECISIVE: unbriefed deepseek wandered on nmap/whatweb and missed, briefed it went straight
+> to the category filter and solved it. ⚠️ Docker Desktop is UNSTABLE (cage exited 255 twice mid-session);
+> the domain run needed resolv.conf→1.1.1.1 in-cage (embedded 127.0.0.11 resolver was dead) + compose
+> `BRUKAL_DNS` default 1.1.1.1 — **both reverted at close; crAPI scope restored, cage left as found.**
+>
+> **STATE 2026-10-01:** the Chrome-CDP + full-capture milestone (branch `feat/chrome-cdp-capture`, this
+> file's §Follow-ups item "Chrome-CDP + capture milestone") is BUILT, self-tested and VERIFIED
+> (Task 11 of its own SDD plan): full suite 2072 green; four-metric benchmark is **bit-identical**
+> branch-vs-baseline (`run_experiments.py` never builds a `GovernedBrowser` — `_confirm_from_capture`
+> is structurally inert on that harness); pyflakes clean on every new/changed file (2 pre-existing
+> warnings elsewhere, dated before this milestone, not its concern). 14 commits, **committed to the
+> branch, NOT merged to main, NOT pushed, cage NOT rebuilt.** See `DONE` below for the full summary and
+> `HUMAN-GATED` for what live validation remains.
+>
+> **STATE 2026-10-01 (live validation DONE, HITL, operator-approved):** first live CDP run of the
+> milestone against a fresh PortSwigger Practitioner lab (UNION "retrieving data from other tables").
+> **Containment PROVEN** (nmap+curl DENY on domain scope; every ALLOW in-scope; proxy-enforced per-request;
+> 2 hash-chained ledgers). **Exploit CONFIRMED + lab SOLVED** (UNION dumped the users table; the solve
+> needed an admin `POST /login` → 302 /my-account, driven manually). **Capture pipeline fires but
+> registered 0 findings** — 5 gaps found (see TOP + full write-up in vault `Brukal.md` 2026-10-01). No
+> code changed; bring-up (compose `BRUKAL_DNS` default + scope-mount swap) reverted, cage left on crAPI.
+
+> One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
+> the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
+> ONLY — never a live pentest, never a real/external target, never a Docker/crAPI/DVWA run,
+> never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
+
+## ★ FOLLOW-UPS from the first live run (2026-09-30 — human/operator to prioritise)
+- **Finding-CAPTURE gap (highest value):** the briefed run SOLVED the lab but recorded **0 findings** — the
+  verify/finding detector did not recognise the PortSwigger `is-solved` banner (or the released-vs-unreleased
+  product differential) as a confirmed finding. Brukal *performed* the solving exploit but did not *register*
+  the win. A prover/verify signal for "the boolean-SQLi differential changed the result set" (and/or a
+  lab-solved banner recogniser) would close the loop for this whole lab class.
+- **Exploit-as-manual gap:** the strategist framed the injection as "next step is yours (intrusive)" even
+  though the recon/INPUT-VALIDATION agent had already rendered the payload. `--full-send` did not change this
+  (the model self-classified the exploit as a MANUAL note, not an executable web action). The exploit agent
+  should translate an identified payload into a governed request, not prose.
+- **Chrome-CDP + capture milestone (operator-directed) — DONE 2026-10-01, see DONE below.** Built,
+  self-tested and suite/benchmark-verified on `feat/chrome-cdp-capture`. Still needs the HUMAN-GATED
+  live validation (cage rebuild + fresh-lab live CDP run) before merge.
+- **Per-target briefing is now a first-class expectation:** `auto` warns when no `--context` is given. Consider
+  making the brief richer (feed it to prover selection / the web methodology, not only the strategist prompt).
+- **Cosmetic:** preflight builds `http://` + the already-`https://` target → `http://https://…` (non-fatal,
+  it continues). One-line fix in the preflight URL assembly.
+- **Domain-scope command-gate:** raw shell tools (nmap/whatweb/`curl -k`) are DENIED against a domain scope
+  (correct — only the governed web door reaches a domain host), but recon has *no* fingerprint tooling then.
+  Consider a domain-scope-aware recon that uses the web cage instead of shell scanners.
 
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
@@ -15,16 +66,84 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **_Queue drained 2026-09-28 (2nd review's only note handled; that pass was otherwise clean)._** No
-  autonomous item is queued. **Refill before the loop can run again**: take the top of a fresh
-  `/code-review` pass or a coverage sweep, confirm it is build+self-test only (nothing under
-  HUMAN-GATED), and write it here as the new TOP. The loop MUST NOT invent scope-relevant work on its
-  own — a human or a review supplies the next item.
+- **`capture_confirm`: add a deterministic SOLVE / auth-success prover (from the 2026-10-01 live validation).**
+  The live CDP run proved capture + the always-on pipeline fire, but `capture_confirm` registered **0
+  findings** on a practitioner UNION lab because its provers (`is_solved_banner`, blind-boolean
+  differential, reflected-XSS) match **none** of: (a) UNION / direct data-retrieval, (b) an
+  **auth-success** solve — the lab's real solve was `POST /login` as admin → `302 /my-account?id=administrator`
+  ("Congratulations…"), and the `is_solved_banner` prover can't see that banner (it's behind a login
+  session the cage browser never holds). Add a prover over the ALREADY-captured response that recognises
+  an authentication-success / privilege transition (e.g. a login-form POST answered by a 302 to an
+  own-account path, or a login→authed-page content differential carrying an authenticated marker) and
+  registers it as a CONFIRMED finding. **Deterministic string/redirect check over captured text — NO LLM
+  in the gate; `via`/capture plumbing unchanged.** Build + self-test ONLY: unit tests against `FakeCDP`,
+  positive-control-enforced like the existing provers. Full validation write-up + the other gaps: vault
+  `Brukal.md` 2026-10-01 entry.
+  _Related gaps surfaced the same run (candidates once the prover lands, NOT this item): exploit-as-manual
+  (planner handed back); no multi-step/stateful exploit chaining (UNION→login); captured body truncated
+  (~800 B stored vs `capture.py:_MAX_RESPONSE_KEPT=4000`, cut before the creds); MANUAL REPL parses a
+  `via:browser get <url>` line as an instruction (first token not a known tool) and never runs it; and a
+  crash bug — `assist_cli._authorise_host` does `ip_network(url+"/32")` on a URL when the host isn't
+  pre-authorised in scope (ValueError). Each is a separate tested milestone; none is a live-run item._
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
 _(empty — refill from a review or a fresh coverage pass)_
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-10-01** **Chrome-CDP + full-capture milestone** (branch `feat/chrome-cdp-capture`, 14 commits,
+  Tasks 1–11 of its own SDD plan — `.superpowers/sdd/2026-09-30-chrome-cdp-capture/`). Real stdlib
+  CDP-over-WebSocket client (`brukal/cdp.py`: RFC6455 handshake + client-masked framing, call
+  id-matching + event demux, `Network.*` capture accumulator with base64-body decode and in-flight
+  exclusion, fail-closed on an oversized frame) replaces the old navigate/screenshot-only CDP use.
+  `ChromeCage.drain_capture` + `FakeCDP` emit real `Network.*` pairs. Door-level full request/response
+  capture now works for BOTH raw and CDP paths: `CapturedRequest.resp_headers` (credential-stripped +
+  redacted, e.g. `Set-Cookie`) and `_record` support in `brukal/capture.py` (`write_har` fills
+  response headers); `GovernedBrowser`'s door stores response body/headers and folds in-scope CDP
+  `Network.*` pairs via `_record`, re-applying scope + redaction (an out-of-scope pair is dropped, not
+  folded). `WebAction.via` (`auto|raw|browser`) routes `CompositeWebCage` between the curl-equivalent
+  door and the real browser per-need; the gate ignores `via` (routing is not a security boundary — the
+  web door's scope check is). LLM-free, capture-driven finding registration
+  (`brukal/capture_confirm.py`): is-solved banner, boolean-SQLi differential, and reflected-XSS provers,
+  each positive-control-enforced (two false-positive/negative rounds fixed pre-merge). Always-on wiring
+  in `brukal/assist_confirm.py`/`assist_cli.py`: `_confirm_from_capture` runs after every hunt round,
+  deduped per `Finding.signature()`, fixed to not re-emit the same capture every round; it only reads
+  what the gated door already captured — it never proposes or issues a request. A live CDP render cage
+  with `DockerChromeCage`-primary / subprocess fallback was built for the always-on path. `docker/`:
+  proxied debuggable chromium launched as the unprivileged `brukalop` uid (nftables-enforced, not the
+  `--proxy-server` flag) with `--proxy-bypass-list="<-loopback>"` — **a security requirement, not a
+  convenience flag**, closing an SSRF→CDP hole (a hostile page could otherwise reach loopback `:9222`
+  directly and drive devtools itself); CDP published `127.0.0.1:9222:9222` host-loopback-only; a shape
+  test asserts the flag is present; bring-up documented in `docs/HANDOFF-chrome-cdp-bringup.md`.
+  **Task 11 verification (this session):** full suite **2072 green**. Four-metric benchmark
+  (`run_experiments.py`) is **bit-identical** branch-vs-baseline-`b3af852` (`interception_rate=1.0`,
+  `unsafe_actions_prevented=5`, `context_reduction=0.976`, `adaptive_trust_final=0.343`) — confirmed
+  both empirically (throwaway worktree A/B) and structurally (`experiment.py` imports only `FakeKali`,
+  never builds a `GovernedBrowser`, so `_confirm_from_capture` cannot fire on it; the always-on
+  registration prover is correctly inert on the fake-cage harness). A ±2-3 byte wobble in the
+  intermediate `context_bytes_multi` diagnostic is pre-existing `time.time()`-serialization noise
+  (reproduced on a single commit across repeated runs), not a milestone effect. pyflakes clean on
+  every file this milestone touched (`cdp.py`, `capture_confirm.py`, `web.py`, `chrome.py`,
+  `capture.py`, `assist_confirm.py`, `assist_cli.py`); 2 pre-existing warnings (one each in
+  `capture.py`/`assist_confirm.py`, dated 2026-09-21 and 2026-09-25, both before this milestone) are
+  not new and not touched. Spec correction: `docs/superpowers/specs/2026-09-30-chrome-cdp-capture-
+  design.md` §4.5 corrected — the loopback proxy-bypass was wrongly documented as "harmless and left
+  as-is"; now states the `--proxy-bypass-list="<-loopback>"` requirement and the SSRF→CDP rationale,
+  matching what `docker/entrypoint.sh` actually implements. **Build+self-test only. NOT merged to
+  main, NOT pushed, cage NOT rebuilt/recreated from the new image.** All five safety invariants intact
+  (no LLM inside the gate — the new provers are deterministic string/regex/diff checks over already-
+  captured text; `via` routing and CDP capture are pre-gate/post-gate plumbing, not gate logic).
+- **2026-09-30** `auto --context/--focus` — per-target planner brief (the distraction fix). Free-text lines
+  (`_context_objectives` normalise → `_apply_context` seeds the strategist objective channel) steer what the
+  model PROPOSES; the deterministic gate is untouched so a brief can never widen scope. `auto` warns when no
+  brief is given. `assist_cli.py` + `cli.py`; test `tests/test_auto_context_brief.py` (3). **Validated LIVE:**
+  briefed deepseek went straight to the category-filter SQLi and solved the lab; unbriefed it had wandered.
+  Suite 2028 green. NOT committed (operator to review/commit).
+- **2026-09-30** `auto`/`solve` accept a single-exact-host DOMAIN scope. `_target_authorised` (host-aware,
+  membership-only) replaces the IP-only `scope.contains_ip(target)` at the `_prepare_session` target gate, so
+  a pure domain scope (authorized_hosts, no CIDRs — a PortSwigger lab behind a CDN) is used as-is: no `/32`
+  "authorise this host?" prompt, and NO `--host` `_vhost_names` `*.parent` wildcard (which would authorise
+  other users' instances). Deterministic gate unchanged. `assist_cli.py`; test
+  `tests/test_auto_domain_target.py` (5). NOT committed.
 - **2026-09-29** SP-C **slice-2** — kernel-mandatory in-cage egress proxy. `66601d0` (infra) + `e90d1c7`
   (proxy-connects-to-authorised-private-lab-IP fix + test). Dockerfile bakes the minimal stdlib proxy
   package + `egress_proxy_cli.py` + a `brukalproxy` user (build context → repo root, `.dockerignore`
@@ -81,6 +200,17 @@ _(empty — refill from a review or a fresh coverage pass)_
   defaulting missing metrics; docstring corrected. `b6ffd03`.
 
 ## HUMAN-GATED — do NOT touch in the autonomous loop
+- **Chrome-CDP + full-capture milestone — live validation (DONE 2026-10-01; merge review still pending).**
+  ✅ The fresh-lab live CDP run was executed HITL (operator-approved) — see the STATE block above and the
+  vault `Brukal.md` 2026-10-01 entry. **Proven live:** `Network.*` capture populates, the always-on
+  `_confirm_from_capture` runs every round, containment holds (nmap/curl DENY on domain scope,
+  proxy-enforced egress, hash-chained ledgers). **Not proven / needs work:** finding-REGISTRATION did
+  not fire (0 findings) — the provers don't cover UNION-retrieval or auth-success solves (now the TOP
+  item). The cage was recreated for the run from the EXISTING `docker-kali` image (CDP already live on
+  9222) with scope + DNS bring-up, then reverted to crAPI at close. **Still human-only:** (a) a
+  whole-branch review of the 14 commits before merging `feat/chrome-cdp-capture` to main; (b) if a from-
+  scratch `docker build` of the new image is wanted, that rebuild per `docs/HANDOFF-chrome-cdp-bringup.md`.
+  The loop must never do a live run on its own.
 - **SP-C real-internet containment** — slice-1 (proxy core) AND slice-2 (kernel-mandatory in-cage proxy)
   are BUILT + merged/committed. What remains is human-only: (a) operator rebuilds + `--force-recreate`s
   `brukal-kali` from the new image and pushes; (b) a real-target dry run — still needs explicit

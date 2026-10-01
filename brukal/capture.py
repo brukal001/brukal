@@ -53,7 +53,9 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 @dataclass(frozen=True)
 class CapturedRequest:
-    """One request/response pair, in scope and carrying no secret."""
+    """One request/response pair, in scope and carrying no secret: request credentials
+    are stripped, and response headers (`resp_headers`) are credential-stripped and
+    redacted, as the response body already is."""
 
     method: str
     url: str
@@ -70,6 +72,10 @@ class CapturedRequest:
     # returned. Redacted because a response body is exactly where a discovered credential
     # lives, which is why `redact.observe_response` exists at the web plane's own door.
     response: str | None = None
+    # The response HEADERS — Content-Type, Set-Cookie shape, caching, CORS — the other
+    # half of the same answer `response` keeps. Task 7's live web door has both in hand
+    # at the capture call site; `write_har` fills the HAR's response.headers from this.
+    resp_headers: dict = field(default_factory=dict)
 
     def path(self) -> str:
         return urlsplit(self.url).path or "/"
@@ -145,7 +151,7 @@ _MAX_RESPONSE_KEPT = 4000
 
 
 def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
-            report, source, response=None):
+            report, source, response=None, resp_headers=None):
     """THE ONLY CONSTRUCTOR. Both guarantees are enforced here, once."""
     host = urlsplit(url).hostname
     # GUARANTEE 1 — the scope's own predicate, so ingest and the gate cannot disagree.
@@ -172,10 +178,21 @@ def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
             safe_response = redact.text(str(response))[:_MAX_RESPONSE_KEPT]
         except Exception:
             safe_response = str(response)[:_MAX_RESPONSE_KEPT]
+    # Response headers carry credentials too (Set-Cookie is the live session). Same two
+    # steps as the request side: drop credential-named headers, then redact what remains
+    # in case a token is disclosed under an innocuous name (X-Session-Token).
+    safe_resp_headers = {str(k): v for k, v in (resp_headers or {}).items()
+                         if str(k).lower() not in _CREDENTIAL_HEADERS}
+    try:
+        from . import redact
+        safe_resp_headers = {k: redact.text(str(v)) for k, v in safe_resp_headers.items()}
+    except Exception:
+        pass
     return CapturedRequest(
         method=str(method or "GET").upper(), url=url, headers=clean, body=safe_body,
         status=status, resp_bytes=resp_bytes, content_type=content_type or "",
-        auth_kind=kind, source=source, response=safe_response)
+        auth_kind=kind, source=source, response=safe_response,
+        resp_headers=safe_resp_headers)
 
 
 def parse_har(text: str, scope, max_entries: int = 2000) -> tuple:
