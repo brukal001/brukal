@@ -146,17 +146,43 @@ def boolean_sqli_differential(caps) -> list[dict]:
     return out
 
 
+_MAX_PAD_SKIP = 2  # at most this many plain spaces/tabs between the marker and its
+# "neighbor" tag delimiter still count as tight adjacency (`<div>  MARKER  </div>`).
+# Never widened further, and never crosses a newline — see _nearest_non_space.
+
+
 def _nearest_non_space(body: str, start: int, step: int) -> str:
-    """Walk from `start` in direction `step` (+1 or -1), skipping whitespace, and
-    return the first non-whitespace character found — or "" if the walk runs off
-    either end of the string. Skipping whitespace lets `<div>  MARKER  </div>` still
-    see its real neighbor (`>` / `<`) past incidental padding, without widening the
-    search into unrelated page chrome the way a fixed-width window did."""
+    """Walk from `start` in direction `step` (+1 or -1), skipping at most
+    `_MAX_PAD_SKIP` plain space/tab characters, and return the first non-whitespace
+    character found that way — or "" if a newline is hit, the skip budget runs out
+    while still on whitespace, or the walk runs off either end of the string.
+
+    The skip is deliberately TIGHT, not "skip all whitespace": an earlier version
+    skipped whitespace with no distance bound at all, which let a marker reflected as
+    plain text, followed by a long run of newlines, then some wholly unrelated tag far
+    down the page, get misread as the marker's own neighbor (execution-verified false
+    positive — see `_reflected_unescaped`'s docstring). A bare `<div>  MARKER  </div>`
+    still needs a couple of spaces of slack to see its real tag past incidental
+    padding; a marker separated from the next tag by 200 characters of whitespace does
+    not, and treating that gap as "the same neighbor" is exactly the defect this bound
+    rules out. Stopping at the first newline, specifically, means a tag on a different
+    LINE from the marker is never read as its neighbor, regardless of the skip count.
+    """
     i = start
     n = len(body)
-    while 0 <= i < n and body[i].isspace():
-        i += step
-    return body[i] if 0 <= i < n else ""
+    skipped = 0
+    while 0 <= i < n:
+        ch = body[i]
+        if ch == "\n":
+            return ""
+        if ch in (" ", "\t"):
+            if skipped >= _MAX_PAD_SKIP:
+                return ""
+            skipped += 1
+            i += step
+            continue
+        return ch
+    return ""
 
 
 def _reflected_unescaped(body: str, marker: str) -> bool:

@@ -48,3 +48,11 @@ def test_reflected_unescaped_checks_every_occurrence():
     body = "echo1: &lt;b&gt;zqx941&lt;/b&gt;" + "x" * 40 + "<script>zqx941</script>"
     caps = [_cr("http://lab/s", body, q="q=zqx941")]
     assert cc.reflected_executed(caps)
+
+
+def test_reflected_unescaped_not_fooled_by_distant_unrelated_tag():
+    # marker reflected as plain text; a long run of whitespace separates it from a
+    # wholly unrelated tag far down the page — that tag is not the marker's neighbor.
+    body = "Reflected: zqx941" + "\n" * 200 + "<footer>site footer</footer>"
+    caps = [_cr("http://lab/s", body, q="q=zqx941")]
+    assert cc.reflected_executed(caps) == []
