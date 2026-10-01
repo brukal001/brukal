@@ -19,6 +19,11 @@ from urllib.parse import urlsplit
 
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_FRAME = 8_000_000            # bounded read: a target cannot make us allocate unbounded
+# Aggregate cap on a REASSEMBLED (fragmented) message. _MAX_FRAME bounds a single frame;
+# this bounds the sum of a message's continuation frames, so splitting a large
+# Network.getResponseBody across many under-_MAX_FRAME frames cannot grow _frag_buf
+# without limit (invariant 2: a target cannot make us allocate unbounded memory).
+_MAX_MESSAGE = 4 * _MAX_FRAME
 
 
 class CDPError(Exception):
@@ -117,9 +122,10 @@ class CDPClient:
     the brief's plain single-frame behaviour keeps working unchanged.
     """
 
-    def __init__(self, ws_url: str, timeout: float = 20.0):
+    def __init__(self, ws_url: str, timeout: float = 20.0, connect_timeout: float | None = None):
         self._ws_url = ws_url
-        self._timeout = timeout
+        self._timeout = timeout               # per-call deadline for every session call()
+        self._connect_timeout = connect_timeout   # short fail-fast probe deadline, connect() only
         self._sock: socket.socket | None = None
         self._buf = b""
         self._id = 0
@@ -128,7 +134,8 @@ class CDPClient:
 
     def connect(self) -> None:
         parts = urlsplit(self._ws_url)
-        self._sock = socket.create_connection((parts.hostname, parts.port or 80), self._timeout)
+        ct = self._connect_timeout if self._connect_timeout is not None else self._timeout
+        self._sock = socket.create_connection((parts.hostname, parts.port or 80), ct)
         key = base64.b64encode(os.urandom(16)).decode()
         path = parts.path + (("?" + parts.query) if parts.query else "")
         self._sock.sendall(ws_handshake_headers(f"{parts.hostname}:{parts.port}", path, key).encode())
@@ -144,6 +151,10 @@ class CDPClient:
         if not accepts or accepts[0] != ws_accept(key):
             raise CDPError("CDP handshake failed Sec-WebSocket-Accept check")
         self._buf = resp.split(b"\r\n\r\n", 1)[1]
+        # The handshake connection may have used a short connect_timeout; reset the
+        # socket's blocking timeout to the normal per-call deadline now that we're
+        # connected, so the probe deadline never leaks into call()'s recv()s.
+        self._sock.settimeout(self._timeout)
 
     def call(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
         if not self._sock:
@@ -165,6 +176,10 @@ class CDPClient:
                 elif op == 0x0:                         # continuation frame
                     if self._frag_buf is None:
                         raise CDPError("CDP continuation frame with no initial frame")
+                    if len(self._frag_buf) + len(data) > _MAX_MESSAGE:
+                        self._frag_buf = None           # drop the partial buffer, fail closed
+                        raise CDPError(
+                            f"reassembled CDP message exceeds {_MAX_MESSAGE} bytes")
                     self._frag_buf += data
                 else:
                     continue

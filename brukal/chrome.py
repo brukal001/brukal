@@ -22,6 +22,7 @@ import json
 import time
 from pathlib import Path
 
+from .cdp import CDPError
 from .web import WebResult
 
 
@@ -99,6 +100,18 @@ class ChromeCage:
             return []
 
     def run(self, action) -> WebResult:
+        """Run an already-approved WebAction. Fail closed on a CDP-level failure
+        (transient timeout/close on the live transport): instead of letting
+        CDPError propagate out of GovernedBrowser and silently drop the action's
+        WebResult (audit entry + note + capture fold), return an explanatory
+        WebResult — same shape DockerChromeCage uses for its own cage errors
+        (status left at its None default, note names the error)."""
+        try:
+            return self._run(action)
+        except CDPError as e:
+            return WebResult(url=getattr(action, "url", "") or "", note=f"CDP error: {e}")
+
+    def _run(self, action) -> WebResult:
         k = (action.kind or "").lower()
 
         if k in ("navigate", "get"):

@@ -10,6 +10,8 @@ import socket
 import struct
 import threading
 
+import pytest
+
 from brukal import cdp
 
 
@@ -106,3 +108,61 @@ def test_call_reassembles_fragmented_message():
     res = c.call("Page.enable")
     assert res == {"ok": True, "big": "x" * 5000}
     c.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: the short connect() probe timeout must not leak into call()'s
+# recv()s for the rest of the session.
+# ---------------------------------------------------------------------------
+
+def test_connect_timeout_does_not_leak_into_session_calls():
+    # connect() is given a very short connect_timeout (a fail-fast probe); every
+    # call() afterwards must use the normal, longer per-call timeout — not the
+    # probe value the socket would otherwise be left with after create_connection.
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    host, port = srv.getsockname()
+    threading.Thread(target=_fake_cdp_server, args=(srv,), daemon=True).start()
+    c = cdp.CDPClient(f"ws://127.0.0.1:{port}/page", timeout=5.0, connect_timeout=0.05)
+    c.connect()
+    assert c._sock.gettimeout() == 5.0            # reset to the normal deadline, not 0.05s
+    res = c.call("Page.enable")                    # would need > 0.05s of wall time on a slow box
+    assert res == {"ok": True}
+    c.close()
+
+
+def test_session_client_constructed_like_prepare_session_keeps_normal_timeout():
+    # mirrors _prepare_session's construction: timeout=20 governs every session
+    # call(); connect_timeout=2 bounds only the initial probe/connect.
+    c = cdp.CDPClient("ws://127.0.0.1:1/page", timeout=20, connect_timeout=2)
+    assert c._timeout == 20
+    assert c._connect_timeout == 2
+    assert c._timeout != 2, "the 2s probe deadline must not become the session's call timeout"
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: aggregate cap on fragmented-message reassembly (_frag_buf).
+# ---------------------------------------------------------------------------
+
+class _NullSocket:
+    """Enough of a socket for CDPClient.call() when the frames to parse are
+    already sitting in `_buf` — sendall() is the only method call() needs before
+    its first decode_frames() pass finds them."""
+    def sendall(self, data):
+        pass
+
+
+def test_fragment_reassembly_rejects_aggregate_over_cap(monkeypatch):
+    # _MAX_FRAME bounds a single frame; this proves the AGGREGATE across
+    # continuation frames is bounded too — a target fragmenting a large
+    # Network.getResponseBody into many under-_MAX_FRAME pieces must still fail
+    # closed, not grow _frag_buf without limit. Shrink the cap so the test is
+    # fast and deterministic (mirrors test_oversized_frame_fails_closed's style,
+    # applied at the reassembly layer instead of decode_frames).
+    monkeypatch.setattr(cdp, "_MAX_MESSAGE", 20)
+    c = cdp.CDPClient("ws://127.0.0.1:1/page")
+    first = _server_frame(b"x" * 15, opcode=0x1, fin=False)   # initial frame, 15 <= cap
+    second = _server_frame(b"y" * 15, opcode=0x0, fin=True)   # continuation -> 30 > 20
+    c._buf = first + second
+    c._sock = _NullSocket()
+    with pytest.raises(cdp.CDPError):
+        c.call("Page.enable")

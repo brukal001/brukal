@@ -16,9 +16,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from brukal import AuditLog
+from brukal.cdp import CDPError
 from brukal.chrome import ChromeCage, DockerChromeCage, FakeCDP
 from brukal.web import GovernedBrowser, WebAction
 from brukal.scope import Scope
+
+
+class RaisingCDP:
+    """A fake transport whose call() always raises CDPError, like a live CDPClient
+    hitting a transient timeout/close. Used to prove ChromeCage.run fails closed to
+    a WebResult (finding 1) instead of letting CDPError propagate."""
+
+    def call(self, method, params=None):
+        raise CDPError(f"simulated CDP failure on {method}")
+
+    def wait_load(self, timeout: float = 20.0) -> None:
+        pass
 
 
 def test_navigate_loads_and_returns_dom():
@@ -71,6 +84,39 @@ def test_governed_browser_over_chrome_still_gates():
     assert br.run(WebAction("click", selector="#go"))[0].verdict == "ALLOW"
     # but an out-of-scope navigate is denied and never reaches Chrome
     assert br.run(WebAction("navigate", url="http://evil.com/"))[0].verdict == "DENY"
+
+
+def test_navigate_cdp_error_fails_closed_to_webresult():
+    # finding 1: a live CDPError on the common navigate/get path must not raise
+    # out of ChromeCage.run — it must come back as an explanatory WebResult so
+    # the action keeps its audit entry + note + capture fold.
+    r = ChromeCage(RaisingCDP()).run(WebAction("navigate", url="http://nexus.htb/"))
+    assert r.status is None
+    assert "CDP error" in r.note
+    assert r.url == "http://nexus.htb/"
+
+
+def test_get_cdp_error_fails_closed_to_webresult():
+    r = ChromeCage(RaisingCDP()).run(WebAction("get", url="http://nexus.htb/page"))
+    assert r.status is None
+    assert "CDP error" in r.note
+
+
+def test_eval_cdp_error_fails_closed_to_webresult():
+    r = ChromeCage(RaisingCDP()).run(WebAction("eval", expression="1+1"))
+    assert "CDP error" in r.note
+
+
+def test_governed_browser_survives_live_cdp_error():
+    # end-to-end through the gate: a CDPError on the live transport must not
+    # raise out of GovernedBrowser.run either — it degrades to an ALLOWed
+    # action with a failed WebResult, never an unhandled exception.
+    tmp = tempfile.mkdtemp()
+    scope = Scope("t", (), frozenset(), 60, authorized_hosts=frozenset({"nexus.htb"}))
+    br = GovernedBrowser(scope, ChromeCage(RaisingCDP()), AuditLog(Path(tmp) / "w.jsonl"))
+    d, r = br.run(WebAction("navigate", url="http://nexus.htb/"))
+    assert d.verdict == "ALLOW"
+    assert "CDP error" in r.note
 
 
 def test_docker_chrome_cage_rejects_interactive_actions():

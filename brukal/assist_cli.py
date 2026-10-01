@@ -1259,7 +1259,12 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
             from .cdp import CDPClient, pick_debugger_url
             from .chrome import ChromeCage
             j = urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=2).read().decode()
-            client = CDPClient(pick_debugger_url(j), timeout=2)
+            # 2s is a fail-fast PROBE deadline only (the /json fetch + the WS connect
+            # below) — it must not leak into every Runtime.evaluate/Page.navigate of
+            # the session, or a real render routinely exceeds it and the action is
+            # dropped as a CDP timeout. connect_timeout=2 bounds connect() alone;
+            # timeout=20 is the normal per-call deadline for the rest of the session.
+            client = CDPClient(pick_debugger_url(j), timeout=20, connect_timeout=2)
             client.connect()
             render_cage = ChromeCage(client)                  # live CDP: interactive + Network capture
         except Exception:
