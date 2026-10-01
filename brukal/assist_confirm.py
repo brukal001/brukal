@@ -267,6 +267,26 @@ class _ConfirmMixin:
         if comparator:
             self._record_confirmed_experiment(target, title, comparator, evidence, cvss_grade)
 
+    def _confirm_from_capture(self) -> int:
+        """Register wins from CAPTURED traffic: an exploit the model already performed
+        (lab-solved banner), a boolean-SQLi body differential, or an unescaped reflection.
+        LLM-free; reads only what the gated door captured; dedup is FindingStore's job.
+        Issues no requests of its own — safe to call unconditionally, every round."""
+        from . import capture_confirm as cc
+        browser = getattr(self, "browser", None)
+        if browser is None:
+            return 0
+        caps = browser.captured()
+        n = 0
+        for f in cc.findings_from_capture(caps, self.scope):
+            before = len(self.findings)
+            self._record_confirmed(f["target"], f["title"], f["severity"], f["param"],
+                                   f["evidence"], category=f.get("category", "web"),
+                                   comparator=f.get("comparator", ""))
+            if len(self.findings) > before:
+                n += 1
+        return n
+
     def _record_confirmed_experiment(self, target, title, comparator, evidence,
                                      cvss_grade: dict | None = None) -> None:
         """Emit the ledger pair a confirmed differential deserves: one `experiment_result`
@@ -4018,6 +4038,15 @@ class _ConfirmMixin:
         FORM fields the crawl discovered — turning candidates into CONFIRMED findings
         without waiting for the model. Bounded (cost) and governed (scope+scheme).
         Returns how many were confirmed."""
+        # Always-on, before any early return: this reads traffic the gated door already
+        # captured (no new requests), so it must run every round the loop calls this
+        # method — including the no_automated_scanners / no-surface short-circuits below,
+        # which only narrow the ACTIVE sweep, not this passive read. Defensively wrapped
+        # so a malformed capture can never throw out of the confirm reflex.
+        try:
+            self._confirm_from_capture()
+        except Exception:
+            pass
         if self.browser is None or self.surface is None:
             return 0
         _scope = getattr(self, "scope", None)

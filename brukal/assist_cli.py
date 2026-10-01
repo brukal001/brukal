@@ -1248,8 +1248,23 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         # authorised subdomain) resolves for the browser/curl regardless of how broad
         # the scope is (not only for a single-/32 scope).
         ensure_cage_vhosts(session_scope, container, target_ip=target)
-        web_cage = CompositeWebCage(DockerChromeCage(container=container),
-                                    DockerHttpWebCage(container=container))
+        # Render cage: prefer a LIVE CDP connection (interactive + real Network capture
+        # via Task 4's drain_capture) and fall back to the subprocess DockerChromeCage
+        # (navigate/screenshot only) when no Chrome is reachable at :9222. Fail-closed —
+        # any problem probing or connecting CDP just keeps the subprocess fallback; it
+        # never blocks the run or leaves the render cage unset.
+        render_cage = DockerChromeCage(container=container)   # fallback
+        try:
+            import urllib.request
+            from .cdp import CDPClient, pick_debugger_url
+            from .chrome import ChromeCage
+            j = urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=2).read().decode()
+            client = CDPClient(pick_debugger_url(j))
+            client.connect()
+            render_cage = ChromeCage(client)                  # live CDP: interactive + Network capture
+        except Exception:
+            pass                                              # CDP down -> subprocess render
+        web_cage = CompositeWebCage(render_cage, DockerHttpWebCage(container=container))
     browser = GovernedBrowser(session_scope, web_cage, audit)
 
     # On-demand research (control-plane egress only; disabled unless
