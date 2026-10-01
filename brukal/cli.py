@@ -125,39 +125,11 @@ def _ensure_key() -> bool:
 # --------------------------------------------------------------------------- #
 
 def _cmd_hunt(args) -> int:
-    provider = (args.provider or os.environ.get("BRUKAL_PROVIDER", "anthropic")).lower()
-    if provider == "anthropic" and not _ensure_key():
-        print("  ⚠ No API key set. Set ANTHROPIC_API_KEY, or use a free local model:"
-              " --provider ollama --model qwen2.5\n")
-
-    target = args.target
-    if not target:
-        try:
-            target = input("  Target IP or CIDR you are AUTHORISED to test: ").strip()
-        except (EOFError, OSError):
-            target = ""
-    if not target:
-        print("  No target given — nothing to do.")
-        return 1
-
-    rc, data = _write_scope(target, args.scope, args.log, assume_yes=args.yes)
-    if rc != 0:
-        return rc
-    print(f"  scope set: {', '.join(data['authorized_cidrs'])}")
-
-    try:
-        ok = input(f"\n  Confirm you are AUTHORISED to test {target}? [y/N] ").strip().lower()
-    except (EOFError, OSError):
-        ok = ""
-    if ok not in ("y", "yes"):
-        print("  aborted — authorisation not confirmed.")
-        return 1
-
-    print()
-    return run_engagement(
-        target, fake=args.fake, yes_authorised=True, scope_path=args.scope,
-        audit_path=args.audit, vault_path=args.vault, container=args.container,
-        model=args.model, tui=args.tui, provider=args.provider, base_url=args.base_url)
+    # Guided env-adaptive wizard (web or vpn): gather -> draft -> plan -> show
+    # -> one approval -> freeze + execute + verify -> dispatch. See
+    # brukal/hunt_wizard.py for the testable logic; this is a thin delegate.
+    from brukal.hunt_wizard import run_hunt
+    return run_hunt(args)
 
 
 def _cmd_target(args) -> int:
@@ -628,6 +600,11 @@ def main(argv: list[str] | None = None) -> int:
     ph.add_argument("--provider", default=None,
                     help="anthropic (default) | ollama | openai | openrouter | groq | ...")
     ph.add_argument("--base-url", default=None, help="endpoint for openai-compatible")
+    ph.add_argument("--mode", choices=["web", "vpn"], default=None,
+                    help="engagement mode; prompted if omitted")
+    ph.add_argument("--url", default=None, help="web mode: target URL")
+    ph.add_argument("--ovpn", default=None, help="vpn mode: path to .ovpn")
+    ph.add_argument("--context", default=None, help="web mode: one-line planner brief")
     ph.set_defaults(func=_cmd_hunt)
 
     pt = sub.add_parser("target", help="set the engagement scope to an IP or CIDR")
