@@ -1,5 +1,4 @@
 # tests/test_keys.py
-from pathlib import Path
 from brukal.keys import resolve_key, KeyResolution
 
 def test_env_wins_over_file_and_is_stripped(tmp_path):

@@ -49,8 +49,9 @@ def resolve_key(provider, *, environ=None, runs_dir="runs", prompt=input, save=T
     if save:
         try:
             Path(runs_dir).mkdir(parents=True, exist_ok=True)
-            os.umask(0o077)
-            f.write_text(f"export {var}={typed}\n", encoding="utf-8")
+            fd = os.open(str(f), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"export {var}={typed}\n")
         except OSError:
             pass
     return typed, KeyResolution(provider, True, "prompt")
