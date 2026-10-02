@@ -49,6 +49,8 @@ CASES = [
     (f"nmap {IN} 10.10.10.11-20", "range notation covering OUT"),
     (f"curl {OUT}/x", "scheme-less host/path"),
     (f"curl {OUT}:80/x", "scheme-less host:port/path"),
+    (f"nmap -n {IN} intranet", "bare dotless hostname (intranet)"),
+    (f"nmap -n {IN} localhost", "bare dotless hostname (localhost)"),
 ]
 
 
@@ -65,6 +67,12 @@ _SEC002 = pytest.mark.xfail(
            "BOTH doors; see SECURITY_AUDIT.md")
 
 
+_SEC003 = pytest.mark.xfail(
+    strict=True,
+    reason="FINDING SEC-003: smuggled bare/dotless hostname (intranet) not extracted -> ALLOW; "
+           "I3; Medium, mitigated by nftables egress lock; see SECURITY_AUDIT.md")
+
+
 def _cases():
     for cmd, desc in CASES:
         for door in ("check", "session"):
@@ -73,6 +81,8 @@ def _cases():
                 marks = [_SEC001]
             elif desc.startswith("scheme-less"):
                 marks = [_SEC002]
+            elif desc.startswith("bare dotless"):
+                marks = [_SEC003]     # ALLOW observed on BOTH doors (extract_hosts needs a dot)
             yield pytest.param(cmd, desc, door, marks=marks, id=f"{door}-{desc}")
 
 
@@ -80,7 +90,7 @@ def _cases():
 def test_smuggled_out_of_scope_target_is_denied(record, cmd, desc, door):
     verdict = _gate_verdict(cmd, scope_host=IN, door=door)
     record(f"parser::{door}::{desc}", "parser-target-smuggling", "I3", cmd,
-           "not ALLOW", verdict, "critical")
+           "not ALLOW", verdict, "medium" if desc.startswith("bare dotless") else "critical")
     assert verdict != "ALLOW", f"smuggled OUT target via {desc!r} was ALLOWed ({door}): {cmd!r}"
 
 
