@@ -17,6 +17,11 @@ def _scope():
                  authorized_hosts=frozenset({IN_HOST}))
 
 
+# MECHANISM NOTE: decimal (2130706433) and hex (0x7f000001) are canonicalized by scope
+# (canonical_ip -> 127.0.0.1) then fail the CIDR check; the encoded-IP positive controls
+# below prove that path works. "0177.0.0.1" (leading-zero dotted) and "::ffff:127.0.0.1"
+# (v4-mapped v6, never inside an IPv4 network) are denied by fail-closed-on-unparse /
+# no-match (I2), not by canonicalize-then-exclude.
 OUT = [
     ("localhost", "loopback alias"), ("127.0.0.1", "loopback"), ("0.0.0.0", "any"),
     ("::1", "v6 loopback"), ("::ffff:127.0.0.1", "v4-mapped v6"),
@@ -25,6 +30,7 @@ OUT = [
     ("APP.IN-SCOPE.EXAMPLE.evil.com", "subdomain confusion"),
     ("10.10.11.0", "CIDR off-by-one (adjacent /24)"),
     ("evil.example", "unrelated host"),
+    ("evil.example.", "FQDN-dot of unrelated host"),
 ]
 
 
@@ -60,4 +66,15 @@ def test_trailing_dot_is_same_authorized_host_not_an_escape(record):
     record("scope-escape::trailing-dot-equivalent", "scope-escape", "I3/I5",
            IN_HOST + ". (FQDN form of the authorized host)", "ALLOW", actual, "n/a")
     assert actual == "ALLOW"
-    assert not s.in_scope("evil.example.")
+
+
+@pytest.mark.parametrize("enc,desc", [("168430122", "decimal for 10.10.10.42"),
+                                      ("0xa0a0a2a", "hex for 10.10.10.42")])
+def test_positive_control_encoded_in_cidr_ip_is_allowed(record, enc, desc):
+    # Proves canonicalization actually works, so the encoded-loopback denials are
+    # canonicalize-then-exclude, not vacuous parse failures.
+    s = _scope()
+    actual = "ALLOW" if s.in_scope(enc) else "DENY"
+    record(f"scope-escape::positive-encoded::{enc}", "scope-escape", "I3/I5",
+           f"{enc} ({desc})", "ALLOW", actual, "n/a")
+    assert actual == "ALLOW"
