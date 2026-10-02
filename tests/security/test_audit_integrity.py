@@ -9,13 +9,19 @@ import json
 
 import pytest
 
-from brukal.audit import AuditLog
+from brukal.audit import _GENESIS, AuditLog, _hash
 
 N = 5
 
 
-def _build(tmp_path, n=N):
-    log = AuditLog(tmp_path / "audit.jsonl", key=None)
+@pytest.fixture(autouse=True)
+def _no_ambient_key(monkeypatch):
+    """'Unkeyed' must be genuinely unkeyed even if the developer has the env var set."""
+    monkeypatch.delenv("BRUKAL_AUDIT_KEY", raising=False)
+
+
+def _build(tmp_path, n=N, key=None):
+    log = AuditLog(tmp_path / "audit.jsonl", key=key)
     for i in range(n):
         log.append("note", {"step": i, "msg": f"record-{i}"})
     return log
@@ -77,17 +83,84 @@ def test_delete_middle_breaks_verify(tmp_path, record):
     assert not log.verify()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "FINDING SEC-006: tail truncation not detected by verify(); the surviving prefix is a "
-    "self-consistent chain and the head hash is not anchored anywhere external, so deleting "
-    "the last k records (e.g. the most recent denial/execution) verifies True; "
-    "see SECURITY_AUDIT.md"))
-def test_truncate_tail_breaks_verify(tmp_path, record):
-    log = _build(tmp_path)
-    _write(log, _lines(log)[:-2])
+_SEC006 = ("FINDING SEC-006: tail truncation not detected by verify() (GOVERNANCE/integrity, "
+           "Medium, needs file-write access). The surviving prefix is a self-consistent chain and "
+           "the head hash/count is not anchored externally. Affects KEYED mode too: "
+           "BRUKAL_AUDIT_KEY does not help because the attacker deletes, not forges. Contradicts "
+           "the audit.py:5-6 docstring claim that removing any past record is detectable by "
+           "verify(); see SECURITY_AUDIT.md")
+
+
+@pytest.mark.xfail(strict=True, reason=_SEC006)
+@pytest.mark.parametrize("keyed", [False, True], ids=["unkeyed", "keyed"])
+@pytest.mark.parametrize("k", [1, 2])
+def test_truncate_tail_breaks_verify(tmp_path, record, k, keyed):
+    log = _build(tmp_path, key="k" if keyed else None)
+    _write(log, _lines(log)[:-k])
     actual = _verdict(log)
-    record("i5::truncate-tail", "audit-integrity", "I5", "drop last 2 records",
+    record(f"i5::truncate-tail-k{k}-{'keyed' if keyed else 'unkeyed'}", "audit-integrity", "I5",
+           f"drop last {k} record(s), {'keyed' if keyed else 'unkeyed'} chain",
+           "VERIFY_FAIL", actual, "medium")
+    assert not log.verify()
+
+
+def _rechain(log, key_hash, index, mutate):
+    """Edit record `index` then recompute every link from there on with `key_hash`."""
+    recs = [json.loads(line) for line in _lines(log)]
+    mutate(recs[index])
+    prev = recs[index]["prev_hash"] if index else _GENESIS
+    for r in recs[index:]:
+        r["prev_hash"] = prev
+        r.pop("entry_hash", None)
+        payload = json.dumps(r, sort_keys=True, separators=(",", ":"))
+        r["entry_hash"] = key_hash(prev, payload)
+        prev = r["entry_hash"]
+    _write(log, [json.dumps(r, separators=(",", ":")) for r in recs])
+
+
+def _forge(r):
+    r["data"]["msg"] = "forged"
+
+
+def test_keyed_positive_control_intact_verifies(tmp_path, record):
+    log = _build(tmp_path, key="k")
+    actual = _verdict(log)
+    record("i5::keyed-intact", "audit-integrity", "I5", "5 valid keyed records, untouched",
+           "VERIFY_OK", actual, "n/a")
+    assert actual == "VERIFY_OK"
+
+
+def test_keyed_edit_with_unkeyed_rechain_detected(tmp_path, record):
+    """Attacker without the key edits + re-chains with plain SHA-256: keyed verify rejects."""
+    log = _build(tmp_path, key="k")
+    _rechain(log, _hash, 2, _forge)
+    actual = _verdict(log)
+    record("i5::keyed-edit-rechain", "audit-integrity", "I5",
+           "edit middle record, re-chain with unkeyed _hash, keyed ledger",
            "VERIFY_FAIL", actual, "high")
+    assert not log.verify()
+
+
+def test_keyed_chain_wrong_key_detected(tmp_path, record):
+    log = _build(tmp_path, key="k")
+    other = AuditLog(log.path, key="not-k")
+    actual = _verdict(other)
+    record("i5::keyed-wrong-key", "audit-integrity", "I5", "verify keyed chain with different key",
+           "VERIFY_FAIL", actual, "high")
+    assert not other.verify()
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "DESIGN-LIMIT (not a SEC finding), documented at audit.py:12-15: an UNKEYED chain can be "
+    "edited and fully re-chained by anyone with file-write access and still verifies. Mitigated "
+    "by keyed mode (see test_keyed_edit_with_unkeyed_rechain_detected)."))
+def test_unkeyed_edit_with_rechain_is_design_limit(tmp_path, record):
+    log = _build(tmp_path)
+    _rechain(log, _hash, 2, _forge)
+    actual = _verdict(log)
+    record("i5::unkeyed-edit-rechain-DESIGN-LIMIT", "audit-integrity", "I5",
+           "edit middle record + recompute chain with real _hash, unkeyed ledger "
+           "(documented limit per audit.py:12-15)", "VERIFY_FAIL", actual, "low")
     assert not log.verify()
 
 
