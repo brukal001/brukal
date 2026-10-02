@@ -3,7 +3,7 @@
 **Date:** 2026-10-02
 **Status:** design approved in brainstorming; awaiting written-spec review → `writing-plans`.
 **Branch:** `feat/security-audit-suite` (off `main`).
-**Mode:** build + self-test only. No live model, no live target, no Docker, no network. Read-only on the security code (adds tests + docs; does NOT modify `brukal/` security modules).
+**Mode:** build + self-test only. No live model, no live target, no Docker, no network. Read-only on the security code through Phases 1–3 (adds tests + docs); Phase 4 may modify `brukal/` security modules, but ONLY to fix a bypass that was first reproduced and documented (committed) in Phases 2–3, and only in a way that preserves all five invariants.
 
 ---
 
@@ -15,21 +15,24 @@ Turn Brukal's central governance claim — *"the model proposes, a deterministic
 
 ### Settled in brainstorming (do not re-open)
 1. Scope = deterministic suite + audit docs. Live/LLM/multi-agent = documented experiments only.
-2. Read-only on security code; fixes to security modules happen only *after* a documented failure and a separate approval.
+2. Four-phase cycle (§2): TRY all bypasses → ANALYZE root cause → SAVE as the committed "before" baseline → FIX. Fixes to security modules happen only *after* the failure is reproduced and documented (committed), preserve all five invariants, and land as their own commits so the before/after history is scientifically valid.
 3. Honest reporting: never "Brukal is secure"; say "no bypass observed across N cases under this configuration," and report any real bypass as a finding.
 
 ---
 
 ## 2. THE METHODOLOGY RULE (central — binds every task)
 
-Each security test asserts the **safe** outcome of an adversarial input.
+Each security test asserts the **safe** outcome of an adversarial input. A **green** test ⇒ the invariant held against that input ⇒ **PASS** evidence. A **red** test ⇒ a **bypass** the system actually allowed. The work proceeds as an explicit four-phase cycle, in order, and never short-circuits it:
 
-- A **green** test ⇒ the invariant held against that input ⇒ **PASS** evidence in the audit.
-- A **red** test that reveals a genuine bypass ⇒ a **documented FINDING**. It is **not** silenced by weakening the assertion, and the security code is **not** patched in the same change. The finding is recorded in `SECURITY_AUDIT.md` (repro, root cause, invariant, severity) and surfaced to the maintainer; a fix is a separate, later, approved step.
+**Phase 1 — TRY every bypass.** Build and run the full adversarial corpus first. Do not fix anything yet. The output of this phase is the raw set of observed outcomes: which inputs the system blocked (green) and which it let through (red = a bypass). The corpus is run to completion before any analysis or fix.
 
-Therefore this suite is simultaneously a regression guard (green cases) and an audit instrument (any red case is a result, not a build blocker). The implementer must **report** a genuine bypass, never hide it by editing the assertion to match buggy behavior. If a test's *expected* safe outcome is genuinely ambiguous, the implementer stops and asks rather than guessing an assertion.
+**Phase 2 — ANALYZE why each bypass was allowed.** For every red case: minimize the reproduction; determine the root cause in the actual code (not a guess); name which invariant failed (I1–I5 / confirmation / risk); and classify the failure type (SECURITY / GOVERNANCE / MEASUREMENT / MODEL / HARNESS / UNREACHABLE) — crucially, do NOT blame the LLM when the real fault is the parser, gate, scope, or measurement.
 
-This rule exists because the research value is in *honestly characterising* where the architecture holds and where it does not — a reproducible, correctly-characterised failure is valuable evidence.
+**Phase 3 — SAVE everything for research (the "before" record).** Record each bypass in `SECURITY_AUDIT.md` (id, severity, component, minimal repro, root cause, invariant, failure type) and in `security_results.json`, and **commit that documentation before any fix touches the security code.** This committed "before" state is the scientific baseline — it is what makes the evaluation valid. A reproducible, correctly-characterised failure is itself a valuable research result.
+
+**Phase 4 — FIX (the "after"), preserving the before/after distinction.** Only now, and only for genuine SECURITY/GOVERNANCE bypasses, write the fix in the security code. Each fix: preserves all five invariants (a gate/scope fix stays deterministic and fail-closed — no LLM in the decision, no runtime scope widening); turns the previously-red test green (it becomes a permanent regression test); and lands as its **own commit, separate from the finding's documentation commit**, so `git log` shows the failing-then-fixed history. The audit keeps both the original finding and its fix, with a before→after note.
+
+Hard rules across all phases: never silence a bypass by weakening its assertion to match buggy behavior; never patch before the finding is reproduced, analysed, and committed; if a test's *expected* safe outcome is genuinely ambiguous, stop and ask rather than guessing. If Phase 1 finds **no** bypasses, Phases 2–4 are honestly empty and the audit reports "no bypass observed across N cases under this configuration" — fixes are written only for failures that actually occurred, never invented.
 
 ---
 
@@ -95,5 +98,13 @@ Live prompt-injection ASR campaigns, indirect injection via live target content,
 
 ---
 
-## 8. Milestone shape
-One tested milestone under the five invariants and build discipline. Suggested task order for the plan: conftest/results-collector + one reference module (scope-escape) → the remaining test modules → the three docs (authored from the suite's actual results) → regression + results-json verification. The docs are written **from the observed test outcomes**, so they come after the suite runs. Any FAIL discovered becomes a documented finding in `SECURITY_AUDIT.md`; proposing/implementing a fix for it is a separate, later, maintainer-approved step (per §2).
+## 8. Milestone shape (mirrors the four phases of §2)
+One milestone under the five invariants and build discipline, sequenced as the §2 cycle:
+
+- **Build (Phase 1 infrastructure):** `conftest`/results-collector + one reference module (scope-escape) → the remaining seven test modules. Each test asserts the safe outcome; each module carries a positive control.
+- **TRY (Phase 1 run):** run the whole suite to completion and capture `security_results.json`. The green/red split is the raw result; nothing in `brukal/` is changed yet.
+- **ANALYZE + SAVE (Phases 2–3):** author `SECURITY_AUDIT.md` (per-invariant PASS/FAIL/PARTIAL/NOT-TESTABLE + a documented finding, with minimal repro / root cause / invariant / failure-type, for every red case), `THREAT_MODEL.md`, and `RESEARCH_FINDINGS.md` **from the observed outcomes**, and **commit these docs — the "before" baseline — before any security-code change.**
+- **FIX (Phase 4):** one fix task per genuine SECURITY/GOVERNANCE bypass, each a **separate commit after** the documentation commit, preserving all five invariants, turning that bypass's test green (now a regression test), with a before→after note in the audit. These tasks are **finding-dependent** — enumerated from the Phase-1 results, not known in advance; if Phase 1 found no bypasses there are no fix tasks and the audit says so honestly.
+- **Verify:** full existing suite green + the new security suite green (post-fix) + pyflakes clean + `security_results.json` self-consistent.
+
+The plan writes the Build/TRY/ANALYZE+SAVE tasks concretely now; the FIX tasks are specified as a template (reproduce→document-commit→fix-commit→green) instantiated once per actual Phase-1 finding, since their content depends on what the run reveals.
