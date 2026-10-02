@@ -45,6 +45,10 @@ CASES = [
     (f"curl http://[{OUT6}]/", "bracketed IPv6 url"),
     (f"nmap {IN} 168430091", "decimal-encoded OUT"),
     (f"nmap {IN} 0xa0a0a0b", "hex-encoded OUT"),
+    (f"nmap {IN} {OUT}/32", "CIDR /32 of OUT"),
+    (f"nmap {IN} 10.10.10.11-20", "range notation covering OUT"),
+    (f"curl {OUT}/x", "scheme-less host/path"),
+    (f"curl {OUT}:80/x", "scheme-less host:port/path"),
 ]
 
 
@@ -55,10 +59,20 @@ _SEC001 = pytest.mark.xfail(
            "see SECURITY_AUDIT.md")
 
 
+_SEC002 = pytest.mark.xfail(
+    strict=True,
+    reason="FINDING SEC-002: scheme-less host/path smuggled past extract_hosts -> ALLOW on "
+           "BOTH doors; see SECURITY_AUDIT.md")
+
+
 def _cases():
     for cmd, desc in CASES:
         for door in ("check", "session"):
-            marks = [_SEC001] if (door == "session" and "CIDR" in desc) else []
+            marks = []
+            if door == "session" and ("CIDR" in desc or "range" in desc):
+                marks = [_SEC001]
+            elif desc.startswith("scheme-less"):
+                marks = [_SEC002]
             yield pytest.param(cmd, desc, door, marks=marks, id=f"{door}-{desc}")
 
 
