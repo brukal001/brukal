@@ -9,8 +9,6 @@ imports ``brukal.kali`` (agents get the Executor, never the cage object).
 import ast
 import pathlib
 
-import pytest
-
 PKG = pathlib.Path(__file__).resolve().parents[2] / "brukal"
 
 # Legitimate door / executor / cage sites (enumerated from a grep of the package):
@@ -23,11 +21,14 @@ ALLOWED_EXEC_MODULES = {
     "web.py",           # web tool door: argv subprocess (curl/render), door-layer
     "egress_proxy.py",  # the scope-enforcing egress proxy: sockets are its job
 }
-# Genuine non-door exec sites found by the scan: documented findings, NOT allowlisted.
-KNOWN_FINDINGS = {
-    "cli.py": "FINDING SEC-I4a: cli.py runs subprocess.run(['docker','cp',...]) outside the door",
-    "skills.py": "FINDING SEC-I4b: skills.py install_pack runs subprocess.run(['git','clone',...]) outside the door",
+# Operator-CLI-only exec sites (GOVERNANCE observations, not I4 bypasses): argv, no shell,
+# operator-typed input, unreachable from any agent/orchestrator/executor path (tested below).
+OPERATOR_SIDE_EXEC = {
+    "cli.py": "subprocess docker cp in _cmd_apk - operator `brukal apk` CLI only, no agent path",
+    "skills.py": "subprocess git clone in install_pack - operator `brukal skills add` CLI only, no agent path",
 }
+# Pinned exec-site counts so a NEW stray exec in these files trips the test.
+OPERATOR_SIDE_EXPECTED_COUNT = {"cli.py": 1, "skills.py": 1}
 
 _OS_BAD = {"system", "popen", "fork", "forkpty", "execv", "execve", "execl", "execle",
            "execlp", "execlpe", "execvp", "execvpe", "spawnl", "spawnv", "spawnlp",
@@ -99,8 +100,8 @@ def test_scanner_sees_the_package():
 
 
 def test_no_exec_path_outside_executor(record):
-    """No NEW exec/socket site beyond the allowlist and the documented findings."""
-    bad = _scan(ALLOWED_EXEC_MODULES | set(KNOWN_FINDINGS))
+    """No exec/socket site outside {door allowlist} + {operator-side sites}."""
+    bad = _scan(ALLOWED_EXEC_MODULES | set(OPERATOR_SIDE_EXEC))
     record("i4::exec-scan", "executor-single-path", "I4", f"{len(bad)} new violations", "0",
            str(len(bad)), "critical")
     assert not bad, f"exec/socket outside executor path: {bad}"
@@ -143,11 +144,42 @@ def test_agents_do_not_import_kali(record):
     assert not bad, f"agents import the kali object: {bad}"
 
 
-@pytest.mark.xfail(strict=True, reason="FINDING SEC-I4a/SEC-I4b: cli.py (docker cp) and skills.py "
-                   "(git clone) call subprocess outside the door; operator-side, not agent-reachable; "
-                   "see SECURITY_AUDIT.md")
-def test_known_non_door_exec_sites_absent(record):
-    bad = _scan(ALLOWED_EXEC_MODULES)
-    record("i4::non-door-exec-known", "executor-single-path", "I4", f"{len(bad)} violations", "0",
-           str(len(bad)), "medium")
-    assert not bad, bad
+def test_operator_side_exec_sites_pinned(record):
+    """A new exec in cli.py/skills.py must trip this, not hide behind the file skip."""
+    actual = {}
+    for name in OPERATOR_SIDE_EXEC:
+        # count real call sites (the `import subprocess` line itself is not a call site)
+        actual[name] = len([v for v in _violations((PKG / name).read_text(encoding="utf-8"), name)
+                            if " import " not in v])
+    record("i4::operator-side-pin", "executor-single-path", "I4", str(actual),
+           str(OPERATOR_SIDE_EXPECTED_COUNT), str(actual), "medium")
+    assert actual == OPERATOR_SIDE_EXPECTED_COUNT, actual
+
+
+def _imports_operator_side(src: str) -> list[str]:
+    hits = []
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Import):
+            hits += [a.name for a in n.names if a.name in ("brukal.cli", "brukal.skills")]
+        elif isinstance(n, ast.ImportFrom):
+            mod = n.module or ""
+            full = mod if n.level == 0 else f"brukal.{mod}".rstrip(".")
+            if full in ("brukal.cli", "brukal.skills"):
+                hits.append(full)
+            if full == "brukal" or (n.level and not mod):
+                hits += [f"brukal.{a.name}" for a in n.names if a.name in ("cli", "skills")]
+            if any(a.name == "install_pack" for a in n.names):
+                hits.append("install_pack")
+    return hits
+
+
+def test_operator_side_exec_unreachable_from_agents(record):
+    assert _imports_operator_side("from ..skills import install_pack\n")      # self-test
+    assert _imports_operator_side("from .. import cli\n")
+    assert _imports_operator_side("import brukal.cli\n")
+    assert not _imports_operator_side("from ..llm import LLMClient\n")
+    files = sorted((PKG / "agents").glob("*.py")) + [PKG / "orchestrator.py"]
+    bad = [(p.name, h) for p in files for h in _imports_operator_side(p.read_text(encoding="utf-8"))]
+    record("i4::operator-side-unreachable", "executor-single-path", "I4", f"{len(bad)} imports", "0",
+           str(len(bad)), "high")
+    assert not bad, f"agent/orchestrator reaches operator-side exec: {bad}"
