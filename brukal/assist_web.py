@@ -808,6 +808,40 @@ class _WebMixin:
         decision, result = self.browser.run(action, agent="strategist")
         return self._absorb_web(action, decision, result)
 
+    _BASELINE_ENDPOINTS = 64
+    _BASELINE_PER_ENDPOINT = 3
+    _BASELINE_MAX_CHARS = 200_000
+
+    def _web_baseline(self, action, status, body: str):
+        """The most recent earlier 2xx body for the same scheme+host+path from a
+        DIFFERENT request (method/url/body), or None — and remember `body` for later
+        when `status` is 2xx. In memory only, bounded; it holds response bodies this
+        session already received (as `result.body` does) and is never persisted."""
+        from urllib.parse import urlsplit
+        url = getattr(action, "url", "") or ""
+        try:
+            p = urlsplit(url)
+        except ValueError:
+            return None
+        if not p.scheme or not p.netloc:
+            return None
+        endpoint = f"{p.scheme}://{p.netloc}{p.path}"
+        key = (str(getattr(action, "method", "") or "GET").upper(), url,
+               str(getattr(action, "body", "") or ""))
+        store = getattr(self, "_endpoint_bodies", None)
+        if store is None:
+            store = self._endpoint_bodies = {}
+        prior = store.get(endpoint, [])
+        baseline = next((b for k, b in reversed(prior) if k != key), None)
+        if isinstance(status, int) and 200 <= status < 300:
+            kept = [(k, b) for k, b in prior if k != key]
+            kept.append((key, (body or "")[:self._BASELINE_MAX_CHARS]))
+            store.pop(endpoint, None)
+            store[endpoint] = kept[-self._BASELINE_PER_ENDPOINT:]
+            while len(store) > self._BASELINE_ENDPOINTS:
+                store.pop(next(iter(store)))
+        return baseline
+
     def _absorb_web(self, action, decision, result):
         # THE WEB PLANE'S observation point — same door, same rule. A plane that receives
         # target output and does not pass it here is a plane whose findings cannot be
@@ -826,10 +860,19 @@ class _WebMixin:
         new_hl: list[tuple[str, str]] = []
         if result is not None:
             body = (result.body or "").strip()
+            from .response_view import salient_view
+            try:
+                baseline = self._web_baseline(action, getattr(result, "status", None), body)
+            except Exception:
+                baseline = None
             new_hl = highlight_findings(body)
             self.highlights.extend(h for h in new_hl if h not in self.highlights)
             head = f"{decision.verdict}: {result.note or ''} status={result.status}".strip()
-            self.notes.append(f"[web] {action.describe()}\n{head}\n{body[:600]}")
+            # What the model READS of the response: the changed region vs an earlier
+            # response to the same page, else its start AND end — not body[:600], which
+            # on 2026-10-01 showed only a page header while the result sat at the end.
+            self.notes.append(f"[web] {action.describe()}\n{head}\n"
+                              f"{salient_view(body, baseline, 600)}")
             # The body goes on the RECORD too, not only into the rolling note window.
             # `PUT /api/BasketItems/1 {"quantity":-100}` answered 200 on a live run and
             # the record kept `status=200 (154B)` — a business-logic hit reduced to a
@@ -841,7 +884,7 @@ class _WebMixin:
             # credentials in this text.
             lead = ("; ".join(f"{t}: {l}" for t, l in new_hl[:6])
                     or f"{head} ({len(body)}B)")
-            summary = f"{lead}\n{body[:800]}" if body else lead
+            summary = f"{lead}\n{salient_view(body, baseline, 800)}" if body else lead
             self._persist_finding("web", action.describe(), decision.verdict, summary, new_hl)
             self._advance_plan()
         else:

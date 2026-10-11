@@ -60,9 +60,13 @@ salient_view(body: str, baseline: str | None, budget: int) -> str
 
 - `_absorb_web` replaces `body[:600]` with `salient_view(body, baseline, 600)` and `body[:800]`
   with `salient_view(body, baseline, 800)`. Budgets are unchanged, so prompt size is unchanged.
-- **Baseline selection** (new helper `_baseline_for(url)`): the most recent earlier capture from
-  `browser.captured()` with the same scheme+host+path, status 2xx, and a different query or body.
-  None if there is none. Selection reads the existing capture list; it issues no request.
+- **Baseline selection** (helper `AssistSession._web_baseline`): the most recent earlier 2xx
+  response body for the same scheme+host+path from a DIFFERENT request (method, URL or body),
+  held in a bounded in-memory map (≤ 64 endpoints, ≤ 3 bodies each, each ≤ 200,000 chars; never
+  persisted). *Amended during planning:* the capture store cannot serve as the baseline because it
+  now holds head+tail only, and diffing a full body against a head+tail baseline reports the
+  missing middle as "changed" noise ahead of the real result. A diff that marks more than 80% of
+  lines changed falls back to head+tail (it says nothing useful).
 
 ### 3.3 Capture store keeps head and tail (`brukal/capture.py`)
 
