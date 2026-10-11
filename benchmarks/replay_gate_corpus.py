@@ -9,7 +9,9 @@ approved) — read from the gitignored `runs/**/*.jsonl` ledgers — through the
         command's own target — each one would now be DENIED: a capability regression
         unless it is a genuine smuggle;
   LOST  hosts the ref extracted that the current version does not — a governance
-        regression.
+        regression;
+  UNSEEN commands `unseen_targets` (SEC-008) now denies that the ref did not — each a
+        capability cost unless it truly picks targets the gate cannot see.
 
     .venv/bin/python benchmarks/replay_gate_corpus.py [git-ref]   # default: main
 
@@ -37,7 +39,11 @@ ROOT = Path(__file__).resolve().parents[1]
 #     URLs `nc python3 python wget curl` (crAPI, 2026-09)
 #   - SQLi `test' OR '1'='1` inside a single-quoted -d -> curl gets URL `OR`
 #     (Juice Shop, 2026-08)
-REVIEWED_TRUE_POSITIVES = {"5ff5c05c825b", "4e39d31029cf"}
+REVIEWED_TRUE_POSITIVES = {"5ff5c05c825b", "4e39d31029cf",
+    # SEC-008 unseen targets (2026-10-11 review): nuclei/httpx -l reading a target
+    # file the gate cannot check -- incl. model misuse (-l as "templates"/"limit",
+    # placeholder /path/to/ files). `-u a,b,c` restates each with checkable targets.
+    "0d422fb853ee", "95c386afda6c", "501dac16b6ee", "2f66e5bccc4e", "25c328a7f566", "31aa2d388c02"}
 sys.path.insert(0, str(ROOT))
 
 
@@ -88,7 +94,7 @@ def main(argv: list[str]) -> int:
     ref = argv[1] if len(argv) > 1 else "main"
     old = _load_ref(ref)
     rows = _corpus()
-    new_n = lost_n = 0
+    new_n = lost_n = unseen_n = 0
     import hashlib
     reviewed = 0
     for cmd, target in rows:
@@ -98,15 +104,23 @@ def main(argv: list[str]) -> int:
             reviewed += 1
             new = []
         lost = sorted(o - n)
+        uns_now = cur.unseen_targets(cmd) if hasattr(cur, "unseen_targets") else []
+        uns_ref = old.unseen_targets(cmd) if hasattr(old, "unseen_targets") else []
+        if uns_now and not uns_ref and \
+                hashlib.sha256(cmd.encode()).hexdigest()[:12] in REVIEWED_TRUE_POSITIVES:
+            reviewed += 1
+        elif uns_now and not uns_ref:
+            unseen_n += 1
+            print(f"UNSEEN {uns_now}  target={target}  {cmd[:160]!r}")
         if new:
             new_n += 1
             print(f"NEW  {new}  target={target}  {cmd[:160]!r}")
         if lost:
             lost_n += 1
             print(f"LOST {lost}  target={target}  {cmd[:160]!r}")
-    print(f"{len(rows)} historical commands vs {ref}: {new_n} NEW, {lost_n} LOST "
-          f"({reviewed} reviewed true positives)")
-    return 1 if (new_n or lost_n) else 0
+    print(f"{len(rows)} historical commands vs {ref}: {new_n} NEW, {lost_n} LOST, "
+          f"{unseen_n} UNSEEN ({reviewed} reviewed true positives)")
+    return 1 if (new_n or lost_n or unseen_n) else 0
 
 
 if __name__ == "__main__":

@@ -94,7 +94,6 @@ LEGIT = [
     f"mongosh --host {IN} --port 27017 admin --eval 'db.adminCommand({{ping:1}})'",
     f"ssh -i key -p 2222 u@{IN} id",
     "nc -lvnp 4444",
-    "curl $URL",
 ]
 
 

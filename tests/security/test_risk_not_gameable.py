@@ -69,7 +69,8 @@ _SEC008 = pytest.mark.xfail(strict=True, reason=(
     "Only the cage egress firewall stands behind it. I3, Critical."))
 
 
-@_SEC008
+# SEC-008 FIXED 2026-10-11 (hostmatch.unseen_targets + a gate check on both doors);
+# `_SEC008` keeps the original write-up. Regressions: tests/test_unseen_targets.py.
 @pytest.mark.parametrize("cmd", [
     "nmap -iR 100", "nmap -iL /etc/hosts", f"nmap -iL targets.txt {IN}",
     "masscan -iL t.txt -p80", "masscan --includefile t.txt -p80",

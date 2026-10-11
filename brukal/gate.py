@@ -36,7 +36,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 
-from .hostmatch import extract_hosts, loopback_ip
+from .hostmatch import extract_hosts, loopback_ip, unseen_targets
 from .risk import assess
 from .scope import Scope
 
@@ -58,6 +58,12 @@ _DESTRUCTIVE_RE = re.compile(
     r"|\bwipefs\b|>\s*/dev/sd|\bfdisk\b[^\n]*/dev/"       # wipe partitions/disks
     r"|:\s*\(\s*\)\s*\{.*\}\s*;\s*:",                     # classic fork bomb
     re.I)
+
+
+def _unseen_reason(unseen: list) -> str:
+    return ("targets not visible to the scope check (" + "; ".join(unseen[:3])
+            + ") — write every target in the command itself (e.g. `-u a,b,c` or "
+              "listing the hosts) so each can be checked against scope")
 
 
 def _bare_name_hint(host: str) -> str:
@@ -180,6 +186,11 @@ class Gate:
                                   + _bare_name_hint(host),
                                   "session:scope")
 
+        unseen = unseen_targets(text)
+        if unseen:
+            return self._deny(line, target, agent, _unseen_reason(unseen),
+                              "session:scope")
+
         if not self._rate_ok():
             return self._deny(line, target, agent, "rate limit exceeded",
                               "session:rate")
@@ -266,6 +277,14 @@ class Gate:
                 return self._deny(command, target, agent,
                                   f"out-of-scope host {host} in command"
                                   + _bare_name_hint(host), "hard:scope")
+
+        # 4b. No target the check above cannot SEE (SEC-008): target-list / request /
+        #     config files, random or search-engine target sources, shell variables in
+        #     a host position. They cannot be placed in scope, so they are denied.
+        unseen = unseen_targets(command)
+        if unseen:
+            return self._deny(command, target, agent, _unseen_reason(unseen),
+                              "hard:scope")
 
         # 5. Rate limit.
         if not self._rate_ok():

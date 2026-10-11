@@ -153,6 +153,7 @@ def _network_targets(tok: str) -> list[str] | None:
 _QUOTED = {"{": "\x00", "}": "\x01", ",": "\x02"}
 _UNQUOTED = {v: k for k, v in _QUOTED.items()}
 _OPERATOR_CHARS = set(";|&<>()")
+_PIPE = "\x04|"   # seps-mode marker: the next command reads the previous one's stdout
 _BASH_BLANKS = " \t\n"   # bash's default IFS — NOT Python isspace() (U+2028 etc.)
 _EXPANSION = "\x03"   # an unexpanded $VAR inside a word: content unknown, not a host
 
@@ -242,7 +243,9 @@ def _lex(text: str, depth: int = 0, seps: bool = False) -> list:
         elif ch in _OPERATOR_CHARS:
             flush()
             if seps:
-                words.append(None)
+                single_pipe = (ch == "|" and text[i + 1:i + 2] != "|"
+                               and text[i - 1:i] != "|")
+                words.append(_PIPE if single_pipe else None)
         elif ch == "$":
             # `$IFS` / `${IFS…}` expands to a word break (`curl${IFS}host`); any other
             # expansion (`$i`, `${URL}`) is opaque content INSIDE the current word —
@@ -290,7 +293,7 @@ def _tokens(text: str) -> list[str]:
     that residual must be held by the cage's egress firewall, not by this module."""
     out: list[str] = [w for w in re.split(r"\s+", text or "") if w]
     for word in _lex(text):
-        if word is None:
+        if word is None or word == _PIPE:
             continue
         # A lexer word holding whitespace came from a quoted string with spaces — a
         # script or data (`python3 -c "…{'email':'a@b.io'}…"`), never ONE host argument.
@@ -328,9 +331,18 @@ def extract_hosts(text: str) -> list[str]:
         # 1. URL token — the host is whatever the scheme points at (canonicalise it,
         #    so an IP-encoded URL host like http://0x08080808/ becomes 8.8.8.8).
         if "://" in tok:
-            host = urlsplit(tok).hostname
-            if host:
-                add(canonical_ip(host) or host)
+            # A comma-joined URL list (`-u http://a,http://b:8080`, the form scanners
+            # take for several targets) is several URLs, each judged on its own host —
+            # read whole, `a,http` was one bogus host and a valid list was DENIED.
+            parts = [p for p in tok.split(",") if "://" in p] if tok.count("://") > 1 \
+                else [tok]
+            for part in parts:
+                try:
+                    host = urlsplit(part).hostname
+                except ValueError:
+                    host = part            # unparseable URL: hand it to the scope check
+                if host:
+                    add(canonical_ip(host) or host)
             continue
 
         # user@host argument (ssh user@evil.com, scp f user@evil.com:/p) — the host
@@ -574,21 +586,26 @@ def _host_of_arg(arg: str) -> str:
     return a
 
 
-def _emit(arg: str, out: list) -> None:
+def _emit(arg: str, out: list, variables: list | None = None) -> None:
     """Report a host-position argument when it names a dotless or loopback host — the
     shapes the generic scan cannot safely see. (Dotted names, IPs and URLs are already
-    found by extract_hosts' generic rules.)"""
-    h = _host_of_arg(arg).lower().rstrip(".")
+    found by extract_hosts' generic rules.) A host position whose host part is a shell
+    variable goes to `variables`: its value is unknowable here (SEC-008)."""
+    raw = _host_of_arg(arg)
+    if variables is not None and _EXPANSION in (raw or arg.split("/", 1)[0]):
+        variables.append(arg.replace(_EXPANSION, "$VAR"))
+        return
+    h = raw.lower().rstrip(".")
     if not h or h.isdigit():
         return                                     # a port / count, not a host
     if loopback_ip(h) or _LABEL_RE.match(h):
         out.append(h)
 
 
-def _command_hosts(words: list, out: list, depth: int) -> None:
-    """Host-position arguments of ONE simple command (already split into words)."""
+def _skip_prefix(words: list) -> int:
+    """Index of the real command word: past VAR=value assignments, shell keywords and
+    wrappers (sudo, timeout 5, env X=1, ...)."""
     i, n = 0, len(words)
-    # skip leading VAR=value assignments and wrappers (sudo, timeout 5, env X=1, ...)
     while i < n:
         w = words[i]
         if ("=" in w and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)) or w in _KEYWORDS:
@@ -603,6 +620,14 @@ def _command_hosts(words: list, out: list, depth: int) -> None:
             i += 2 if (words[i] in values and "=" not in words[i]) else 1
         while i < n and skip_pos:
             i, skip_pos = i + 1, skip_pos - 1
+    return i
+
+
+def _command_hosts(words: list, out: list, depth: int, variables: list | None = None
+                   ) -> None:
+    """Host-position arguments of ONE simple command (already split into words).
+    A host position holding a shell variable is reported to `variables` (SEC-008)."""
+    i, n = _skip_prefix(words), len(words)
     if i >= n:
         return
     tool = words[i].rsplit("/", 1)[-1]
@@ -610,11 +635,11 @@ def _command_hosts(words: list, out: list, depth: int) -> None:
 
     if depth < 4 and (tool in _SHELLS or tool == "eval"):
         if tool == "eval":
-            _line_hosts(" ".join(rest), out, depth + 1)
+            _line_hosts(" ".join(rest), out, depth + 1, variables)
         else:
             for k, w in enumerate(rest[:-1]):
                 if w in ("-c", "-lc", "-ic", "-xc"):
-                    _line_hosts(rest[k + 1], out, depth + 1)
+                    _line_hosts(rest[k + 1], out, depth + 1, variables)
                     break
         return
 
@@ -639,14 +664,16 @@ def _command_hosts(words: list, out: list, depth: int) -> None:
                 if field is not None:
                     parts = val.split(":")
                     if len(parts) >= -field:
-                        _emit(parts[field], out)
+                        _emit(parts[field], out, variables)
                 elif opt in host_opts:
-                    _emit(val, out)
+                    _emit(val, out, variables)
             k += 1
             continue
         positional.append(w)
         k += 1
 
+    if tool == "hydra" and "-M" in rest:
+        positional = []                # with -M the positional is the SERVICE (ssh)
     if policy == "all":
         targets = positional
     elif policy == "first":
@@ -654,18 +681,19 @@ def _command_hosts(words: list, out: list, depth: int) -> None:
     else:
         targets = []
     for t in targets:
-        _emit(t, out)
+        _emit(t, out, variables)
     if tool == "ssh" and len(positional) > 1 and depth < 4:
         # the remote command runs FROM the box — a pivot is still a host it reaches
-        _line_hosts(" ".join(positional[1:]), out, depth + 1)
+        _line_hosts(" ".join(positional[1:]), out, depth + 1, variables)
 
 
-def _line_hosts(text: str, out: list, depth: int = 0) -> None:
+def _line_hosts(text: str, out: list, depth: int = 0, variables: list | None = None
+                ) -> None:
     cmd: list[str] = []
     for w in _lex(text, seps=True) + [None]:
-        if w is None:
+        if w is None or w == _PIPE:
             if cmd:
-                _command_hosts(cmd, out, depth)
+                _command_hosts(cmd, out, depth, variables)
             cmd = []
         else:
             cmd.append(w)
@@ -678,3 +706,101 @@ def tool_position_hosts(text: str) -> list[str]:
     _line_hosts(text or "", out)
     seen: set[str] = set()
     return [h for h in out if not (h in seen or seen.add(h))]
+
+
+# --------------------------------------------------------------------------------- #
+# SEC-008 — targets the gate cannot SEE.
+#
+# The scope check judges every host written in the command. Some forms choose targets
+# that are not written there at all: a target-list file (`nmap -iL`, `nuclei -l`), a
+# request/config file that carries the host (`sqlmap -r`, `curl -K`), a random or
+# search-engine source (`nmap -iR`, `sqlmap -g`, `nuclei -uncover`), stdin (`cat hosts |
+# httpx`, `... | xargs curl`), or a shell variable in a host position (`curl $T`).
+# None can be placed in scope, so the gate denies them (fail-closed) — and says how to
+# restate the command with the targets written out, so capability is one retry away.
+# --------------------------------------------------------------------------------- #
+
+_UNSEEN_OPTS: dict[str, frozenset] = {
+    "nmap": _opts("-iR -iL --resume"),
+    "masscan": _opts("-iL --includefile -c --conf --resume"),
+    "nuclei": _opts("-l -list -resume -uncover -uc"),
+    "httpx": _opts("-l -list"),
+    "naabu": _opts("-l -list"),
+    "katana": _opts("-l -list"),
+    "wget": _opts("-i --input-file"),
+    "curl": _opts("-K --config"),
+    "whatweb": _opts("-i --input-file"),
+    "sqlmap": _opts("-r -m -l -g -c"),
+    "hydra": _opts("-M"),
+}
+_ATTACHED_OK = _opts("-iR -iL")             # nmap also accepts -iLfile
+_STDIN_TARGET_TOOLS = _opts("httpx nuclei naabu katana")
+_EXPLICIT_TARGET_OPTS = _opts("-u -target -host")
+_FANOUT = _opts("xargs parallel")
+
+
+def _command_unseen(words: list, piped: bool, out: list, depth: int) -> None:
+    i = _skip_prefix(words)
+    if i >= len(words):
+        return
+    tool = words[i].rsplit("/", 1)[-1]
+    rest = words[i + 1:]
+    if depth < 4 and (tool in _SHELLS or tool == "eval"):
+        if tool == "eval":
+            _line_unseen(" ".join(rest), out, depth + 1)
+        else:
+            for k, w in enumerate(rest[:-1]):
+                if w in ("-c", "-lc", "-ic", "-xc"):
+                    _line_unseen(rest[k + 1], out, depth + 1)
+                    break
+        return
+    if tool in _FANOUT:
+        inner = [w for w in rest if not w.startswith("-")]
+        if any(w.rsplit("/", 1)[-1] in _TOOLS or w.rsplit("/", 1)[-1] in _UNSEEN_OPTS
+               for w in inner):
+            out.append(f"{tool} feeding a network tool its targets from stdin")
+        return
+    for w in rest:
+        opt = w.split("=", 1)[0]
+        bad = _UNSEEN_OPTS.get(tool, frozenset())
+        if opt in bad or any(w.startswith(a) and len(w) > len(a) and tool == "nmap"
+                             for a in _ATTACHED_OK):
+            out.append(f"{tool} {opt if opt in bad else w[:3]}")
+    if tool == "nikto":
+        for k, w in enumerate(rest[:-1]):
+            if w in ("-h", "-host"):
+                v = rest[k + 1]
+                if "://" not in v and ("/" in v or _FILE_EXT_RE.search(v)):
+                    out.append(f"nikto {w} <file>")
+    if piped and tool in _STDIN_TARGET_TOOLS and not any(
+            w.split("=", 1)[0] in _EXPLICIT_TARGET_OPTS for w in rest):
+        out.append(f"{tool} reading its targets from stdin")
+
+
+def _line_unseen(text: str, out: list, depth: int = 0) -> None:
+    cmd: list[str] = []
+    piped = next_piped = False
+    for w in _lex(text, seps=True) + [None]:
+        if w is None or w == _PIPE:
+            if cmd:
+                _command_unseen(cmd, piped, out, depth)
+            cmd = []
+            piped = next_piped = (w == _PIPE)
+        else:
+            if not cmd:
+                piped = next_piped
+            cmd.append(w)
+
+
+def unseen_targets(text: str) -> list[str]:
+    """SEC-008: every way `text` picks targets the scope check cannot see — target-list
+    / request / config files, random or search-engine sources, stdin-fed scanners,
+    fan-out, and shell variables in host positions. Empty means every target is
+    written in the command (and so is judged by extract_hosts)."""
+    out: list[str] = []
+    _line_unseen(text or "", out)
+    variables: list[str] = []
+    _line_hosts(text or "", [], 0, variables)
+    out.extend(f"variable target {v}" for v in variables)
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
