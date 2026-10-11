@@ -425,7 +425,12 @@ class _AuthMixin:
         for other, handle in (getattr(self, "_principal_handles", None) or {}).items():
             if other == who or not handle:
                 continue
-            if handle in text:
+            # A WHOLE handle, not a substring: `brk…a@brukal.test` contains `a@brukal.test`
+            # and `superadmin` contains `admin`, and a substring match there REFUTED a
+            # legitimate login (the 2026-10-11 flake). Bounded by characters that cannot
+            # be part of an email/username on either side.
+            if re.search(r"(?<![A-Za-z0-9._%+@-])" + re.escape(handle)
+                         + r"(?![A-Za-z0-9_%+@-]|\.[A-Za-z0-9])", text):
                 return handle
         return ""
 
