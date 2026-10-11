@@ -54,19 +54,19 @@ def _diff_view(body: str, baseline: str, budget: int) -> str:
     if not regions or changed > _UNINFORMATIVE * len(new):
         return ""
     out: list[str] = []
-    used = 0
     for j1, j2 in regions:
         lines = [ln.strip() for ln in new[j1:j2] if ln.strip()]
-        if not lines:
-            continue
-        piece = f"… [changed region, line {j1 + 1}] …\n" + "\n".join(lines) + "\n"
-        if used + len(piece) > budget:
-            if budget - used > 40:
-                out.append(piece[:budget - used])
-            break
-        out.append(piece)
-        used += len(piece)
-    return "".join(out)[:budget]
+        if lines:
+            out.append(f"… [changed region, line {j1 + 1}] …\n" + "\n".join(lines) + "\n")
+    text = "".join(out)
+    if len(text) <= budget:
+        return text
+    # Too long to show whole: keep the start AND end of the changed text, with a visible
+    # marker. Cutting at the budget dropped every later region — often the result, behind
+    # per-load churn (nonces) or one huge minified line.
+    if budget <= len(f"\n… [{len(text)} chars omitted] …\n"):
+        return ""
+    return head_tail(text, budget)
 
 
 def salient_view(body, baseline, budget: int) -> str:

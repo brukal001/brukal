@@ -75,3 +75,32 @@ def test_deterministic_and_never_raises():
     assert salient_view(12345, None, 3) == "123"
     assert salient_view("abc", None, 0) == ""
     assert salient_view("abc", None, -5) == ""
+
+
+# Final review #2: a diff that overflows the budget used to be cut mid-line, silently,
+# dropping every later region — often the result itself.
+def _minified(rows):
+    return "<!DOCTYPE html>\n<html>" + "<div class=nav>x</div>" * 200 + rows + "</html>"
+
+
+def _nonce_page(nonce, rows):
+    scripts = "\n".join(f'<script nonce="{nonce}{i:03d}abcdef0123456789" src="/js/app{i}.js">'
+                        "</script>" for i in range(15))
+    return scripts + "\n" + "\n".join(f"<p>static {i}</p>" for i in range(60)) + "\n" + rows
+
+
+def test_few_line_minified_page_still_shows_the_end():
+    v = salient_view(_minified("<td>RESULT-ROW-1</td>"), _minified("<td>Product A</td>"), 600)
+    assert len(v) <= 600 and "RESULT-ROW-1" in v
+
+
+def test_churning_lines_before_the_result_do_not_hide_it():
+    v = salient_view(_nonce_page("AAAA", "<td>RESULT-ROW-1</td>"),
+                     _nonce_page("BBBB", "<td>Product A</td>"), 600)
+    assert len(v) <= 600 and "RESULT-ROW-1" in v
+
+
+def test_an_overflowing_diff_is_cut_visibly():
+    v = salient_view(_nonce_page("AAAA", "<td>RESULT-ROW-1</td>"),
+                     _nonce_page("BBBB", "<td>Product A</td>"), 600)
+    assert "changed region" in v and "chars omitted" in v

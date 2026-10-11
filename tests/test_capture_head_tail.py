@@ -69,3 +69,18 @@ def test_dynamic_tail_content_is_now_compared_too():
             _rec(head + "<i>t=2</i>", q="category=Gifts' AND '1'='1"),
             _rec(head + "<i>t=3</i>", q="category=Gifts' AND '1'='2")]
     assert cc.boolean_sqli_differential(caps) == []
+
+
+def test_length_difference_in_the_omitted_middle_does_not_break_the_differential():
+    """Final review #1: the stored marker used to carry the omitted length, so a search
+    page that echoes the (longer) payload in its MIDDLE stored truthy != baseline even
+    though head and tail were identical — a new false negative vs the old [:4000]. The
+    marker is now fixed text, so only what is kept is compared."""
+    def page(cat, rows):
+        return ("<p>hdr</p>\n" * 80 + rows + "<p>mid</p>\n" * 350
+                + f"<!-- you searched: {cat} -->\n" + "<p>foot</p>\n" * 200)
+    ok, no = "<tr><td>row one</td></tr>", "<tr><td>none</td></tr>"
+    caps = [_rec(page("Gifts", ok), q="category=Gifts"),
+            _rec(page("Gifts' AND '1'='1", ok), q="category=Gifts' AND '1'='1"),
+            _rec(page("Gifts' AND '1'='2", no), q="category=Gifts' AND '1'='2")]
+    assert [f["param"] for f in cc.boolean_sqli_differential(caps)] == ["category"]

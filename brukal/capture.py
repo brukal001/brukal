@@ -156,13 +156,15 @@ _HEAD_KEPT = 2400
 
 def _keep_head_tail(text: str) -> str:
     """`text` if it fits; else the first 2,400 chars + an omission marker + the end,
-    never longer than _MAX_RESPONSE_KEPT (marker included)."""
+    never longer than _MAX_RESPONSE_KEPT (marker included). The marker is FIXED text:
+    provers compare stored responses, and a marker carrying the omitted length made a
+    page that echoes a longer payload in its middle differ from its baseline even when
+    every kept character was identical (`resp_bytes` still records the real size)."""
     if len(text) <= _MAX_RESPONSE_KEPT:
         return text
-    tpl = "\n… [{} chars omitted] …\n"
-    tail = _MAX_RESPONSE_KEPT - _HEAD_KEPT - len(tpl.format(len(text)))
-    omitted = len(text) - _HEAD_KEPT - tail
-    return text[:_HEAD_KEPT] + tpl.format(omitted) + text[-tail:]
+    marker = "\n… [middle chars omitted] …\n"
+    tail = _MAX_RESPONSE_KEPT - _HEAD_KEPT - len(marker)
+    return text[:_HEAD_KEPT] + marker + text[-tail:]
 
 
 def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
