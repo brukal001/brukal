@@ -148,6 +148,21 @@ def _is_static(url: str, content_type: str) -> bool:
 
 
 _MAX_RESPONSE_KEPT = 4000
+# A long response keeps its START and its END within the same budget. 2026-10-01: the
+# decisive response was 4,447 bytes with the result near the end, and keeping only the
+# first 4,000 hid it from every prover. Bodies within budget are stored unchanged.
+_HEAD_KEPT = 2400
+
+
+def _keep_head_tail(text: str) -> str:
+    """`text` if it fits; else the first 2,400 chars + an omission marker + the end,
+    never longer than _MAX_RESPONSE_KEPT (marker included)."""
+    if len(text) <= _MAX_RESPONSE_KEPT:
+        return text
+    tpl = "\n… [{} chars omitted] …\n"
+    tail = _MAX_RESPONSE_KEPT - _HEAD_KEPT - len(tpl.format(len(text)))
+    omitted = len(text) - _HEAD_KEPT - tail
+    return text[:_HEAD_KEPT] + tpl.format(omitted) + text[-tail:]
 
 
 def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
@@ -175,9 +190,9 @@ def _record(method, url, headers, body, status, resp_bytes, content_type, scope,
     if response:
         try:
             from . import redact
-            safe_response = redact.text(str(response))[:_MAX_RESPONSE_KEPT]
+            safe_response = _keep_head_tail(redact.text(str(response)))
         except Exception:
-            safe_response = str(response)[:_MAX_RESPONSE_KEPT]
+            safe_response = _keep_head_tail(str(response))
     # Response headers carry credentials too (Set-Cookie is the live session). Same two
     # steps as the request side: drop credential-named headers, then redact what remains
     # in case a token is disclosed under an innocuous name (X-Session-Token).
