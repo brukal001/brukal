@@ -1022,15 +1022,40 @@ def choose_run_mode(console) -> bool:
 
 
 def _authorise_host(scope, target: str):
-    """Build a session Scope narrowed to a single /32 host, reusing the loaded
-    scope's tool allowlist and rate limit. This SETS scope before the engagement
-    (like `brukal target`) — it does not widen a running scope (invariant 5)."""
+    """Build a session Scope narrowed to EXACTLY ONE host, reusing the loaded scope's
+    tool allowlist and rate limit. This SETS scope before the engagement (like
+    `brukal target`) — it does not widen a running scope (invariant 5).
+
+    The one host is: an IPv4 address as /32, an IPv6 address as /128, or a hostname
+    (from a bare host, `host:port` or a full URL) as that exact name — no wildcard.
+    It used to build `ip_network(f"{target}/32", strict=False)`, which crashed on a URL
+    target and, for IPv6, silently authorised the whole /32 block around the address
+    (2001:db8::5 -> 2001:db8::/32, ~7.9e28 hosts) — SEC-011. Anything that does not
+    parse to one host raises ValueError (fail-closed; the caller refuses)."""
     import ipaddress
 
     from .scope import Scope
-    net = ipaddress.ip_network(f"{target.strip()}/32", strict=False)
+    import re
+    if "://" not in (target or "") and re.search(r"/\d{1,3}\s*$", target or ""):
+        raise ValueError(f"cannot authorise {target!r}: a network, not one host "
+                         f"(use `brukal target` to authorise a range)")
+    host = _target_host(target).strip("[]")
+    if host.count(":") == 1:                       # host:port (IPv6 has 2+ colons)
+        host = host.split(":", 1)[0]
+    if not host:
+        raise ValueError(f"cannot authorise {target!r}: no host in it")
+    nets, names = (), frozenset()
+    try:
+        ip = ipaddress.ip_address(host)
+        nets = (ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}"),)
+    except ValueError:
+        from .hostmatch import _DOTTED_HOST_RE, _LABEL_RE
+        if not (_DOTTED_HOST_RE.match(host) or _LABEL_RE.match(host)) or "*" in host:
+            raise ValueError(f"cannot authorise {target!r}: {host!r} is not one host")
+        names = frozenset({host})
     return Scope(engagement=f"{scope.engagement}-solve",
-                 authorized_networks=(net,),
+                 authorized_networks=nets,
+                 authorized_hosts=names,
                  allowlisted_tools=scope.allowlisted_tools,
                  rate_limit_per_min=scope.rate_limit_per_min,
                  authorization=scope.authorization,
@@ -1166,12 +1191,19 @@ def _prepare_session(target, *, fake, yes_authorised, scope_path, audit_path,
         # loaded scope as-is. No /32 prompt, no --host wildcard widening.
         session_scope = scope
     else:
+        try:
+            candidate = _authorise_host(scope, target)
+        except ValueError as exc:
+            print(f"Refused: {exc}.  (or run: brukal target <host>)")
+            return 2
+        one = (", ".join(str(n) for n in candidate.authorized_networks)
+               or ", ".join(sorted(candidate.authorized_hosts)))
         msg = (f"  ⚠ {target} is not in {scope_path}. Authorise this single host "
-               f"({target}/32) for this session?")
+               f"({one}) for this session?")
         if not _confirm(console, msg):
             print(f"Refused: {target} is out of scope.  (or run: brukal target {target})")
             return 2
-        session_scope = _authorise_host(scope, target)
+        session_scope = candidate
         yes_authorised = True          # explicitly authorising the host is the sign-off
 
     # 2b) Pre-authorise any vhosts the operator named (--host nexus.htb). A deliberate
