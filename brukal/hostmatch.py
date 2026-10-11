@@ -153,6 +153,8 @@ def _network_targets(tok: str) -> list[str] | None:
 _QUOTED = {"{": "\x00", "}": "\x01", ",": "\x02"}
 _UNQUOTED = {v: k for k, v in _QUOTED.items()}
 _OPERATOR_CHARS = set(";|&<>()")
+_BASH_BLANKS = " \t\n"   # bash's default IFS — NOT Python isspace() (U+2028 etc.)
+_EXPANSION = "\x03"   # an unexpanded $VAR inside a word: content unknown, not a host
 
 
 def _close_paren(text: str, i: int) -> int:
@@ -179,14 +181,17 @@ def _close_paren(text: str, i: int) -> int:
     return n
 
 
-def _lex(text: str, depth: int = 0) -> list[str]:
+def _lex(text: str, depth: int = 0, seps: bool = False) -> list:
     """Words of a shell line roughly as bash builds them: split on unquoted whitespace
     and control operators (`curl 10.10.10.11;id` reaches 10.10.10.11 — the operator glued
     to the host must not hide it); quotes and backslash escapes removed and adjacent
     pieces joined (`10.10.10."11"` and `1\0.10.10.11` are 10.10.10.11 to bash); an
     unquoted `$` ends a word (`curl${IFS}10.10.10.11`); and every command substitution
     — `$(...)` or backticks, unquoted or inside double quotes — lexed as a command of
-    its own, so `echo "$(curl 10.10.10.11)"` still shows its host."""
+    its own, so `echo "$(curl 10.10.10.11)"` still shows its host.
+
+    With `seps=True` a None is emitted at every unquoted control operator (and before
+    each substitution's words), so a caller can see where each simple command starts."""
     words: list[str] = []
     subs: list[str] = []
     cur: list[str] = []
@@ -234,7 +239,24 @@ def _lex(text: str, depth: int = 0) -> list[str]:
             continue
         if ch in "'\"":
             quote = ch
-        elif ch.isspace() or ch in _OPERATOR_CHARS or ch == "$":
+        elif ch in _OPERATOR_CHARS:
+            flush()
+            if seps:
+                words.append(None)
+        elif ch == "$":
+            # `$IFS` / `${IFS…}` expands to a word break (`curl${IFS}host`); any other
+            # expansion (`$i`, `${URL}`) is opaque content INSIDE the current word —
+            # kept as a placeholder so `…/orders/$i` never yields a word `i`.
+            m = re.match(r"\$(\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9#?@*!$-])", text[i:])
+            if m and re.match(r"\{?IFS\b", m.group(1)):
+                flush()
+            elif m:
+                cur.append(_EXPANSION)
+            else:
+                cur.append(ch)
+            i += m.end() if m else 1
+            continue
+        elif ch in _BASH_BLANKS:
             flush()
         else:
             cur.append(ch)
@@ -242,7 +264,9 @@ def _lex(text: str, depth: int = 0) -> list[str]:
     flush()
     if depth < 8:                                     # bounded: nesting is not a DoS
         for sub in subs:
-            words.extend(_lex(sub, depth + 1))
+            if seps:
+                words.append(None)
+            words.extend(_lex(sub, depth + 1, seps))
     return words
 
 
@@ -266,6 +290,8 @@ def _tokens(text: str) -> list[str]:
     that residual must be held by the cage's egress firewall, not by this module."""
     out: list[str] = [w for w in re.split(r"\s+", text or "") if w]
     for word in _lex(text):
+        if word is None:
+            continue
         # A lexer word holding whitespace came from a quoted string with spaces — a
         # script or data (`python3 -c "…{'email':'a@b.io'}…"`), never ONE host argument.
         # Hosts inside it are still seen by the whitespace view above, as they always were.
@@ -370,4 +396,285 @@ def extract_hosts(text: str) -> list[str]:
             # deny it) rather than silently dropping it.
             add(urlsplit("//" + base).hostname or base)
 
+    # 6. SEC-003: dotless / loopback names in host positions of known network tools.
+    for h in tool_position_hosts(text):
+        add(h)
+
     return hosts
+
+
+# --------------------------------------------------------------------------------- #
+# SEC-003 — dotless / loopback hosts in HOST POSITIONS of known network tools.
+#
+# A bare word like `intranet`, `crapi-identity` or `localhost` resolves (cage DNS,
+# Docker service names, /etc/hosts) to a host, but it is indistinguishable from an
+# ordinary word (`cat flag`, `-X GET`, `--script vuln`, a `Host:` header value). So
+# such names are read ONLY where a tool actually connects to its argument — nmap
+# targets, a curl/wget URL, an ssh destination, an nc host, a proxy option, `-u` of a
+# URL scanner, `--host` of a DB client, an ssh tunnel's target — never in header or
+# data values. A word in a host position that is not an option's value is a target.
+#
+# Each entry: (positional policy, options taking a value, options whose value is a
+# HOST). Policies: "all" (every positional is a target), "first" (only the first —
+# what follows is a remote command / service), "none" (targets come only via
+# host options). An option missing from the value set can only cause a false DENY
+# (fail-closed), never a miss; tools with "none" cannot false-DENY that way at all.
+# --------------------------------------------------------------------------------- #
+
+_LOOPBACK_NAMES = {"localhost": "127.0.0.1", "localhost.localdomain": "127.0.0.1",
+                   "ip6-localhost": "::1", "ip6-loopback": "::1"}
+
+
+def loopback_ip(name: str) -> str | None:
+    """The loopback IP a loopback NAME always denotes (RFC 6761: `localhost` and every
+    `*.localhost`), or None. Lets the gate judge `localhost` as 127.0.0.1."""
+    n = (name or "").strip().lower().rstrip(".")
+    if n in _LOOPBACK_NAMES:
+        return _LOOPBACK_NAMES[n]
+    if n.endswith(".localhost"):
+        return "127.0.0.1"
+    return None
+
+
+def _opts(s: str) -> frozenset:
+    return frozenset(s.split())
+
+
+_CURL_VALUE = _opts(
+    "-H --header -d --data --data-raw --data-binary --data-urlencode --data-ascii --json "
+    "-F --form --form-string -o --output -X --request -A --user-agent -e --referer -u "
+    "--user -b --cookie -c --cookie-jar -m --max-time --connect-timeout -w --write-out "
+    "-T --upload-file -K --config -r --range -C --continue-at -y --speed-time -Y "
+    "--speed-limit --limit-rate --retry --retry-delay --retry-max-time --max-redirs "
+    "--max-filesize --cacert --capath --cert -E --key --key-type --cert-type --pass "
+    "--ciphers --tls-max --interface --local-port --dns-servers --dns-interface "
+    "--oauth2-bearer --proxy-user -U --proxy-header --request-target --unix-socket "
+    "--abstract-unix-socket --noproxy -Q --quote --trace --trace-ascii --stderr -D "
+    "--dump-header --pinnedpubkey --mail-from --mail-rcpt --mail-auth -z --time-cond "
+    "--aws-sigv4 --variable --etag-save --etag-compare --output-dir --expect100-timeout "
+    "--keepalive-time --resolve --connect-to -P --ftp-port --telnet-option -t "
+    "--proto --proto-redir --proto-default --sasl-authzid --service-name --hostpubmd5 "
+    "--hostpubsha256 --crlfile --egd-file --random-file --engine --delegation "
+    "--happy-eyeballs-timeout-ms --parallel-max --rate --create-file-mode")
+_CURL_HOST = _opts("-x --proxy --preproxy --socks4 --socks4a --socks5 --socks5-hostname "
+                   "--url")
+
+_NMAP_VALUE = _opts(
+    "-p -e -S -D -g -iL -iR -oN -oX -oS -oG -oA -oM -b --script --script-args "
+    "--script-args-file --script-help --script-timeout --top-ports --port-ratio "
+    "--max-retries --host-timeout --min-rate --max-rate --exclude --excludefile "
+    "--exclude-ports --data --data-string --data-length --ttl --spoof-mac "
+    "--version-intensity --scan-delay --max-scan-delay --mtu --dns-servers "
+    "--min-hostgroup --max-hostgroup --min-parallelism --max-parallelism "
+    "--min-rtt-timeout --max-rtt-timeout --initial-rtt-timeout --stats-every --resume "
+    "--stylesheet --datadir --servicedb --versiondb --ip-options --source-port "
+    "--scanflags -sI --proxies --proxy")
+_NMAP_HOST = _opts("-sI --proxies --proxy")
+
+_TOOLS: dict[str, tuple[str, frozenset, frozenset]] = {
+    "curl": ("all", _CURL_VALUE, _CURL_HOST),
+    "wget": ("all", _opts(
+        "-O --output-document -o --output-file -a --append-output -U --user-agent "
+        "--header --post-data --post-file --body-data --body-file --method -t --tries "
+        "-T --timeout -w --wait -P --directory-prefix -l --level -A --accept -R --reject "
+        "-D --domains --exclude-domains -I -X --user --password --http-user "
+        "--http-password --load-cookies --save-cookies -i --input-file -B --base "
+        "--bind-address --limit-rate -Q --quota -e --execute --ca-certificate "
+        "--certificate --private-key --referer --dns-timeout --connect-timeout "
+        "--read-timeout --waitretry --restrict-file-names --default-page"), frozenset()),
+    "nmap": ("all", _NMAP_VALUE, _NMAP_HOST),
+    "masscan": ("all", _opts(
+        "-p --ports --rate --max-rate -oX -oL -oJ -oG -oB --source-ip --source-port "
+        "--router-mac --adapter -e --exclude --excludefile -iL --wait --ttl --retries "
+        "--connection-timeout -c --conf --resume --shard --seed --output-format "
+        "--output-filename --interface --adapter-ip --adapter-mac --ping"), frozenset()),
+    "whatweb": ("all", _opts(
+        "-a --aggression -U --user-agent -H --header -p --plugins --log-brief "
+        "--log-verbose --log-json --log-xml --log-object --log-errors -i --input-file "
+        "--url-prefix --url-suffix --url-pattern --max-threads -t --open-timeout "
+        "--read-timeout --wait --max-redirects --cookie -c --cookiejar --user -u "
+        "--proxy --proxy-user --color --colour -e --extra --header"), _opts("--proxy")),
+    "sslscan": ("all", _opts("--xml --sni-name --certs --ipv4 --ipv6"), frozenset()),
+    "ping": ("all", _opts("-c -i -W -w -s -t -I -p -Q -l -m -M -S"), frozenset()),
+    "traceroute": ("all", _opts("-f -m -N -p -q -s -t -w -z -i -g -M -A"), frozenset()),
+    "nc": ("all", _opts(
+        "-p -s -w -i -q -e -c -x -X -O -I -T -g -G -o --output -m --max-conns "
+        "--proxy --proxy-type --proxy-auth --sh-exec --exec --ssl-cert --ssl-key "
+        "--allow --deny --allowfile --denyfile"), _opts("-x --proxy")),
+    "ssh": ("first", _opts(
+        "-p -i -l -o -F -L -R -D -J -W -b -c -m -E -e -O -Q -S -w -B -I"),
+        _opts("-J")),
+    "telnet": ("first", _opts("-l -b -e -n"), frozenset()),
+    "ftp": ("first", _opts("-P -s"), frozenset()),
+    "dirb": ("first", _opts("-a -c -H -o -p -P -r -u -X -x -z"), frozenset()),
+    "hydra": ("first", _opts(
+        "-l -L -p -P -C -M -o -b -s -t -T -w -W -c -m -x -e"), frozenset()),
+    "smbclient": ("first", _opts(
+        "-U --user -W --workgroup -p --port -I --ip-address -c --command -D --directory "
+        "-A --authentication-file -m --max-protocol -n --netbiosname -s --configfile "
+        "-L --list -O -T -t"), _opts("-L --list")),
+    "nikto": ("none", frozenset(), _opts("-h -host")),
+    "nuclei": ("none", frozenset(), _opts("-u -target")),
+    "ffuf": ("none", frozenset(), _opts("-u")),
+    "gobuster": ("none", frozenset(), _opts("-u --url")),
+    "feroxbuster": ("none", frozenset(), _opts("-u --url")),
+    "sqlmap": ("none", frozenset(), _opts("-u --url")),
+    "httpx": ("none", frozenset(), _opts("-u")),
+    "mongo": ("none", frozenset(), _opts("--host")),
+    "mongosh": ("none", frozenset(), _opts("--host")),
+    "mysql": ("none", frozenset(), _opts("-h --host")),
+    "psql": ("none", frozenset(), _opts("-h --host")),
+    "redis-cli": ("none", frozenset(), _opts("-h")),
+}
+for _alias, _real in (("ncat", "nc"), ("netcat", "nc"), ("ping6", "ping"),
+                      ("traceroute6", "traceroute"), ("tracepath", "traceroute")):
+    _TOOLS[_alias] = _TOOLS[_real]
+
+# Options whose value is a forward/tunnel spec ending in host:port — the host there is
+# contacted (from wherever the tool runs). `ssh -L 8080:intranet:80`, `curl
+# --connect-to a:80:intranet:80`, `curl --resolve a:80:10.10.10.11`.
+_SPEC_HOST_FIELD = {("ssh", "-L"): -2, ("ssh", "-R"): -2, ("curl", "--connect-to"): -2,
+                    ("curl", "--resolve"): -1}
+
+_SHELLS = _opts("bash sh zsh dash ksh ash")
+
+# Wrappers that run the command after them, and the options each takes a value for.
+_WRAPPERS = {
+    "sudo": _opts("-u -g -C -p -U -r -t -T -D -h"), "doas": _opts("-u -C"),
+    "env": _opts("-u -C -S"), "timeout": _opts("-s -k --signal --kill-after"),
+    "nice": _opts("-n"), "nohup": frozenset(), "stdbuf": _opts("-i -o -e"),
+    "time": frozenset(), "exec": frozenset(), "command": frozenset(),
+    "proxychains": _opts("-f"), "proxychains4": _opts("-f"),
+    "sshpass": _opts("-p -f -d -P"), "watch": _opts("-n -d"),
+}
+_WRAPPER_POSITIONAL = {"timeout": 1, "nice": 0}   # timeout DURATION cmd...
+# Shell keywords that may precede a command in the same simple-command slot.
+_KEYWORDS = _opts("do then else elif if while until ! { }")
+
+# One DNS label (<= 63 chars): a longer bare word can never resolve, so it is not a host.
+_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,62}\Z")
+_VAR_PREFIX_RE = re.compile(r"\A\{[A-Za-z_][A-Za-z0-9_]*\}")    # left by ${IFS}
+
+
+def _host_of_arg(arg: str) -> str:
+    """The host a host-position argument names: scheme and user stripped, then the part
+    before any '/' path and ':port'. '' if there is none."""
+    a = _VAR_PREFIX_RE.sub("", arg.strip())
+    if "://" in a:
+        return urlsplit(a).hostname or ""
+    if a.startswith("//"):                         # UNC: //host/share
+        a = a[2:]
+    if "@" in a:
+        a = a.rsplit("@", 1)[1]
+    a = a.split("/", 1)[0]
+    if a.startswith("["):                          # [v6]:port
+        return a[1:].split("]", 1)[0]
+    if a.count(":") == 1:
+        a = a.split(":", 1)[0]
+    return a
+
+
+def _emit(arg: str, out: list) -> None:
+    """Report a host-position argument when it names a dotless or loopback host — the
+    shapes the generic scan cannot safely see. (Dotted names, IPs and URLs are already
+    found by extract_hosts' generic rules.)"""
+    h = _host_of_arg(arg).lower().rstrip(".")
+    if not h or h.isdigit():
+        return                                     # a port / count, not a host
+    if loopback_ip(h) or _LABEL_RE.match(h):
+        out.append(h)
+
+
+def _command_hosts(words: list, out: list, depth: int) -> None:
+    """Host-position arguments of ONE simple command (already split into words)."""
+    i, n = 0, len(words)
+    # skip leading VAR=value assignments and wrappers (sudo, timeout 5, env X=1, ...)
+    while i < n:
+        w = words[i]
+        if ("=" in w and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)) or w in _KEYWORDS:
+            i += 1
+            continue
+        tool = w.rsplit("/", 1)[-1]
+        if tool not in _WRAPPERS:
+            break
+        values, i = _WRAPPERS[tool], i + 1
+        skip_pos = _WRAPPER_POSITIONAL.get(tool, 0)
+        while i < n and words[i].startswith("-"):
+            i += 2 if (words[i] in values and "=" not in words[i]) else 1
+        while i < n and skip_pos:
+            i, skip_pos = i + 1, skip_pos - 1
+    if i >= n:
+        return
+    tool = words[i].rsplit("/", 1)[-1]
+    rest = words[i + 1:]
+
+    if depth < 4 and (tool in _SHELLS or tool == "eval"):
+        if tool == "eval":
+            _line_hosts(" ".join(rest), out, depth + 1)
+        else:
+            for k, w in enumerate(rest[:-1]):
+                if w in ("-c", "-lc", "-ic", "-xc"):
+                    _line_hosts(rest[k + 1], out, depth + 1)
+                    break
+        return
+
+    spec = _TOOLS.get(tool)
+    if spec is None:
+        return
+    policy, values, host_opts = spec
+    positional: list[str] = []
+    k = 0
+    while k < len(rest):
+        w = rest[k]
+        if w == "--":
+            positional.extend(rest[k + 1:])
+            break
+        if w.startswith("-") and len(w) > 1:
+            opt, eq, val = w.partition("=")
+            if not eq and (opt in values or opt in host_opts) and k + 1 < len(rest):
+                val, k = rest[k + 1], k + 1
+                eq = "="
+            if eq:
+                field = _SPEC_HOST_FIELD.get((tool, opt))
+                if field is not None:
+                    parts = val.split(":")
+                    if len(parts) >= -field:
+                        _emit(parts[field], out)
+                elif opt in host_opts:
+                    _emit(val, out)
+            k += 1
+            continue
+        positional.append(w)
+        k += 1
+
+    if policy == "all":
+        targets = positional
+    elif policy == "first":
+        targets = positional[:1]
+    else:
+        targets = []
+    for t in targets:
+        _emit(t, out)
+    if tool == "ssh" and len(positional) > 1 and depth < 4:
+        # the remote command runs FROM the box — a pivot is still a host it reaches
+        _line_hosts(" ".join(positional[1:]), out, depth + 1)
+
+
+def _line_hosts(text: str, out: list, depth: int = 0) -> None:
+    cmd: list[str] = []
+    for w in _lex(text, seps=True) + [None]:
+        if w is None:
+            if cmd:
+                _command_hosts(cmd, out, depth)
+            cmd = []
+        else:
+            cmd.append(w)
+
+
+def tool_position_hosts(text: str) -> list[str]:
+    """SEC-003: dotless and loopback host names in host positions of known network
+    tools (see the block comment above). Order kept, de-duplicated."""
+    out: list[str] = []
+    _line_hosts(text or "", out)
+    seen: set[str] = set()
+    return [h for h in out if not (h in seen or seen.add(h))]

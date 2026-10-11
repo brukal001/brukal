@@ -36,7 +36,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 
-from .hostmatch import extract_hosts
+from .hostmatch import extract_hosts, loopback_ip
 from .risk import assess
 from .scope import Scope
 
@@ -58,6 +58,15 @@ _DESTRUCTIVE_RE = re.compile(
     r"|\bwipefs\b|>\s*/dev/sd|\bfdisk\b[^\n]*/dev/"       # wipe partitions/disks
     r"|:\s*\(\s*\)\s*\{.*\}\s*;\s*:",                     # classic fork bomb
     re.I)
+
+
+def _bare_name_hint(host: str) -> str:
+    """For a dotless name (SEC-003), say how to rephrase if it was not meant as a host,
+    so a false positive costs the agent one retry instead of the lead."""
+    if "." in host or ":" in host or "/" in host:
+        return ""
+    return (f" (a bare name in a host position is a target; if '{host}' is an "
+            f"option's value write --option={host}, if it is data quote it)")
 
 
 @dataclass
@@ -124,7 +133,12 @@ class Gate:
         an authorised network (SEC-001). Anything else is a single host."""
         if "/" in host:
             return self.scope.contains_network(host)
-        return self.scope.contains_host(host)
+        if self.scope.contains_host(host):
+            return True
+        # SEC-003: a loopback NAME (`localhost`, `*.localhost`) always denotes the
+        # loopback IP, so it is in scope exactly when that IP is.
+        lo = loopback_ip(host)
+        return lo is not None and self.scope.contains_ip(lo)
 
     def _note_allow(self) -> None:
         with self._rate_lock:
@@ -162,7 +176,8 @@ class Gate:
         for host in extract_hosts(text):
             if not self._target_in_scope(host):
                 return self._deny(line, target, agent,
-                                  f"out-of-scope host {host} in session input",
+                                  f"out-of-scope host {host} in session input"
+                                  + _bare_name_hint(host),
                                   "session:scope")
 
         if not self._rate_ok():
@@ -249,8 +264,8 @@ class Gate:
         for host in extract_hosts(command):
             if not self._target_in_scope(host):
                 return self._deny(command, target, agent,
-                                  f"out-of-scope host {host} in command",
-                                  "hard:scope")
+                                  f"out-of-scope host {host} in command"
+                                  + _bare_name_hint(host), "hard:scope")
 
         # 5. Rate limit.
         if not self._rate_ok():

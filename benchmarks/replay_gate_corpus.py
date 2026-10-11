@@ -13,7 +13,9 @@ approved) — read from the gitignored `runs/**/*.jsonl` ledgers — through the
 
     .venv/bin/python benchmarks/replay_gate_corpus.py [git-ref]   # default: main
 
-Exit 1 if anything is NEW or LOST. Offline; reads ledgers only.
+Exit 1 if anything is NEW or LOST, except NEW rows reviewed as TRUE positives and
+listed in REVIEWED_TRUE_POSITIVES (by the command's sha256 prefix). Offline; reads
+ledgers only.
 """
 from __future__ import annotations
 
@@ -27,6 +29,15 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# NEW rows a human reviewed and judged CORRECT denials. Both are model commands whose
+# shell quoting is broken, so bash really hands the bare words to curl as extra URLs and
+# curl resolves/contacts them (on a Docker network a service named `python` resolves):
+#   - NoSQL `$where` payload whose inner single quotes close the -d string -> curl gets
+#     URLs `nc python3 python wget curl` (crAPI, 2026-09)
+#   - SQLi `test' OR '1'='1` inside a single-quoted -d -> curl gets URL `OR`
+#     (Juice Shop, 2026-08)
+REVIEWED_TRUE_POSITIVES = {"5ff5c05c825b", "4e39d31029cf"}
 sys.path.insert(0, str(ROOT))
 
 
@@ -78,9 +89,14 @@ def main(argv: list[str]) -> int:
     old = _load_ref(ref)
     rows = _corpus()
     new_n = lost_n = 0
+    import hashlib
+    reviewed = 0
     for cmd, target in rows:
         o, n = set(old.extract_hosts(cmd)), set(cur.extract_hosts(cmd))
         new = sorted(h for h in n - o if not _is_target(h, target))
+        if new and hashlib.sha256(cmd.encode()).hexdigest()[:12] in REVIEWED_TRUE_POSITIVES:
+            reviewed += 1
+            new = []
         lost = sorted(o - n)
         if new:
             new_n += 1
@@ -88,7 +104,8 @@ def main(argv: list[str]) -> int:
         if lost:
             lost_n += 1
             print(f"LOST {lost}  target={target}  {cmd[:160]!r}")
-    print(f"{len(rows)} historical commands vs {ref}: {new_n} NEW, {lost_n} LOST")
+    print(f"{len(rows)} historical commands vs {ref}: {new_n} NEW, {lost_n} LOST "
+          f"({reviewed} reviewed true positives)")
     return 1 if (new_n or lost_n) else 0
 
 

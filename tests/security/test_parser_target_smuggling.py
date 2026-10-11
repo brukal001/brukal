@@ -54,21 +54,17 @@ CASES = [
 ]
 
 
-_SEC003 = pytest.mark.xfail(
-    strict=True,
-    reason="FINDING SEC-003: smuggled bare/dotless hostname (intranet) not extracted -> ALLOW; "
-           "I3; Medium, mitigated by nftables egress lock; see SECURITY_AUDIT.md")
-
 
 def _cases():
     for cmd, desc in CASES:
         for door in ("check", "session"):
-            marks = []
+            marks: list = []
             # SEC-001 (CIDR/range) and SEC-002 (scheme-less host/path) are FIXED in
             # brukal/hostmatch.py — those cases now genuinely DENY; regressions are
             # pinned in tests/test_hostmatch_cidr_paths.py.
-            if desc.startswith("bare dotless"):
-                marks = [_SEC003]     # ALLOW observed on BOTH doors (extract_hosts needs a dot)
+            # SEC-003 (bare dotless / loopback name) FIXED 2026-10-11: such names are
+            # read in host positions of known network tools; regressions pinned in
+            # tests/test_hostmatch_dotless.py.
             yield pytest.param(cmd, desc, door, marks=marks, id=f"{door}-{desc}")
 
 
