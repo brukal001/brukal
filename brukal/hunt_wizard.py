@@ -36,14 +36,16 @@ def _default_dispatch(args):
     `run_auto` has no top-level `web=`/`box=` flag; the web/box methodology is
     selected with `mode="web"` (it would otherwise auto-detect from whether
     `target` looks like a URL/hostname or an IP — see assist_cli.run_auto's
-    `set_resolver`/`set_methodology` call). `run_auto` also has no free-text
-    `context` parameter on this branch's base — the operator's one-line brief
-    is shown at the approval gate and persisted into the frozen scope
-    (`_context`) so the record carries it, but it is NOT fed into the
-    engine's seeded objective here: that needs the `auto --context`/
-    `_apply_context` feature, which is not committed to this branch's base,
-    and assist_cli is out of scope for this module to touch."""
-    from brukal.assist_cli import run_auto
+    `set_resolver`/`set_methodology` call). The operator's one-line brief is shown
+    at the approval gate, persisted into the frozen scope (`_context`), AND fed to
+    the engine as `run_auto(context=[...])` — the planner brief that, in the
+    2026-09-30 live run, was the difference between wandering and solving. It
+    steers what the model PROPOSES only; the deterministic gate is untouched, so a
+    brief can never widen scope."""
+    # Through the brukal.assist re-export, like every cli.py command: importing
+    # brukal.assist_cli FIRST hits the assist <-> assist_cli circular import and
+    # raised ImportError at the wizard's last step (after scope freeze + cage bring-up).
+    from brukal.assist import run_auto
     from brukal.engagement import run as run_engagement
 
     def _dispatch(plan):
@@ -54,7 +56,8 @@ def _default_dispatch(args):
                 d.target, fake=args.fake, yes_authorised=True,
                 scope_path=plan.scope_path, audit_path=d.audit, vault_path=d.vault,
                 container=args.container, model=d.model, provider=d.provider,
-                base_url=args.base_url, hosts=hosts, mode="web")
+                base_url=args.base_url, hosts=hosts, mode="web",
+                context=[d.context] if d.context else ())
         return run_engagement(
             d.target, fake=args.fake, yes_authorised=True,
             scope_path=plan.scope_path, audit_path=d.audit, vault_path=d.vault,

@@ -6,6 +6,18 @@ from brukal.cage import FakeCageRunner
 from brukal.hunt_wizard import run_hunt
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_key_leak(monkeypatch):
+    """run_hunt writes the resolved key into os.environ (by design: the engine reads it
+    there). Register every provider variable with monkeypatch first, so teardown
+    restores the process environment and a fake key never leaks into later tests."""
+    for prov in ("anthropic", "openrouter", "openai", "deepseek", "gemini"):
+        monkeypatch.delenv(f"{prov.upper()}_API_KEY", raising=False)
+
+
 def _args(**kw):
     base = dict(mode=None, url=None, ovpn=None, context=None, provider="openrouter",
                 model="m", scope="scope.hunt.json", vault="docker/vault",
@@ -98,3 +110,48 @@ def test_resolved_key_is_propagated_to_environ_before_dispatch(tmp_path, monkeyp
     # monkeypatch now so pytest's teardown restores/removes it, and no later test
     # can see a leaked key.
     monkeypatch.setenv("OPENROUTER_API_KEY", os.environ["OPENROUTER_API_KEY"])
+
+
+def test_default_dispatch_forwards_the_brief_to_the_engine(monkeypatch):
+    """The brief used to stop at the approval gate and the frozen scope; the engine
+    never saw it. It must reach run_auto(context=[...])."""
+    import brukal.assist as ac
+    from brukal import envprep
+    from brukal.hunt_wizard import _default_dispatch
+    seen = {}
+    monkeypatch.setattr(ac, "run_auto", lambda target, **kw: seen.update(kw) or 0)
+    plan = envprep.plan_web("https://abc.web-security-academy.net/", "find the sqli",
+                            "openrouter", "m", "s.json", "docker/vault", "runs/h.jsonl")
+    _default_dispatch(_args(fake=True))(plan)
+    assert list(seen["context"]) == ["find the sqli"]
+    assert seen["mode"] == "web"
+
+
+def test_default_dispatch_without_a_brief_passes_no_context(monkeypatch):
+    import brukal.assist as ac
+    from brukal import envprep
+    from brukal.hunt_wizard import _default_dispatch
+    seen = {}
+    monkeypatch.setattr(ac, "run_auto", lambda target, **kw: seen.update(kw) or 0)
+    plan = envprep.plan_web("https://abc.web-security-academy.net/", "",
+                            "openrouter", "m", "s.json", "docker/vault", "runs/h.jsonl")
+    _default_dispatch(_args(fake=True))(plan)
+    assert list(seen["context"]) == []
+
+
+def test_default_dispatch_imports_cleanly_in_a_fresh_process():
+    """`brukal hunt` imports only brukal.cli before dispatch. Importing
+    brukal.assist_cli directly from there raised the assist<->assist_cli circular
+    ImportError at the wizard's final step; a fresh interpreter is the only faithful
+    check (this test process already has the modules loaded)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    code = ("import types, brukal.cli\n"
+            "from brukal.hunt_wizard import _default_dispatch\n"
+            "_default_dispatch(types.SimpleNamespace(fake=True, container='c', "
+            "base_url=None, tui=False))\n"
+            "print('OK')\n")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=str(Path(__file__).resolve().parents[1]), timeout=120)
+    assert out.stdout.strip() == "OK", out.stderr[-800:]
