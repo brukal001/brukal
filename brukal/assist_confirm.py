@@ -295,7 +295,9 @@ class _ConfirmMixin:
             sigs = self._capture_confirmed_sigs = set()
         caps = browser.captured()
         n = 0
-        for f in cc.findings_from_capture(caps, self.scope):
+        # The session's own principals: logging in as ourselves is never a finding.
+        own = set((getattr(self, "_principal_handles", None) or {}).values())
+        for f in cc.findings_from_capture(caps, self.scope, own_handles=own):
             sig = (_norm(f["title"]), _norm(f["target"]), _norm(f["param"]))
             if sig in sigs:
                 continue

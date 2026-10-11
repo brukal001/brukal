@@ -10,12 +10,14 @@ WHY THIS EXISTS (Task 8, "register the win")
     discipline the gate itself uses (see CLAUDE.md invariant 1), so a hostile or merely
     noisy target cannot talk a judge into recording something unproven.
 
-THREE DETERMINISTIC PROVERS
+FOUR DETERMINISTIC PROVERS
     1. `is_solved_banner`    — the target app said so itself (PortSwigger-style banner).
     2. `boolean_sqli_differential` — classic boolean-blind SQLi, confirmed only against
        a WORKING POSITIVE CONTROL (see below).
     3. `reflected_executed`  — a request-supplied marker came back as live markup
        instead of escaped text.
+    4. `credential_disclosure_login` — a password the TARGET disclosed was then used in
+       a login that SUCCEEDED (the exploit chain's payoff: dump creds -> log in).
 
 THE POSITIVE-CONTROL LAW
     A single "the falsy payload returned an empty page" observation proves nothing — an
@@ -29,7 +31,9 @@ THE POSITIVE-CONTROL LAW
 
 from __future__ import annotations
 
-from urllib.parse import parse_qsl, urlsplit
+import json
+import re
+from urllib.parse import parse_qsl, unquote_plus, urlsplit
 
 # Markers are matched against a LOWERED, decoded query value — so "Gifts' AND '1'='1"
 # and "gifts' AND '1'='1" are both seen as the truthy pattern they are.
@@ -344,7 +348,140 @@ def reflected_executed(caps) -> list[dict]:
     return out
 
 
-def findings_from_capture(caps, scope) -> list[dict]:
+# --------------------------------------------------------------------------------- #
+# 4. Credential disclosure -> successful login.
+#
+# A login is NOT a finding: Brukal logs in with the operator's own accounts constantly.
+# What makes one a finding is PROVENANCE — the password was handed out by the target
+# earlier in the same capture, and using it worked. Every step below is a string/set
+# check over already-captured, already-redacted text (no LLM, no request issued). A
+# redacted secret correlates exactly like a raw one: `redact.placeholder_for` is a
+# stable hash, so the same value reads as the same `[REDACTED:…]` everywhere.
+# --------------------------------------------------------------------------------- #
+
+_PASSWORD_KEY_RE = re.compile(r"^(?:pass|passwd|pwd|pword|password|[a-z_]*password)$", re.I)
+_USER_KEY_RE = re.compile(
+    r"^(?:user|username|user_name|uname|login|email|mail|userid|user_id|account|name)$",
+    re.I)
+_MIN_CRED_LEN = 6        # shorter values recur incidentally ("admin"); never correlated
+_REDIRECTS = {301, 302, 303, 307, 308}
+_LOGINISH_PATH_RE = re.compile(
+    r"log-?in|sign-?in|logon|error|fail|denied|invalid|unauthori", re.I)
+_FAIL_TEXT_RE = re.compile(
+    r"invalid|incorrect|wrong (?:user|pass)|failed|denied|try again|unauthori", re.I)
+_PASSWORD_INPUT_RE = re.compile(r"""type\s*=\s*["']?password""", re.I)
+_AUTHED_MARKER_RE = re.compile(r"log\s?-?out|sign\s?-?out|my[- ]account", re.I)
+_TOKEN_KEY_RE = re.compile(
+    r"^(?:token|access_token|accesstoken|jwt|id_token|authentication|session|sessionid)$",
+    re.I)
+
+
+def _login_fields(cap) -> tuple[str, str, str] | None:
+    """(user_key, user, password) from a POST body (form or JSON object), or None."""
+    if (cap.method or "").upper() != "POST" or not cap.body:
+        return None
+    body = str(cap.body)
+    pairs: list = []
+    try:
+        doc = json.loads(body)
+        if isinstance(doc, dict):
+            pairs = [(str(k), v) for k, v in doc.items() if isinstance(v, str)]
+    except ValueError:
+        pairs = parse_qsl(body, keep_blank_values=True)
+    pw = next((v for k, v in pairs if _PASSWORD_KEY_RE.match(k)), None)
+    user = next(((k, v) for k, v in pairs if _USER_KEY_RE.match(k)), None)
+    if not pw or not user or not user[1]:
+        return None
+    return user[0], user[1], pw
+
+
+def _has_token_key(node, depth=0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(node, dict):
+        return any((_TOKEN_KEY_RE.match(str(k)) and v) or _has_token_key(v, depth + 1)
+                   for k, v in node.items())
+    if isinstance(node, list):
+        return any(_has_token_key(v, depth + 1) for v in node[:16])
+    return False
+
+
+def _login_succeeded(cap) -> bool:
+    """Deterministic success signal for a login response. Strict on purpose: an
+    ambiguous response is NOT a success."""
+    headers = {str(k).lower(): str(v) for k, v in (cap.resp_headers or {}).items()}
+    if cap.status in _REDIRECTS:
+        loc = headers.get("location", "")
+        return bool(loc) and not _LOGINISH_PATH_RE.search(urlsplit(loc).path + "?"
+                                                          + urlsplit(loc).query)
+    if cap.status != 200 or not cap.response:
+        return False
+    body = str(cap.response)
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        doc = None
+    if isinstance(doc, (dict, list)):
+        if isinstance(doc, dict) and doc.get("error"):
+            return False
+        return _has_token_key(doc)
+    return (not _PASSWORD_INPUT_RE.search(body) and not _FAIL_TEXT_RE.search(body)
+            and bool(_AUTHED_MARKER_RE.search(body)))
+
+
+def _whole(value: str, text: str) -> bool:
+    return bool(re.search(r"(?<![A-Za-z0-9])" + re.escape(value) + r"(?![A-Za-z0-9])",
+                          text or ""))
+
+
+def credential_disclosure_login(caps, own_handles=()) -> list[dict]:
+    """Confirm "a password the target disclosed was used in a login that succeeded".
+
+    For each successful login (`_login_succeeded`) whose password is >= 6 chars and whose
+    username is not one of `own_handles` (the session's own principals): find an EARLIER
+    capture whose response contains that password as a whole token, and whose own
+    request (URL + body, decoded) did NOT carry it — so the target produced the value
+    rather than echoing our input. One finding per (login endpoint, username). The
+    password itself is never written into the finding."""
+    caps = list(caps)
+    own = {str(h).lower() for h in own_handles if h}
+    out: list[dict] = []
+    seen: set = set()
+    for i, cap in enumerate(caps):
+        fields = _login_fields(cap)
+        if fields is None:
+            continue
+        user_key, user, pw = fields
+        if len(pw) < _MIN_CRED_LEN or user.lower() in own or not _login_succeeded(cap):
+            continue
+        key = (_endpoint(cap.url), user.lower())
+        if key in seen:
+            continue
+        for src in caps[:i]:
+            sent = unquote_plus(src.url or "") + " " + unquote_plus(str(src.body or ""))
+            if src.response and _whole(pw, str(src.response)) and pw not in sent:
+                seen.add(key)
+                out.append({
+                    "title": "Account takeover via disclosed credential",
+                    "severity": "high",
+                    "target": _endpoint(cap.url),
+                    "param": user_key,
+                    "category": "web",
+                    "evidence": (
+                        f"the password used to log in as '{user}' at {_endpoint(cap.url)} "
+                        f"was disclosed earlier by the target in the response to "
+                        f"{src.method} {_endpoint(src.url)} (not an echo of our input); "
+                        f"the login succeeded (HTTP {cap.status}"
+                        + (f" -> {dict((str(k).lower(), v) for k, v in (cap.resp_headers or {}).items()).get('location', '')}"
+                           if cap.status in _REDIRECTS else "")
+                        + ") — captured, value withheld"),
+                    "comparator": "credential_disclosure_login",
+                })
+                break
+    return out
+
+
+def findings_from_capture(caps, scope, own_handles=()) -> list[dict]:
     """The Task 9 entry point: everything this module can prove from a capture set,
     in one list ready for `_record_confirmed`. `scope` is accepted for interface
     symmetry with the rest of the confirm reflex; every cap already passed scope at
@@ -374,4 +511,5 @@ def findings_from_capture(caps, scope) -> list[dict]:
             break
     out.extend(boolean_sqli_differential(caps))
     out.extend(reflected_executed(caps))
+    out.extend(credential_disclosure_login(caps, own_handles))
     return out
