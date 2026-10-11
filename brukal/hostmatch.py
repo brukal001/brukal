@@ -12,9 +12,17 @@ normalise each to a canonical string the scope check can look up:
   * Integer / 0x-hex / 0o-octal encodings that denote a routable IP — the classic
     "decimal IP" smuggle (``curl http://134744072/`` == ``8.8.8.8``). Only values
     at or above 1.0.0.0 are treated as IPs, so ``--top-ports 100`` stays a number.
+  * NETWORKS: CIDRs (``10.10.10.0/24``) and nmap octet ranges (``10.10.10.11-20``,
+    ``10.10.10.*``) are reported as canonical CIDR string(s); the gate requires a
+    network to lie wholly inside scope (SEC-001 — these used to be dropped as paths).
+  * Scheme-less ``host/path``, ``host:port/path`` and ``ip:port`` — the host before
+    the first '/' or ':' (SEC-002). A token that starts like a filesystem path
+    (``/etc``, ``./x``, ``~/x``) has no host part.
   * Bare dotted hostnames used as arguments (``nmap evil.com``, ``ssh u@evil.com``),
-    conservatively — a token with a path separator or a known file extension is a
-    filename/path, NOT a host.
+    conservatively — a token with a known file extension is a filename, NOT a host.
+
+Tokens are split on whitespace and shell operators, with quotes/backslashes removed
+and numeric brace expansion rewritten (see ``_tokens``).
 
 The gate enforces the policy: every host this returns must be in scope, or the
 action is denied (fail-closed). This module only *finds* hosts; it never decides.
@@ -81,6 +89,92 @@ def _clean(tok: str) -> str:
     return tok.strip().strip("\"'`(),<>[]{}")
 
 
+# A CIDR token: a dotted-quad or a colon-bearing IPv6 literal, '/', a numeric prefix
+# length (`10.10.10.0/24`, `10.10.10.11/32`, `2001:db8::/32`). Deliberately NOT
+# matching `1/2` or `HTTP/1.1`, which are not networks.
+_CIDR_RE = re.compile(r"(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*)/[0-9]{1,3}\Z")
+
+# An nmap-style IPv4 target spec: four dot-separated octet specs, each built from
+# digits, '-', ',' and '*' (`10.10.10.11-20`, `10.10.10.*`, `10.10.10.10,11`).
+_OCTET_SPEC_RE = re.compile(r"(?:[0-9*,-]+\.){3}[0-9*,-]+\Z")
+
+
+def _octet_bounds(spec: str) -> tuple[int, int] | None:
+    """(lowest, highest) value an nmap octet spec can take, or None if malformed.
+    `*` is 0-255; `a-b`, `-b` (0-b) and `a-` (a-255) are ranges; ',' joins parts."""
+    lo, hi = 256, -1
+    for part in spec.split(","):
+        if part == "*":
+            a, b = 0, 255
+        elif "-" in part:
+            left, _, right = part.partition("-")
+            if not (left.isdigit() or left == "") or not (right.isdigit() or right == ""):
+                return None
+            a = int(left) if left else 0
+            b = int(right) if right else 255
+        elif part.isdigit():
+            a = b = int(part)
+        else:
+            return None
+        if not (0 <= a <= b <= 255):
+            return None
+        lo, hi = min(lo, a), max(hi, b)
+    return (lo, hi) if hi >= 0 else None
+
+
+def _network_targets(tok: str) -> list[str] | None:
+    """SEC-001: a token that names a NETWORK rather than one host — a CIDR or an nmap
+    octet range. Returns the canonical network(s) it covers (a range is summarised to
+    the CIDR blocks spanning its lowest..highest address — a superset, so the scope
+    check can only be stricter than the real target set), or None if the token is not
+    network-shaped. A network-shaped token that does not parse is returned VERBATIM so
+    the scope check denies it (fail-closed) instead of it being dropped as a path."""
+    if _CIDR_RE.match(tok):
+        try:
+            return [str(ipaddress.ip_network(tok, strict=False))]
+        except ValueError:
+            return [tok]
+    if _OCTET_SPEC_RE.match(tok) and any(c in tok for c in "-,*"):
+        bounds = [_octet_bounds(o) for o in tok.split(".")]
+        if any(b is None for b in bounds):
+            return [tok]
+        lo = ipaddress.IPv4Address(".".join(str(b[0]) for b in bounds))
+        hi = ipaddress.IPv4Address(".".join(str(b[1]) for b in bounds))
+        return [str(n) for n in ipaddress.summarize_address_range(lo, hi)]
+    return None
+
+
+# Shell control operators. A session line is typed into a real bash, so `curl
+# 10.10.10.11;id` reaches 10.10.10.11 — the operator glued to the host must not hide
+# it from the scan (it did: the token `10.10.10.11;id` matched nothing).
+_SHELL_SPLIT_RE = re.compile(r"[\s;|&<>()`$]+")
+
+
+def _tokens(text: str) -> list[str]:
+    """Split a command/session line into candidate tokens the way bash would see
+    the words that can name a host: on whitespace AND shell operators; with quotes
+    and backslashes removed inside a word (`10.10.10."11"` and `1\\0.10.10.11` are
+    10.10.10.11 to bash); and with numeric brace expansion rewritten as an nmap
+    octet spec (`10.10.10.{10,11}` -> `10.10.10.10,11`, `{10..20}` -> `10-20`) so
+    the range rule covers it. A word with any other brace list is also offered
+    split at `{`, `,` and `}`, so `{10.10.10.11,x}` still yields 10.10.10.11.
+
+    This is word-level parsing, not a bash interpreter: a host assembled at run time
+    from a variable or a decoded string is NOT visible here. For the session door
+    that residual must be held by the cage's egress firewall, not by this module."""
+    out: list[str] = []
+    for word in _SHELL_SPLIT_RE.split(text or ""):
+        word = re.sub(r"[\"'\\]", "", word)
+        if not word:
+            continue
+        word = re.sub(r"\{([0-9]+)\.\.([0-9]+)\}", r"\1-\2", word)
+        word = re.sub(r"\{([0-9,]+)\}", r"\1", word)
+        out.append(word)
+        if "{" in word:
+            out.extend(p for p in re.split(r"[{},]", word) if p)
+    return out
+
+
 def extract_hosts(text: str) -> list[str]:
     """Every host referenced in `text`, canonicalised and de-duplicated (order kept).
     See the module docstring for the classes of reference recognised. Conservative on
@@ -94,7 +188,7 @@ def extract_hosts(text: str) -> list[str]:
             seen.add(h)
             hosts.append(h)
 
-    for raw in re.split(r"\s+", text or ""):
+    for raw in _tokens(text):
         tok = _clean(raw)
         if not tok:
             continue
@@ -112,19 +206,52 @@ def extract_hosts(text: str) -> list[str]:
         if "@" in tok and "/" not in tok.split("@", 1)[0]:
             tok = tok.split("@", 1)[1]
 
-        # 2. IP literal / integer / hex / octal encoding (checked before the :port
+        # 2. A NETWORK, not a host (SEC-001): CIDR or nmap octet range. Checked before
+        #    the '/' path rule below, which used to swallow `10.10.10.0/24` as a path.
+        nets = _network_targets(tok)
+        if nets is not None:
+            for n in nets:
+                add(n)
+            continue
+
+        # 3. IP literal / integer / hex / octal encoding (checked before the :port
         #    trim so an IPv6 literal's own colons are not mangled).
         ip = canonical_ip(tok)
         if ip is not None:
             add(ip)
             continue
 
-        # a single trailing :port on a dotted host (evil.com:8080) -> keep the host.
-        base = tok.split(":", 1)[0] if tok.count(":") == 1 else tok
-
-        # 3. bare dotted hostname — conservative: reject paths and known filenames.
-        if "/" in base or "\\" in base:
+        # a bracketed IPv6 with a port and/or path ([2001:db8::1]:80/x; _clean has
+        # already dropped the leading '[') -> the literal inside the brackets.
+        if "]" in tok:
+            ip = canonical_ip(tok.split("]", 1)[0])
+            if ip is not None:
+                add(ip)
             continue
+
+        # 4. scheme-less host/path (SEC-002): `curl 10.10.10.11/x` reaches that host
+        #    exactly as `curl http://10.10.10.11/x` does. The host is everything
+        #    before the first '/'. A token that STARTS like a filesystem path
+        #    (/etc, ./x, ../x, ~/x) has no host part and is skipped.
+        if "/" in tok or "\\" in tok:
+            if tok[0] in "/.~\\":
+                continue
+            tok = re.split(r"[/\\]", tok, maxsplit=1)[0]
+
+        # a single trailing :port on a host (evil.com:8080, 10.10.10.11:80, and the
+        # scp form host:) -> keep the host.
+        base = tok.split(":", 1)[0] if tok.count(":") == 1 else tok
+        if not base:
+            continue
+
+        # an IP with a :port (SEC-002: `curl 10.10.10.11:80` was never extracted,
+        # because the dotted-hostname rule below rejects an all-numeric TLD).
+        ip = canonical_ip(base)
+        if ip is not None:
+            add(ip)
+            continue
+
+        # 5. bare dotted hostname — conservative: reject known filenames.
         if _FILE_EXT_RE.search(base):
             continue
         if _DOTTED_HOST_RE.match(base):
