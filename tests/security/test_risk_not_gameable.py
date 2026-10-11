@@ -83,6 +83,8 @@ def test_unseen_targets_are_denied(record, cmd):
 
 
 # ------------------------------------------ SEC-009: writes/attacks spelled lower ----
+# SEC-009 and SEC-010 FIXED 2026-10-11 (brukal/risk.py); `_SEC009`/`_SEC010` keep the
+# original write-ups. Both-direction regressions: tests/test_risk_spellings.py.
 
 _SEC009 = pytest.mark.xfail(strict=True, reason=(
     "FINDING SEC-009: risk.derive_reversibility matches only the exact tokens '-X POST', "
@@ -94,7 +96,6 @@ _SEC009 = pytest.mark.xfail(strict=True, reason=(
     "ESCALATE. Risk invariant, High."))
 
 
-@_SEC009
 @pytest.mark.parametrize("cmd", [
     f"curl -XPOST http://{IN}/x", f"curl --request=DELETE http://{IN}/x",
     f"curl -F a=@f http://{IN}/up", f"curl --json '{{}}' http://{IN}/x",
@@ -108,7 +109,6 @@ def test_write_spellings_are_not_auto_allowed(record, cmd):
     assert _RANK.get(v, 2) >= 1
 
 
-@_SEC009
 @pytest.mark.parametrize("cmd", [
     f"nmap --script 'not safe' {IN}", f"nmap --script +exploit {IN}",
     f"nmap --script '(exploit or dos)' {IN}", f"nmap --script 'http-*' {IN}",
@@ -126,7 +126,6 @@ def test_script_all_is_already_not_auto_allowed(record):
     assert _RANK.get(v, 2) >= 1
 
 
-@_SEC009
 @pytest.mark.parametrize("wrapper", ["timeout 9", "sudo", "env X=1", "nice -n 5"])
 def test_wrapper_never_lowers_the_verdict(record, wrapper):
     bare = f"nmap --script exploit {IN}"
@@ -144,7 +143,6 @@ _SEC010 = pytest.mark.xfail(strict=True, reason=(
     "but it crashes the decision instead of treating an unreadable trust as zero. Low."))
 
 
-@_SEC010
 def test_nan_trust_is_treated_as_untrusted(record):
     try:
         d = assess(f"nmap -sV {IN}", trust=float("nan")).decision

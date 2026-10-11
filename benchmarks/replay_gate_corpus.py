@@ -11,7 +11,10 @@ approved) — read from the gitignored `runs/**/*.jsonl` ledgers — through the
   LOST  hosts the ref extracted that the current version does not — a governance
         regression;
   UNSEEN commands `unseen_targets` (SEC-008) now denies that the ref did not — each a
-        capability cost unless it truly picks targets the gate cannot see.
+        capability cost unless it truly picks targets the gate cannot see;
+  RISK+ commands whose soft-risk decision got STRICTER (ALLOW->ESCALATE->DENY) — more
+        human sign-offs, printed for review (not a failure on its own);
+  RISK- commands whose soft-risk decision got LOOSER — a governance regression.
 
     .venv/bin/python benchmarks/replay_gate_corpus.py [git-ref]   # default: main
 
@@ -68,13 +71,14 @@ def _corpus():
     return sorted(rows)
 
 
-def _load_ref(ref: str):
-    src = subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:brukal/hostmatch.py"],
+def _load_ref(ref: str, module: str = "hostmatch"):
+    src = subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:brukal/{module}.py"],
                          capture_output=True, text=True, check=True).stdout
-    path = Path(tempfile.mkdtemp()) / "hostmatch_ref.py"
+    path = Path(tempfile.mkdtemp()) / f"{module}_ref.py"
     path.write_text(src, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("hostmatch_ref", path)
+    spec = importlib.util.spec_from_file_location(f"{module}_ref", path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod       # dataclasses resolve their module via sys.modules
     spec.loader.exec_module(mod)
     return mod
 
@@ -91,8 +95,17 @@ def _is_target(host: str, target: str) -> bool:
 
 def main(argv: list[str]) -> int:
     from brukal import hostmatch as cur
+    from brukal import risk as cur_risk
     ref = argv[1] if len(argv) > 1 else "main"
     old = _load_ref(ref)
+    try:
+        old_risk = _load_ref(ref, "risk")
+    except Exception as exc:
+        # Never silently skip: a comparison that did not run must not read as "0 changed".
+        print(f"RISK comparison could NOT run against {ref}: {type(exc).__name__}: {exc}")
+        return 2
+    rank = {"ALLOW": 0, "ESCALATE": 1, "DENY": 2}
+    up_n = down_n = 0
     rows = _corpus()
     new_n = lost_n = unseen_n = 0
     import hashlib
@@ -115,12 +128,21 @@ def main(argv: list[str]) -> int:
         if new:
             new_n += 1
             print(f"NEW  {new}  target={target}  {cmd[:160]!r}")
+        if old_risk is not None:
+            a, b = old_risk.assess(cmd).decision, cur_risk.assess(cmd).decision
+            if rank[b] > rank[a]:
+                up_n += 1
+                print(f"RISK+ {a}->{b}  {cmd[:160]!r}")
+            elif rank[b] < rank[a]:
+                down_n += 1
+                print(f"RISK- {a}->{b}  {cmd[:160]!r}")
         if lost:
             lost_n += 1
             print(f"LOST {lost}  target={target}  {cmd[:160]!r}")
     print(f"{len(rows)} historical commands vs {ref}: {new_n} NEW, {lost_n} LOST, "
-          f"{unseen_n} UNSEEN ({reviewed} reviewed true positives)")
-    return 1 if (new_n or lost_n or unseen_n) else 0
+          f"{unseen_n} UNSEEN ({reviewed} reviewed true positives); risk: {up_n} stricter, "
+          f"{down_n} looser")
+    return 1 if (new_n or lost_n or unseen_n or down_n) else 0
 
 
 if __name__ == "__main__":

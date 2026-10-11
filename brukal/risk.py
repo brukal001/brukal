@@ -99,6 +99,26 @@ _CURL_BODY_FLAGS = {"-d", "--data", "--data-raw", "--data-binary",
                     "--data-urlencode", "-T", "--upload-file"}
 _IRREVERSIBLE_SCRIPT_CATS = {"exploit", "dos", "intrusive", "malware"}
 
+# SEC-009 — spellings the exact-token checks above missed.
+_CURL_WRITE_LONG = ("--data", "--data-raw", "--data-binary", "--data-urlencode",
+                    "--data-ascii", "--json", "--form", "--form-string", "--upload-file")
+# curl short options that take a VALUE: in a cluster like `-sSd x` everything after the
+# first of these is its value, so only letters before it are flags.
+_CURL_SHORT_VALUE = set("dFTHoXuAbcemwxKrCEyYzUPQDt")
+_CURL_SHORT_WRITE = set("dFT")
+_WGET_WRITE = ("--post-data", "--post-file", "--body-data", "--body-file")
+_SAFE_HTTP_METHODS = {"get", "head", "options"}
+# nmap script NAMES (not categories) that are intrusive by their own description.
+_RISKY_SCRIPT_NAME_RE = re.compile(
+    r"dos|slowloris|flood|brute|exploit|vuln|shellshock|backdoor|cve-?\d|ms\d\d-|rce|"
+    r"overflow|fuzz")
+_SCRIPT_EXPR_WORDS = {"not", "and", "or"}
+# nmap's own categories keep their designed meaning (e.g. `vuln` is aggressive, not
+# irreversible); the name pattern above applies only to script NAMES.
+_NMAP_CATEGORIES = {"auth", "broadcast", "brute", "default", "discovery", "dos",
+                    "exploit", "external", "fuzzer", "intrusive", "malware", "safe",
+                    "version", "vuln"}
+
 # Signals that widen the blast radius even against a single host.
 _AGGRESSIVE_TOKENS = {"-p-", "-A", "-T4", "-T5"}
 _AGGRESSIVE_SCRIPT_CATS = {"vuln", "brute", "all",
@@ -130,7 +150,14 @@ def _tokens(command: str) -> list[str]:
 
 
 def _script_categories(tokens: list[str]) -> set[str]:
-    """Categories named in an nmap `--script <cats>` / `--script=<cats>` arg."""
+    """Categories named in an nmap `--script <cats>` / `--script=<cats>` arg.
+
+    SEC-009: the value is an EXPRESSION, not a word list — `not safe`, `+exploit`,
+    `(exploit or dos)`, `http-*`, a script name like `http-slowloris`, or a path to a
+    custom .nse file. Anything that can select intrusive scripts without naming the
+    category is reported as the categories it can reach ("intrusive" / "all"), so the
+    callers below treat it as irreversible and aggressive. Named safe scripts and safe
+    categories are reported as before."""
     cats: set[str] = set()
     for i, tok in enumerate(tokens):
         val = None
@@ -139,10 +166,67 @@ def _script_categories(tokens: list[str]) -> set[str]:
         elif tok.startswith("--script="):
             val = tok.split("=", 1)[1]
         if val:
-            for part in re.split(r"[,\s]+", val.lower()):
-                if part:
-                    cats.add(part)
+            for part in re.split(r"[,\s()]+", val.lower()):
+                part = part.lstrip("+")
+                if not part:
+                    continue
+                cats.add(part)
+                if part in _SCRIPT_EXPR_WORDS or "*" in part or part == "all":
+                    cats.update({"intrusive", "all"})      # can select anything
+                elif "/" in part or part.endswith(".nse"):
+                    cats.add("intrusive")                   # custom script: arbitrary code
+                elif part not in _NMAP_CATEGORIES and _RISKY_SCRIPT_NAME_RE.search(part):
+                    cats.add("intrusive")
     return cats
+
+
+def _strip_wrappers(tokens: list[str]) -> list[str]:
+    """The command after any wrapper/assignment prefix (`timeout 9`, `sudo`, `env X=1`,
+    `nice -n 5`, ...). Same deterministic prefix rule the scope gate uses."""
+    from .hostmatch import _skip_prefix
+    return tokens[_skip_prefix(tokens):]
+
+
+def _curl_writes(tokens: list[str]) -> bool:
+    """Does this curl invocation send a body or a non-safe method, in any spelling?"""
+    for i, t in enumerate(tokens):
+        low = t.lower()
+        if low in _CURL_BODY_FLAGS or low in _CURL_WRITE_LONG or low == "--json":
+            return True
+        if any(low.startswith(f + "=") for f in _CURL_WRITE_LONG):
+            return True
+        method = None
+        if low in ("-x", "--request") and i + 1 < len(tokens):
+            method = tokens[i + 1]
+        elif low.startswith("--request="):
+            method = t.split("=", 1)[1]
+        elif t.startswith("-") and not t.startswith("--") and len(t) > 1:
+            for k, ch in enumerate(t[1:], start=1):        # short-option cluster
+                if ch in _CURL_SHORT_WRITE:
+                    return True
+                if ch == "X":
+                    method = t[k + 1:] or (tokens[i + 1] if i + 1 < len(tokens) else "")
+                    break
+                if ch in _CURL_SHORT_VALUE:
+                    break
+        if method is not None and method.lower() in _HTTP_WRITE_METHODS:
+            return True
+    return False
+
+
+def _wget_writes(tokens: list[str]) -> bool:
+    for i, t in enumerate(tokens):
+        low = t.lower()
+        if low in _WGET_WRITE or any(low.startswith(f + "=") for f in _WGET_WRITE):
+            return True
+        method = None
+        if low == "--method" and i + 1 < len(tokens):
+            method = tokens[i + 1]
+        elif low.startswith("--method="):
+            method = t.split("=", 1)[1]
+        if method is not None and method.lower() not in _SAFE_HTTP_METHODS:
+            return True
+    return False
 
 
 def derive_reversibility(command: str) -> str:
@@ -152,16 +236,22 @@ def derive_reversibility(command: str) -> str:
     tokens = _tokens(command)
     if not tokens:
         return "unknown"
+    inner = _strip_wrappers(tokens)
+    if inner is not tokens and len(inner) != len(tokens):
+        # SEC-009: a wrapper must never LOWER risk. Judge the wrapped command, and keep
+        # the wrapper's own "unknown" as a floor — so `timeout 9 nmap --script exploit`
+        # is as irreversible as the bare command, and `sudo nmap -sV` stays unknown.
+        if not inner:
+            return "unknown"
+        rev = derive_reversibility(" ".join(shlex.quote(t) for t in inner))
+        return max(rev, "unknown", key=_REV_WEIGHT.__getitem__)
     tool = os.path.basename(tokens[0]).lower()
 
-    if tool == "curl":
-        low = [t.lower() for t in tokens]
-        if any(f in low for f in _CURL_BODY_FLAGS):
-            return "irreversible"
-        for i, t in enumerate(low):
-            if t in ("-x", "--request") and i + 1 < len(low):
-                if low[i + 1] in _HTTP_WRITE_METHODS:
-                    return "irreversible"
+    if tool == "curl" and _curl_writes(tokens):
+        return "irreversible"
+
+    if tool == "wget" and _wget_writes(tokens):
+        return "irreversible"
 
     if tool == "nmap":
         if _script_categories(tokens) & _IRREVERSIBLE_SCRIPT_CATS:
@@ -200,6 +290,10 @@ def derive_blast_radius(command: str) -> str:
 
 
 def _clamp01(x: float) -> float:
+    """Clamp to [0, 1]. NaN (every comparison False) is unreadable trust -> 0.0, the
+    most cautious value (SEC-010: it used to pass through and crash round())."""
+    if x != x:
+        return 0.0
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
 
 
