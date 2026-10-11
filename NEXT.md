@@ -121,8 +121,9 @@
   raises) · `0d3d8ba` capture store keeps head 2,400 + tail within the same 4,000 (bodies ≤ 4,000
   byte-identical; redaction still on the full body; dynamic-tail trade-off pinned by a test) ·
   `b0a09a1` model note (600) + vault summary (800) use the view, baselines in a bounded in-memory map
-  (≤ 64 endpoints × 3 bodies × 200k chars) · `7738380` one MANUAL rule in the strategist prompt. Suite
-  2669 pass / 1 skip / 1 xfail; four metrics unchanged; gate files untouched; replay 0 NEW / 0 LOST /
+  (≤ 64 endpoints × 3 bodies × 200k chars) · `7738380` one MANUAL rule in the strategist prompt · `e14b69e` final-review fixes (fixed capture
+  marker so a middle-echoed payload no longer breaks the boolean differential; an over-budget diff
+  shows start+end with a marker instead of a silent cut). Suite 2673 pass / 1 skip / 1 xfail; four metrics unchanged; gate files untouched; replay 0 NEW / 0 LOST /
   0 UNSEEN / 0 looser. Resolves the old QUEUE item "capture size vs prover accuracy". Build+self-test
   only; no live run, no merge, no push.
 - **2026-10-11/12** Security-audit plan complete + follow-ups (branch `feat/security-audit-suite`):
