@@ -1391,7 +1391,14 @@ def _preflight(session, console=None) -> bool:
     # The login URL is authoritative when the operator gave one — it is a place we have
     # already reached. Otherwise fall back to the bare target.
     from urllib.parse import urlsplit
-    url = f"http://{session.target}/"
+    # A target given as a full URL (a PortSwigger lab: `https://<id>.web-security-
+    # academy.net/`) keeps its own scheme and host — it used to become
+    # `http://https://…/`, a request to nowhere (cosmetic but noisy, 2026-09-30 live run).
+    tsplit = urlsplit(str(session.target))
+    if tsplit.scheme and tsplit.netloc:
+        url = f"{tsplit.scheme}://{tsplit.netloc}/"
+    else:
+        url = f"http://{session.target}/"
     login_url = getattr(session, "_login_url", "") or ""
     if login_url:
         sp = urlsplit(login_url)

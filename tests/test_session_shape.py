@@ -254,3 +254,26 @@ def test_preflight_still_aborts_when_the_origin_was_known():
                       browser=GovernedBrowser(scope, _Dead(), audit))
     s._login_url = "http://127.0.0.1:9090/login"
     assert _preflight(s) is False
+
+
+def test_preflight_keeps_a_url_targets_own_scheme_and_host():
+    """A target given as a full URL used to be probed as `http://https://host/` — the
+    2026-09-30 PortSwigger run logged it on every start."""
+    from brukal.assist import _preflight
+    from brukal.scope import Scope
+
+    seen = []
+
+    class _Records:
+        def run(self, action):
+            seen.append(action.url)
+            return WebResult(status=200, url=action.url, headers={}, body="ok")
+
+    scope = Scope(engagement="t", authorized_networks=(), authorized_hosts={"lab.example"},
+                  allowlisted_tools=frozenset({"curl"}), rate_limit_per_min=1000)
+    audit = AuditLog(Path(tempfile.mkdtemp()) / "a.jsonl")
+    s = AssistSession("https://lab.example/", Executor(Gate(scope), FakeKali(), audit),
+                      StrategistAgent(type("L", (), {"propose": lambda *a, **k: ""})()),
+                      browser=GovernedBrowser(scope, _Records(), audit))
+    assert _preflight(s) is True
+    assert seen and seen[0] == "https://lab.example/", seen
