@@ -50,6 +50,17 @@
 > `test_hunt_wizard.py` tests that leak keys into the pytest-process env. The **TOP** below
 > (capture_confirm solve/auth-success prover) is unchanged and still the highest-value next build.
 
+
+> **STATE 2026-10-12 (branch `feat/security-audit-suite`, 32 commits over `main`; NOT merged, NOT
+> pushed):** the security-audit plan is COMPLETE and every build+self-test item below is DONE. Found and
+> fixed SEC-001/002/003/006/007/008/009/010/011 (see `SECURITY_AUDIT.md`), plus a principal-handle
+> substring bug (the 7/40 flake), a `brukal hunt` dispatch crash (circular import at the wizard's last
+> step), the wizard dropping `--context`, the preflight `http://https://`, the MANUAL `via:browser`
+> line, rich-menu WEB options that did nothing, and `curl -A` escalating. New prover: credential-
+> disclosure → successful login (the old TOP). New tool: `benchmarks/replay_gate_corpus.py <ref>` —
+> replays 1,501 historically approved commands; required 0 NEW / 0 LOST / 0 UNSEEN / 0 looser for every
+> gate/risk change (it caught a real 33-command capability regression in this branch's own first fix).
+> Suite 2644 pass / 1 skip / 1 xfail (documented design limit); four metrics unchanged.
 > One fresh session per change. Take the **TOP** item only, ship it as a tested milestone under
 > the five invariants, commit, then rewrite this file with the new top item. BUILD + SELF-TEST
 > ONLY — never a live pentest, never a real/external target, never a Docker/crAPI/DVWA run,
@@ -82,30 +93,36 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
-- **`capture_confirm`: add a deterministic SOLVE / auth-success prover (from the 2026-10-01 live validation).**
-  The live CDP run proved capture + the always-on pipeline fire, but `capture_confirm` registered **0
-  findings** on a practitioner UNION lab because its provers (`is_solved_banner`, blind-boolean
-  differential, reflected-XSS) match **none** of: (a) UNION / direct data-retrieval, (b) an
-  **auth-success** solve — the lab's real solve was `POST /login` as admin → `302 /my-account?id=administrator`
-  ("Congratulations…"), and the `is_solved_banner` prover can't see that banner (it's behind a login
-  session the cage browser never holds). Add a prover over the ALREADY-captured response that recognises
-  an authentication-success / privilege transition (e.g. a login-form POST answered by a 302 to an
-  own-account path, or a login→authed-page content differential carrying an authenticated marker) and
-  registers it as a CONFIRMED finding. **Deterministic string/redirect check over captured text — NO LLM
-  in the gate; `via`/capture plumbing unchanged.** Build + self-test ONLY: unit tests against `FakeCDP`,
-  positive-control-enforced like the existing provers. Full validation write-up + the other gaps: vault
-  `Brukal.md` 2026-10-01 entry.
-  _Related gaps surfaced the same run (candidates once the prover lands, NOT this item): exploit-as-manual
-  (planner handed back); no multi-step/stateful exploit chaining (UNION→login); captured body truncated
-  (~800 B stored vs `capture.py:_MAX_RESPONSE_KEPT=4000`, cut before the creds); MANUAL REPL parses a
-  `via:browser get <url>` line as an instruction (first token not a known tool) and never runs it; and a
-  crash bug — `assist_cli._authorise_host` does `ip_network(url+"/32")` on a URL when the host isn't
-  pre-authorised in scope (ValueError). Each is a separate tested milestone; none is a live-run item._
+- **Exploit-as-manual + multi-step chaining (capability milestone — needs a design pass with the
+  maintainer first).** The two live runs show the ceiling is no longer the gate: the model identifies
+  the payload but frames it as MANUAL ("next step is yours"), and nothing carries state from one step to
+  the next (UNION dump → creds → login). Brukal now CONFIRMS the chain when it happens
+  (`credential_disclosure_login`), but nothing DRIVES it. Proposed shape (to brainstorm, not build
+  blind): a deterministic "lead → governed action" translator for identified payloads, plus a small
+  chain state (harvested credentials / tokens as typed facts the planner is shown). Every step still
+  through the gate; no LLM inside it.
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-_(empty — refill from a review or a fresh coverage pass)_
+- **Capture size vs prover accuracy (needs data):** `capture._MAX_RESPONSE_KEPT = 4000` may cut a
+  PortSwigger UNION result page before the dumped rows (then `credential_disclosure_login` and the
+  boolean differential cannot see them); raising it also lets dynamic content (CSRF tokens) into the
+  boolean comparison. Measure on captured lab pages before changing. (The "~800 B" seen in the
+  2026-10-01 vault entry is the vault SUMMARY `body[:800]`, not the capture store.)
+- **Untrusted-data fence in strategist prompts:** raw target output is inlined under `RECENT
+  ACTIVITY` next to `OPERATOR JUST SAID:` (`strategist.py:_context_parts`). Fence + label it — but
+  ship only with the E2 A/B from `RESEARCH_FINDINGS.md` (human-gated live run), since it changes what
+  the model proposes.
+- **Stale evidence in `capture_confirm`:** add a run id / timestamp to `CapturedRequest` so evidence
+  from another run is distinguishable (recorded NOT-TESTABLE in `SECURITY_AUDIT.md`).
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-10-11/12** Security-audit plan complete + follow-ups (branch `feat/security-audit-suite`):
+  `043c4e6` results harness · `6b80588`+`9c4e918` SEC-001/002 (+ quote-aware lexer, regression caught by
+  replay) · `dc387e2` SEC-007 · `5ca9182` SEC-006 · `fa4902c` SEC-003 · `1d8c3c4` principal-handle bug ·
+  `748fe20` Task 7 baseline · `2374c0f` SEC-008 · `2e89ce6` SEC-009/010 · `1f353e3` `-A` nmap-only ·
+  `de32223` SECURITY_AUDIT/THREAT_MODEL/RESEARCH_FINDINGS · `2149118` SEC-011 · `602cc90` preflight
+  scheme · `6278e02` wizard crash + brief · `387507a` credential-disclosure-login prover · `898c72d`
+  typed/picked WEB actions. All build+self-test; no live run, no merge, no push.
 - **2026-10-01** **Chrome-CDP + full-capture milestone** (branch `feat/chrome-cdp-capture`, 14 commits,
   Tasks 1–11 of its own SDD plan — `.superpowers/sdd/2026-09-30-chrome-cdp-capture/`). Real stdlib
   CDP-over-WebSocket client (`brukal/cdp.py`: RFC6455 handshake + client-masked framing, call
