@@ -433,6 +433,27 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             con.print(Panel(pt, title="[bold]plan — shortest path[/]", border_style="blue"))
 
     def run_and_show(command):
+        web = _web_line(command)
+        if web is not None:                    # a typed / suggested WEB action
+            with con.status(f"[cyan]requesting:[/] {web}", spinner="dots") as st:
+                holder["status"] = st
+                d, r, new_hl = session.run_web(web)
+                holder["status"] = None
+            if d is None:
+                con.print("  [yellow]web action not run (no browser wired / unparseable)[/]")
+                return
+            colour = _VERDICT_COLOUR.get(d.verdict, "white")
+            con.print(Text.assemble(("  → ", ""), (d.verdict, f"bold {colour}"),
+                                     (f"   {d.layer}", "grey50")))
+            if r is not None:
+                con.print(Panel((getattr(r, "body", "") or "").strip()[:1800] or "(empty)",
+                                title=f"HTTP {getattr(r, 'status', '?')}",
+                                border_style="grey23"))
+                _show_highlights(con, Panel, Text, new_hl, "key results")
+            else:
+                con.print(f"  [grey50]{d.reason}[/]")
+            session.last = None
+            return
         with con.status(f"[cyan]running:[/] {command}", spinner="dots") as st:
             holder["status"] = st
             d, r, new_hl = session.run(command)
@@ -497,6 +518,8 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             body.append(o.goal or (o.rationale or "")[:60] or "next move", style="white")
             if o.command:
                 body.append(f"\n     RUN: {o.command}", style="green")
+            elif o.web:
+                body.append(f"\n     WEB: {o.web}", style="green")
             elif o.manual:
                 body.append(f"\n     MANUAL: {o.manual}", style="yellow")
             if i < len(opts):
@@ -530,6 +553,8 @@ def _menu_loop(session, audit, target, cage, con, holder, auto=False):
             opt = opts[int(choice) - 1]
             if opt.command:
                 run_and_show(opt.command)
+            elif opt.web:
+                run_and_show("web " + opt.web)   # a WEB option used to do nothing here
             elif opt.manual:
                 session.manual(opt.manual)
                 con.print(f"  [yellow]recorded manual:[/] {opt.manual}")
@@ -583,6 +608,46 @@ _HELP = """  pick a NUMBER to take that move, or type your own:
     plan   auto   manual-mode   skills <topic>   verify   quit
     (a question — ending in '?' or starting with what/why/how… — is answered, not run;
      `auto` runs the safe steps itself; risky/irreversible moves still pause for y/N)"""
+
+
+_WEB_URL_VERBS = frozenset({"get", "navigate", "render", "screenshot", "intercept"})
+
+
+def _web_line(text: str) -> "str | None":
+    """The web-action text in an operator's typed line, or None.
+
+    The 2026-10-01 live run typed `via:browser get <url>` at the MANUAL prompt; the
+    first token is not a tool, so it was taken as a free-text instruction and never
+    ran. Recognised here, conservatively, so an ordinary sentence ("get the flag") is
+    never misread as a request:
+      * an explicit `web …` / `WEB: …` prefix, or a leading `via:browser|via:raw`;
+      * a bare http(s) URL;
+      * a URL verb (`get/navigate/render/screenshot/intercept`) followed by a URL, or
+        `request <METHOD> <url>` — the URL must actually be one.
+    The returned text must parse as a WebAction; the governed browser's gate judges it
+    like any other web action (this is routing, not authority)."""
+    from .web import parse_web_action
+    t = (text or "").strip()
+    low = t.lower()
+    if low.startswith("web:") or low.startswith("web "):
+        cand = t[4:].strip()
+    elif low.startswith("via:"):
+        cand = t
+    else:
+        toks = t.split()
+        if not toks:
+            return None
+        verb = toks[0].lower()
+        is_url = lambda x: x.lower().startswith(("http://", "https://"))  # noqa: E731
+        if is_url(verb):
+            cand = t
+        elif verb in _WEB_URL_VERBS and len(toks) > 1 and is_url(toks[1]):
+            cand = t
+        elif verb == "request" and len(toks) > 2 and is_url(toks[2]):
+            cand = t
+        else:
+            return None
+    return cand if cand and parse_web_action(cand) is not None else None
 
 
 def _looks_like_command(text: str) -> bool:
@@ -660,6 +725,12 @@ def _report(d, r):
     # looks like it "did nothing". Always tell the operator what actually happened.
     if r is None:
         print(f"  -> {d.verdict}  ({d.layer}: {d.reason})")
+        return
+    if not hasattr(r, "returncode") and hasattr(r, "status"):     # a WebResult
+        print(f"  -> {d.verdict}  HTTP {r.status}"
+              + (f"  ({r.note})" if getattr(r, "note", "") else ""))
+        for line in (getattr(r, "body", "") or "").strip()[:1200].splitlines()[:30]:
+            print(f"     {line}")
         return
     rc = getattr(r, "returncode", 0)
     out = (getattr(r, "stdout", "") or "").rstrip()
@@ -857,6 +928,9 @@ def _plain_loop(session, audit, target, cage, auto=False):
         elif raw.startswith("ask ") or raw.startswith("? "):
             q = raw.split(None, 1)[1].strip()                    # explicit question
             print(f"\n  🧠 Brukal: {session.ask(q)}\n")
+        elif _web_line(raw) is not None:
+            d, r, hl = session.run_web(_web_line(raw))           # a typed WEB action
+            _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
         elif _looks_like_command(raw):
             d, r, hl = session.run(raw)                          # custom command
             _report(d, r); _deny_hint(d); _show_highlights_plain(hl); session.option_list = []
