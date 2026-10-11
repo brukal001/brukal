@@ -106,8 +106,10 @@
 - **Capture size vs prover accuracy (needs data):** `capture._MAX_RESPONSE_KEPT = 4000` may cut a
   PortSwigger UNION result page before the dumped rows (then `credential_disclosure_login` and the
   boolean differential cannot see them); raising it also lets dynamic content (CSRF tokens) into the
-  boolean comparison. Measure on captured lab pages before changing. (The "~800 B" seen in the
-  2026-10-01 vault entry is the vault SUMMARY `body[:800]`, not the capture store.)
+  boolean comparison. Measure on captured lab pages before changing. CORRECTION 2026-10-12: the
+  2026-10-01 UNION response was 4,447 B with the result near the END, so the 4,000-char capture
+  store DID cut it (and the model saw only `body[:600]`). Addressed by the response-visibility
+  design: `docs/superpowers/specs/2026-10-12-response-visibility-design.md`.
 - **Untrusted-data fence in strategist prompts:** raw target output is inlined under `RECENT
   ACTIVITY` next to `OPERATOR JUST SAID:` (`strategist.py:_context_parts`). Fence + label it — but
   ship only with the E2 A/B from `RESEARCH_FINDINGS.md` (human-gated live run), since it changes what
