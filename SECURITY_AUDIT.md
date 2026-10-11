@@ -37,7 +37,7 @@ unsafe_actions_prevented 5, context_reduction 0.976, adaptive_trust_final 0.343.
 UNSEEN (SEC-008 would now deny), RISK± (soft decision changed). Final result vs the pre-audit
 code: **0 NEW, 0 LOST, 0 UNSEEN, 0 stricter, 0 looser**, plus **8 reviewed true positives**
 (listed in the tool). The replay caught one real regression introduced by this audit's own
-SEC-001/002 fix (33 legitimate commands would have been denied) — fixed in `9c4e918` before
+SEC-001/002 fix (33 legitimate commands would have been denied) — fixed in `b21881c` before
 anything shipped.
 
 ---
@@ -49,7 +49,7 @@ Severity is impact × reachability *for an agent whose output is attacker-influe
 which is defence in depth, not the gate; no finding below was accepted on the grounds that
 the firewall would catch it.
 
-### SEC-001 — Smuggled CIDR / nmap range authorized (I3, Critical) — FIXED `6b80588`
+### SEC-001 — Smuggled CIDR / nmap range authorized (I3, Critical) — FIXED `8da7932`
 - **Repro:** scope `10.10.10.10/32`; `check_session("nmap 10.10.10.10 10.10.10.0/24")` → ALLOW
   (`check` only ESCALATEd, via the soft layer). Also `/32` of an out-of-scope host,
   `10.10.10.11-20`, `10.10.10.*`.
@@ -61,7 +61,7 @@ the firewall would catch it.
   a malformed network-shaped token is passed through verbatim and denied.
 - **Before → after:** session door ALLOW → DENY; command door ESCALATE → hard DENY.
 
-### SEC-002 — Scheme-less `host/path`, `host:port` smuggled (I3, Critical) — FIXED `6b80588`, `9c4e918`
+### SEC-002 — Scheme-less `host/path`, `host:port` smuggled (I3, Critical) — FIXED `8da7932`, `b21881c`
 - **Repro:** `curl 10.10.10.11/x`, `curl 10.10.10.11:80/x`, `curl 10.10.10.11:80`,
   `curl evil.com/x` → ALLOW on both doors. Same root cause on the session door:
   `curl 10.10.10.11;id`, `10.10.10."11"`, `curl${IFS}10.10.10.11`, `10.10.10.{10,11}`.
@@ -70,11 +70,11 @@ the firewall would catch it.
 - **Fix:** host before the first `/` or `:`; a quote-aware bash lexer (split on *unquoted*
   whitespace/operators, quotes/escapes removed, `$(...)`/backticks lexed as commands, unquoted
   brace expansion), unioned with the original whitespace split so nothing previously seen is lost.
-- **Regression found and fixed:** the first tokenizer (`6b80588`) split quoted data and would
+- **Regression found and fixed:** the first tokenizer (`8da7932`) split quoted data and would
   have denied 33 historical commands (emails in JSON bodies, mongo `--eval "db.getSiblingDB(...)"`).
-  `9c4e918` made the lexer quote-aware → 0 NEW / 0 LOST.
+  `b21881c` made the lexer quote-aware → 0 NEW / 0 LOST.
 
-### SEC-003 — Dotless / loopback host names unchecked (I3, Medium) — FIXED `fa4902c`
+### SEC-003 — Dotless / loopback host names unchecked (I3, Medium) — FIXED `db2f6e1`
 - **Repro:** `nmap -n 10.10.10.10 intranet`, `… localhost`, `curl crapi-identity:8080` → ALLOW.
 - **Root cause:** the generic host rule requires a dotted name with an alphabetic TLD.
   A blanket rule for bare words would deny ordinary commands (`cat flag`, `--script vuln`, a
@@ -88,7 +88,7 @@ the firewall would catch it.
 - **Residual:** an unknown value-taking option of a positional-target tool can cause a false
   DENY (fail-closed), mitigated by the rephrase hint; replay shows none in history.
 
-### SEC-006 — Audit-log tail truncation undetected (I5, Medium) — FIXED `5ca9182`
+### SEC-006 — Audit-log tail truncation undetected (I5, Medium) — FIXED `4f4ccc0`
 - **Repro:** append 5 records, delete the last 1–2 lines → `verify()` True (keyed mode too).
 - **Root cause:** a hash chain proves each record's predecessor, never how many records exist.
 - **Fix:** `verify()` requires the ledger to *contain* every available anchor: (1) the live
@@ -101,7 +101,7 @@ the firewall would catch it.
   limit); keyed — a file-writer who saved an *old* sidecar can truncate back to it. Only the
   off-machine external anchor closes both.
 
-### SEC-007 — Boolean-SQLi confirmation from uncorrelated evidence (Confirmation, High) — FIXED `dc387e2`
+### SEC-007 — Boolean-SQLi confirmation from uncorrelated evidence (Confirmation, High) — FIXED `5fe9f3a`
 - **Repro:** baseline `?id=5`; truthy on an ignored param `?comment=x' OR '1'='1`; falsy on an
   unrelated param that legitimately changes the page `?page=x' AND '1'='2` → a CONFIRMED
   high-severity "SQL injection (boolean)" `Finding` with no SQL injection anywhere.
@@ -112,7 +112,7 @@ the firewall would catch it.
   baseline differing only in that param. Every candidate triple is examined — which also finds
   genuine pairs the first-match logic missed and reports each injectable param.
 
-### SEC-008 — Targets the scope check cannot see (I3, Critical) — FIXED `2374c0f`
+### SEC-008 — Targets the scope check cannot see (I3, Critical) — FIXED `528a5b8`
 - **Repro:** `nmap -iR 100` (100 random internet hosts) → ALLOW. Also `nmap/masscan -iL`,
   `masscan --includefile/-c`, `nuclei -l/-uncover`, `httpx/naabu/katana -l`, `wget -i`,
   `whatweb -i`, `sqlmap -r/-m/-l/-g/-c`, `curl -K`, `hydra -M`, `nikto -h <file>`,
@@ -126,7 +126,7 @@ the firewall would catch it.
 - **Capability:** 6 historical `nuclei/httpx -l` uses now deny — reviewed as true positives
   (several were model misuse: `-l` read as "templates"/"limit", invented `/path/to/` files).
 
-### SEC-009 — Soft risk talked down by spelling / wrappers (Risk, High) — FIXED `2e89ce6`
+### SEC-009 — Soft risk talked down by spelling / wrappers (Risk, High) — FIXED `f61b171`
 - **Repro:** `curl -XPOST`, `--request=DELETE`, `-F`, `--json`, `-sSd`, `wget --post-data`,
   `wget --method=DELETE` → scored *reversible* → auto-ALLOW. `nmap --script 'not safe'`,
   `+exploit`, `http-*`, `http-slowloris` → ALLOW. `timeout 9 nmap --script exploit` → ESCALATE
@@ -138,20 +138,20 @@ the firewall would catch it.
   categories keep their designed meaning); wrappers stripped with the gate's prefix rule and
   `unknown` kept as a floor, so a wrapper never lowers a verdict.
 
-### SEC-010 — NaN trust crashes the risk decision (Risk, Low) — FIXED `2e89ce6`
+### SEC-010 — NaN trust crashes the risk decision (Risk, Low) — FIXED `f61b171`
 - `_clamp01(nan)` passed NaN through; `round()` raised. NaN is now 0.0 (most cautious).
 
 ### Reclassified during the audit (not findings)
 - **SEC-004** (100k-char argument ALLOWed) and **SEC-005** (U+2028 in a command ALLOWed) —
-  re-examined (`d2b4386`): both are inert under the cage's shell and pass the hard checks
+  re-examined (`0168774`): both are inert under the cage's shell and pass the hard checks
   correctly; kept as positive controls in `test_fail_closed.py::EXPECT_ALLOW`.
 
 ### Found along the way (outside the five invariants)
-- **Principal handle substring match** — FIXED `1d8c3c4`. `_answered_as_another_principal`
+- **Principal handle substring match** — FIXED `807d58d`. `_answered_as_another_principal`
   used `handle in text`; a second principal `brk…a@brukal.test` "contained" the first's
   `a@brukal.test`, refuting a legitimate login and blocking the cross-account lane. Surfaced as a
   7/40 flaky test; 0/40 after.
-- **`curl -A` escalated as nmap-aggressive** — FIXED `1f353e3` (capability; no protection lost).
+- **`curl -A` escalated as nmap-aggressive** — FIXED `c09c44f` (capability; no protection lost).
 
 ### DESIGN-LIMIT (documented, not a finding)
 - **Unkeyed audit edit + full re-chain + recomputed sidecar** verifies for a fresh verifier.
@@ -172,7 +172,7 @@ the firewall would catch it.
 | SECURITY | an unsafe action could execute / a target escape | SEC-001, 002, 003, 008 |
 | GOVERNANCE | the record or the human-approval path could be subverted | SEC-006, 009 |
 | MEASUREMENT | a claim (finding / metric) could be fabricated | SEC-007 |
-| HARNESS | the test or measuring tool was wrong | results helper (82 false FAILs, `043c4e6`); replay tool silently skipping its risk comparison (fixed before use) |
+| HARNESS | the test or measuring tool was wrong | results helper (82 false FAILs, `2a59273`); replay tool silently skipping its risk comparison (fixed before use) |
 | MODEL | needs an LLM in the loop — out of scope here | see `RESEARCH_FINDINGS.md` |
 | UNREACHABLE | defence-in-depth only | — |
 
@@ -196,5 +196,5 @@ the firewall would catch it.
 .venv/bin/python -m pytest tests/security -q          # writes security_results.json
 .venv/bin/python -m pytest -q                         # full suite
 .venv/bin/python run_experiments.py                   # four metrics
-.venv/bin/python benchmarks/replay_gate_corpus.py 3e15e94   # capability guard (needs runs/)
+.venv/bin/python benchmarks/replay_gate_corpus.py 8a5f33c   # capability guard (needs runs/)
 ```

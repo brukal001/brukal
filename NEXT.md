@@ -117,11 +117,11 @@
 
 ## DONE (most recent first — for the next session's context, not an action item)
 - **2026-10-11/12** Security-audit plan complete + follow-ups (branch `feat/security-audit-suite`):
-  `043c4e6` results harness · `6b80588`+`9c4e918` SEC-001/002 (+ quote-aware lexer, regression caught by
-  replay) · `dc387e2` SEC-007 · `5ca9182` SEC-006 · `fa4902c` SEC-003 · `1d8c3c4` principal-handle bug ·
-  `748fe20` Task 7 baseline · `2374c0f` SEC-008 · `2e89ce6` SEC-009/010 · `1f353e3` `-A` nmap-only ·
-  `de32223` SECURITY_AUDIT/THREAT_MODEL/RESEARCH_FINDINGS · `2149118` SEC-011 · `602cc90` preflight
-  scheme · `6278e02` wizard crash + brief · `387507a` credential-disclosure-login prover · `898c72d`
+  `2a59273` results harness · `8da7932`+`b21881c` SEC-001/002 (+ quote-aware lexer, regression caught by
+  replay) · `5fe9f3a` SEC-007 · `4f4ccc0` SEC-006 · `db2f6e1` SEC-003 · `807d58d` principal-handle bug ·
+  `8db55e4` Task 7 baseline · `528a5b8` SEC-008 · `f61b171` SEC-009/010 · `c09c44f` `-A` nmap-only ·
+  `2964f10` SECURITY_AUDIT/THREAT_MODEL/RESEARCH_FINDINGS · `8e6a139` SEC-011 · `fc9c9e8` preflight
+  scheme · `66a93ec` wizard crash + brief · `48d70c3` credential-disclosure-login prover · `ee73c9f`
   typed/picked WEB actions. All build+self-test; no live run, no merge, no push.
 - **2026-10-01** **Chrome-CDP + full-capture milestone** (branch `feat/chrome-cdp-capture`, 14 commits,
   Tasks 1–11 of its own SDD plan — `.superpowers/sdd/2026-09-30-chrome-cdp-capture/`). Real stdlib
