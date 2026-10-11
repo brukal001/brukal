@@ -25,7 +25,6 @@ ledgers only.
 from __future__ import annotations
 
 import glob
-import importlib.util
 import ipaddress
 import json
 import subprocess
@@ -72,15 +71,29 @@ def _corpus():
 
 
 def _load_ref(ref: str, module: str = "hostmatch"):
-    src = subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:brukal/{module}.py"],
-                         capture_output=True, text=True, check=True).stdout
-    path = Path(tempfile.mkdtemp()) / f"{module}_ref.py"
-    path.write_text(src, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(f"{module}_ref", path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod       # dataclasses resolve their module via sys.modules
-    spec.loader.exec_module(mod)
-    return mod
+    """`brukal/<module>.py` as it was at `ref`, imported inside a throwaway package that
+    also holds the ref's hostmatch.py — so a relative import between the two (risk ->
+    hostmatch) resolves to the REF's code, never the working tree's."""
+    import importlib
+    import re as _re
+    pkg = "brukal_ref_" + _re.sub(r"\W", "_", ref)
+    if f"{pkg}.{module}" in sys.modules:
+        return sys.modules[f"{pkg}.{module}"]
+    root = Path(tempfile.mkdtemp())
+    (root / pkg).mkdir()
+    (root / pkg / "__init__.py").write_text("", encoding="utf-8")
+    if pkg in sys.modules:             # package already built for this ref
+        return importlib.import_module(f"{pkg}.{module}")
+    for name in ("hostmatch", "risk"):  # both, in ONE package, so either can import the other
+        src = subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:brukal/{name}.py"],
+                             capture_output=True, text=True, check=True).stdout
+        (root / pkg / f"{name}.py").write_text(src, encoding="utf-8")
+    sys.path.insert(0, str(root))
+    try:
+        importlib.import_module(pkg)
+        return importlib.import_module(f"{pkg}.{module}")
+    finally:
+        sys.path.remove(str(root))
 
 
 def _is_target(host: str, target: str) -> bool:

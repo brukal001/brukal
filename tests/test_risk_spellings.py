@@ -37,7 +37,7 @@ def test_write_spellings_are_irreversible(cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    f"curl -sSL {U}", f"curl -o data.txt {U}", f"curl -sk {U}",
+    f"curl -sSL {U}", f"curl -o data.txt {U}", f"curl -sk -A Mozilla {U}",
     f"curl -H 'X-Data: d' {U}", f"curl -I {U}", f"curl -X GET {U}", f"curl -XHEAD {U}",
     f"curl -sSo dump.bin {U}", f"wget -O out {U}", f"wget --method=GET {U}",
     f"wget --method=HEAD {U}",
@@ -82,3 +82,12 @@ def test_wrapped_read_only_command_still_escalates_as_before():
 def test_nan_trust_is_most_cautious():
     assert assess(f"nmap -sV {H}", trust=float("nan")).score == \
         assess(f"nmap -sV {H}", trust=0.0).score
+
+
+def test_dash_A_is_aggressive_only_for_nmap():
+    # curl/wget `-A` is a User-Agent / accept list — it used to escalate every
+    # `curl -A <ua>` for human sign-off. nmap -A (OS+scripts+traceroute) is unchanged.
+    assert assess(f"curl -A Mozilla {U}").decision == "ALLOW"
+    assert assess(f"wget -A pdf {U}").decision == "ALLOW"
+    assert assess(f"nmap -A {H}").decision == "ESCALATE"
+    assert _RANK[assess(f"sudo nmap -A {H}").decision] >= _RANK["ESCALATE"]

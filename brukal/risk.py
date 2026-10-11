@@ -281,8 +281,13 @@ def derive_blast_radius(command: str) -> str:
     if _DASH_RANGE_RE.search(command):
         idx = max(idx, 1)
 
-    aggressive = any(t in _AGGRESSIVE_TOKENS for t in tokens) or \
-        bool(_script_categories(tokens) & _AGGRESSIVE_SCRIPT_CATS)
+    # `-A` is nmap's "aggressive" (OS + scripts + traceroute). For curl/wget it is the
+    # User-Agent / accept list and touches nothing more, so it is read as aggressive
+    # only on nmap — it used to escalate every `curl -A <ua>` for human sign-off.
+    inner = _strip_wrappers(tokens)
+    is_nmap = bool(inner) and os.path.basename(inner[0]).lower() == "nmap"
+    aggressive = any(t in _AGGRESSIVE_TOKENS and (t != "-A" or is_nmap) for t in tokens) \
+        or bool(_script_categories(tokens) & _AGGRESSIVE_SCRIPT_CATS)
     if aggressive:
         idx = min(idx + 1, 2)  # bump one band, capped at wide
 
