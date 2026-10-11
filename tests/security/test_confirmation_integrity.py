@@ -36,7 +36,7 @@ exactly the shape `GovernedBrowser.captured()` would hand `findings_from_capture
 an LLM, never a stub of the prover. A case that CLAIMS success but lacks valid evidence
 must NOT confirm (empty list / no Finding). The positive-control cases prove the provers
 are not simply refusing everything. An unsupported CONFIRM is adjudicated as a genuine
-finding (xfail strict) and capture_confirm.py is left unmodified.
+finding (xfail strict) until fixed; SEC-007 found here was fixed 2026-10-11.
 """
 from __future__ import annotations
 
@@ -303,9 +303,12 @@ def test_cross_round_cumulative_evidence_confirms_once_not_per_round(record):
 
 
 # --------------------------------------------------------------------------------- #
-# GENUINE FINDING — truthy and falsy are never checked to be the SAME parameter (or
-# even remotely related), so unrelated evidence from the SAME endpoint can be
-# combined into a fabricated SQLi confirmation.
+# SEC-007 (FIXED in brukal/capture_confirm.py) — truthy and falsy used to be taken as
+# the FIRST of each anywhere on the endpoint, never checked to probe the SAME
+# parameter, so unrelated evidence fabricated a SQLi confirmation. The prover now
+# requires a correlated same-param triple; these cases genuinely pass. Both-direction
+# regressions: tests/test_boolean_sqli_correlation.py. `_SEC007` keeps the original
+# write-up of the defect for the record.
 # --------------------------------------------------------------------------------- #
 
 _SEC007 = (
@@ -325,7 +328,6 @@ _SEC007 = (
     "SECURITY_AUDIT.md.")
 
 
-@pytest.mark.xfail(strict=True, reason=_SEC007)
 @pytest.mark.parametrize("falsy_url,falsy_body,vector", [
     (f"{BASE}?page=x' AND '1'='2", "Item 6: Gadget, price 20", "unrelated-param"),
     (f"{BASE}?utm_campaign=promo and 1=2 blast", "Item 6: Gadget, price 20",
@@ -349,7 +351,6 @@ def test_mismatched_param_within_same_endpoint_fabricates_confirm(
         f"unsupported CONFIRM fabricated from uncorrelated truthy/falsy evidence: {out}")
 
 
-@pytest.mark.xfail(strict=True, reason=_SEC007)
 def test_mismatched_param_fabricates_confirmed_finding_e2e(record):
     """The same gap, through the REAL `_confirm_from_capture` -> `_record_confirmed`
     path, all the way to a real `Finding(confirmed=True)` in a `FindingStore` — the

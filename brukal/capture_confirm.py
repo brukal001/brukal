@@ -34,7 +34,9 @@ from urllib.parse import parse_qsl, urlsplit
 # Markers are matched against a LOWERED, decoded query value — so "Gifts' AND '1'='1"
 # and "gifts' AND '1'='1" are both seen as the truthy pattern they are.
 _SOLVED_MARKERS = ("is-solved", "congratulations, you solved the lab", "solved the lab")
-_TRUTHY_MARKERS = ("' and '1'='1", "' or '1'='1", " or 1=1", "' or 1=1--")
+# ` and 1=1` is the truthy twin of the ` and 1=2` falsy marker — the most common
+# numeric boolean pair; without it that pair could never register (SEC-007 review).
+_TRUTHY_MARKERS = ("' and '1'='1", "' or '1'='1", " or 1=1", "' or 1=1--", " and 1=1")
 _FALSY_MARKERS = ("' and '1'='2", "' or '1'='2", " and 1=2")
 
 _RAW_TAG_CHARS = ("<", ">")
@@ -70,38 +72,69 @@ def _is_falsy(cap) -> bool:
     return any(_matches_any(v, _FALSY_MARKERS) for _, v in _query_values(cap.url))
 
 
-def _injected_param(cap) -> str:
-    """The query param carrying the SQLi payload on this capture, or '' if none."""
-    for key, value in _query_values(cap.url):
-        if _matches_any(value, _TRUTHY_MARKERS) or _matches_any(value, _FALSY_MARKERS):
-            return key
-    return ""
-
-
 def _normalize(body: str | None) -> str:
     """Collapse whitespace so cosmetic differences (a trailing newline, re-wrapped
     text) don't masquerade as a data-retrieval differential."""
     return " ".join((body or "").split())
 
 
+def _all_params(cap) -> list[tuple[str, str]]:
+    return parse_qsl(urlsplit(cap.url).query, keep_blank_values=True)
+
+
+def _first_marker(low: str, markers: tuple[str, ...]) -> str:
+    return next((m for m in markers if m in low), "")
+
+
+def _probe(cap, param: str) -> tuple[str, str] | None:
+    """How `cap` probes `param`: ("truthy" | "falsy", residual) where `residual` is the
+    lowered value with the boolean condition removed (`Gifts' AND '1'='1` -> `gifts`) —
+    i.e. the rest of the probe, which a truthy/falsy PAIR must share. None when the
+    param is absent, repeated (ambiguous), carries no marker, or carries BOTH kinds."""
+    values = [v for k, v in _all_params(cap) if k == param]
+    if len(values) != 1:
+        return None
+    low = values[0].lower()
+    t, f = _first_marker(low, _TRUTHY_MARKERS), _first_marker(low, _FALSY_MARKERS)
+    if bool(t) == bool(f):
+        return None
+    return ("truthy" if t else "falsy", low.replace(t or f, "", 1))
+
+
+def _held_constant(cap, param: str) -> tuple:
+    """Everything about the request EXCEPT `param`: method + every other query param.
+    Two captures with equal keys differ only in `param`."""
+    others = sorted((k, v) for k, v in _all_params(cap) if k != param)
+    return ((cap.method or "").upper(), tuple(others))
+
+
 def boolean_sqli_differential(caps) -> list[dict]:
-    """Group captures by endpoint; confirm boolean-blind SQLi only where a working
-    positive control exists. See the module docstring for why the control is mandatory.
+    """Confirm boolean-blind SQLi only from a CORRELATED triple on ONE parameter, with a
+    working positive control. See the module docstring for why the control is mandatory.
 
-    SCOPE NOTE: this reads QUERY-STRING params only (`_query_values`/`_is_truthy`/
-    `_is_falsy`/`_injected_param` all parse `urlsplit(cap.url).query`). POST-body
-    SQLi — a payload in a form/JSON body rather than the URL — is not inspected here;
-    that is a known follow-up, out of this milestone's scope.
+    SCOPE NOTE: this reads QUERY-STRING params only. POST-body SQLi — a payload in a
+    form/JSON body rather than the URL — is not inspected here; that is a known
+    follow-up, out of this milestone's scope.
 
-    Confirmed when, for one endpoint:
-      - a BASELINE request exists: status 200, non-empty body, no truthy/falsy marker
-        in its own query (it is genuinely benign, not itself a payload that happened
-        to 200);
-      - a TRUTHY request's (normalized) body equals the baseline's;
-      - a FALSY request's (normalized) body differs from the baseline's.
+    Confirmed for (endpoint, param P) when there exist:
+      - a TRUTHY and a FALSY capture that probe P with the SAME residual (the same probe
+        with only the condition flipped) and hold everything else constant (method and
+        every other param identical);
+      - a BASELINE: status 200, non-empty body, no truthy/falsy marker anywhere in its
+        query, and identical to that pair in everything except P;
+      - the baseline is STABLE: no other capture of the exact same benign request
+        returned a different (normalized) body — on a page that varies by itself,
+        "falsy differs" proves nothing;
+      - truthy body == baseline body, and falsy body != baseline body.
     That shape — true condition returns the same rows as no condition, false condition
-    returns different rows — is the data-retrieval differential that makes boolean-blind
-    SQLi provable without ever seeing the database.
+    returns different rows, and nothing else changed — is the data-retrieval
+    differential that makes boolean-blind SQLi provable without seeing the database.
+
+    SEC-007: this used to take the FIRST truthy and FIRST falsy capture anywhere on the
+    endpoint, so an ignored param (truthy) and an unrelated param that legitimately
+    changes the page (falsy) fabricated a confirmed finding. Every candidate triple is
+    now examined, which also finds genuine pairs that sat behind unrelated captures and
+    reports EACH injectable param of an endpoint (one finding per endpoint+param).
     """
     by_endpoint: dict[str, list] = {}
     for cap in caps:
@@ -109,46 +142,75 @@ def boolean_sqli_differential(caps) -> list[dict]:
 
     out: list[dict] = []
     for endpoint, group in by_endpoint.items():
-        baseline = next(
-            (
-                c
-                for c in group
-                if c.status == 200
-                and c.response
-                and not _is_truthy(c)
-                and not _is_falsy(c)
-            ),
-            None,
-        )
-        if baseline is None:
+        baselines = [c for c in group
+                     if c.status == 200 and c.response
+                     and not _is_truthy(c) and not _is_falsy(c)]
+        if not baselines:
             continue  # no positive control → nothing to prove against, record nothing
 
-        truthy = next((c for c in group if _is_truthy(c)), None)
-        falsy = next((c for c in group if _is_falsy(c)), None)
-        if truthy is None or falsy is None:
-            continue
+        # A benign request whose repeats disagree is unstable — never a control.
+        bodies_by_request: dict[tuple, set] = {}
+        for b in baselines:
+            key = ((b.method or "").upper(), b.url)
+            bodies_by_request.setdefault(key, set()).add(_normalize(b.response))
+        stable = [b for b in baselines
+                  if len(bodies_by_request[((b.method or "").upper(), b.url)]) == 1]
 
-        baseline_body = _normalize(baseline.response)
-        truthy_body = _normalize(truthy.response)
-        falsy_body = _normalize(falsy.response)
+        params: list[str] = []
+        for c in group:
+            for k, _ in _all_params(c):
+                if k not in params and _probe(c, k) is not None:
+                    params.append(k)
 
-        if baseline_body and truthy_body == baseline_body and falsy_body != baseline_body:
+        for param in params:
+            hit = _correlated_triple(group, stable, param)
+            if hit is None:
+                continue
+            _b, truthy, falsy = hit
+            t_val = dict(_all_params(truthy))[param]
+            f_val = dict(_all_params(falsy))[param]
             out.append(
                 {
                     "title": "SQL injection (boolean)",
                     "severity": "high",
                     "target": endpoint,
-                    "param": _injected_param(falsy),
+                    "param": param,
                     "category": "web",
                     "evidence": (
-                        "positive control confirmed working (200, non-empty baseline); "
-                        "truthy payload body matched baseline, falsy payload body "
-                        "diverged — data-retrieval differential (captured)"
+                        f"param '{param}': positive control confirmed working (200, "
+                        "non-empty, stable baseline differing only in this param); "
+                        f"truthy {t_val!r} body matched baseline, falsy {f_val!r} body "
+                        "diverged, all else held constant — correlated data-retrieval "
+                        "differential (captured)"
                     ),
                     "comparator": "boolean_body_differential",
                 }
             )
     return out
+
+
+def _correlated_triple(group, baselines, param: str):
+    """The first (baseline, truthy, falsy) satisfying every condition in
+    `boolean_sqli_differential`'s docstring for `param`, or None."""
+    truthies, falsies = [], []
+    for c in group:
+        pr = _probe(c, param)
+        if pr is not None:
+            (truthies if pr[0] == "truthy" else falsies).append((c, pr[1]))
+    for t, t_res in truthies:
+        t_key = _held_constant(t, param)
+        t_body = _normalize(t.response)
+        for f, f_res in falsies:
+            if f_res != t_res or _held_constant(f, param) != t_key:
+                continue
+            f_body = _normalize(f.response)
+            for b in baselines:
+                if _held_constant(b, param) != t_key:
+                    continue
+                b_body = _normalize(b.response)
+                if b_body and t_body == b_body and f_body != b_body:
+                    return b, t, f
+    return None
 
 
 _MAX_PAD_SKIP = 2  # at most this many plain spaces/tabs between the marker and its
