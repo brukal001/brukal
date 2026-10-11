@@ -53,7 +53,8 @@ salient_view(body: str, baseline: str | None, budget: int) -> str
   `… [N chars omitted] …`, then the last ~40%. A body within budget is returned unchanged.
 - The returned text, markers included, is never longer than `budget`.
 - Deterministic, no I/O, no LLM, never raises (bad input returns the head-only slice).
-- Bounded work: the diff runs on at most the first and last 2,000 lines of each side.
+- Bounded work: a page with more than 4,000 lines (either side) skips the diff and uses head+tail;
+  a diff marking more than 80% of lines changed is uninformative and also falls back to head+tail.
 
 ### 3.2 Model-facing note and vault summary (`brukal/assist_web.py`)
 
