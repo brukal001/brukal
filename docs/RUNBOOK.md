@@ -137,6 +137,15 @@ env -u BRUKAL_AUDIT_KEY .venv/bin/python -m brukal.cli verify --audit runs/audit
 The second command is the one that matters. `True` without the key would mean the chain
 proves nothing.
 
+`verify` also prints `anchor (keep a copy off this machine): COUNT:HEAD` and exits 1 when
+the ledger is not intact. A hash chain alone cannot see records deleted from the END of
+the file (SEC-006); the `<ledger>.head` sidecar catches that, and the printed anchor —
+copied somewhere the cage and the box cannot write — also catches an old sidecar being
+put back. Check a ledger against it later with:
+```sh
+.venv/bin/python -m brukal.cli verify --audit runs/audit_myrun.jsonl --expect COUNT:HEAD
+```
+
 ### 7b. The funnel, from the ledger — not from the notes
 
 ```sh

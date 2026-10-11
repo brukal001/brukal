@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from brukal.audit import _GENESIS, AuditLog, _hash
+from brukal.audit import _GENESIS, AuditLog, _hash, _head_mac
 
 N = 5
 
@@ -91,7 +91,10 @@ _SEC006 = ("FINDING SEC-006: tail truncation not detected by verify() (GOVERNANC
            "verify(); see SECURITY_AUDIT.md")
 
 
-@pytest.mark.xfail(strict=True, reason=_SEC006)
+# SEC-006 FIXED 2026-10-11 (brukal/audit.py truncation anchors: live instance memory,
+# `.head` sidecar, operator-held external anchor). `_SEC006` keeps the original write-up
+# of the defect for the record; full both-direction regressions + the pinned residuals
+# live in tests/test_audit_truncation_anchor.py.
 @pytest.mark.parametrize("keyed", [False, True], ids=["unkeyed", "keyed"])
 @pytest.mark.parametrize("k", [1, 2])
 def test_truncate_tail_breaks_verify(tmp_path, record, k, keyed):
@@ -150,18 +153,38 @@ def test_keyed_chain_wrong_key_detected(tmp_path, record):
     assert not other.verify()
 
 
+def test_unkeyed_edit_with_rechain_but_stale_anchor_detected(tmp_path, record):
+    """Re-chaining an edit is no longer enough on its own: the head hash changes, so the
+    live instance and the `.head` sidecar (SEC-006 anchors) both stop matching."""
+    log = _build(tmp_path)
+    _rechain(log, _hash, 2, _forge)
+    actual = _verdict(AuditLog(log.path))
+    record("i5::unkeyed-edit-rechain-stale-anchor", "audit-integrity", "I5",
+           "edit middle record + recompute chain, sidecar left as written, unkeyed",
+           "VERIFY_FAIL", actual, "medium")
+    assert not log.verify()
+    assert actual == "VERIFY_FAIL"
+
+
 @pytest.mark.xfail(strict=True, reason=(
-    "DESIGN-LIMIT (not a SEC finding), documented at audit.py:12-15: an UNKEYED chain can be "
-    "edited and fully re-chained by anyone with file-write access and still verifies. Mitigated "
-    "by keyed mode (see test_keyed_edit_with_unkeyed_rechain_detected)."))
+    "DESIGN-LIMIT (not a SEC finding), documented in audit.py: an UNKEYED ledger can be "
+    "edited, fully re-chained AND have its unkeyed `.head` sidecar recomputed by anyone "
+    "with file-write access, and a fresh verifier accepts it. Mitigated by keyed mode "
+    "(test_keyed_edit_with_unkeyed_rechain_detected) or an operator-held external anchor "
+    "(verify(anchor=...))."))
 def test_unkeyed_edit_with_rechain_is_design_limit(tmp_path, record):
     log = _build(tmp_path)
     _rechain(log, _hash, 2, _forge)
-    actual = _verdict(log)
+    recs = [json.loads(line) for line in _lines(log)]
+    head = recs[-1]["entry_hash"]
+    (tmp_path / "audit.jsonl.head").write_text(json.dumps(
+        {"count": len(recs), "head": head, "mac": _head_mac(len(recs), head, None)}))
+    fresh = AuditLog(log.path)
+    actual = _verdict(fresh)
     record("i5::unkeyed-edit-rechain-DESIGN-LIMIT", "audit-integrity", "I5",
-           "edit middle record + recompute chain with real _hash, unkeyed ledger "
-           "(documented limit per audit.py:12-15)", "VERIFY_FAIL", actual, "low")
-    assert not log.verify()
+           "edit middle record + recompute chain AND unkeyed sidecar, fresh verifier "
+           "(documented limit in audit.py)", "VERIFY_FAIL", actual, "low")
+    assert not fresh.verify()
 
 
 @pytest.mark.parametrize("which", [0, 2, N - 1])

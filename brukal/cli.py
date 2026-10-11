@@ -440,8 +440,19 @@ def _cmd_exec(args) -> int:
 
 
 def _cmd_verify(args) -> int:
-    print("audit chain intact:", AuditLog(args.audit).verify())
-    return 0
+    """Verify the chain and print the external anchor (`COUNT:HEAD`) to keep off the
+    machine; `--expect COUNT:HEAD` checks a ledger against one kept earlier (SEC-006).
+    Exits 1 when the ledger is not intact (fail-closed)."""
+    log = AuditLog(args.audit)
+    anchor = None
+    if args.expect:
+        count, _, head = args.expect.partition(":")
+        anchor = (int(count), head) if count.isdigit() else ("bad", None)
+    intact = log.verify(anchor=anchor)
+    print("audit chain intact:", intact)
+    count, head = log.head()
+    print(f"anchor (keep a copy off this machine): {count}:{head}")
+    return 0 if intact else 1
 
 
 def _cmd_drafts(args) -> int:
@@ -828,6 +839,8 @@ def main(argv: list[str] | None = None) -> int:
 
     pv = sub.add_parser("verify", help="verify the audit chain and exit")
     pv.add_argument("--audit", default="runs/audit.jsonl")
+    pv.add_argument("--expect", metavar="COUNT:HEAD",
+                    help="fail unless the ledger still contains this earlier anchor")
     pv.set_defaults(func=_cmd_verify)
 
     pd = sub.add_parser(
