@@ -21,8 +21,9 @@ normalise each to a canonical string the scope check can look up:
   * Bare dotted hostnames used as arguments (``nmap evil.com``, ``ssh u@evil.com``),
     conservatively — a token with a known file extension is a filename, NOT a host.
 
-Tokens are split on whitespace and shell operators, with quotes/backslashes removed
-and numeric brace expansion rewritten (see ``_tokens``).
+Tokens come from a quote-aware shell lexer: split on UNQUOTED whitespace/operators,
+quotes and escapes removed, command substitutions lexed as commands, unquoted numeric
+brace expansion rewritten (see ``_lex`` / ``_tokens``). Quoted text stays one word.
 
 The gate enforces the policy: every host this returns must be in scope, or the
 action is denied (fail-closed). This module only *finds* hosts; it never decides.
@@ -144,34 +145,139 @@ def _network_targets(tok: str) -> list[str] | None:
     return None
 
 
-# Shell control operators. A session line is typed into a real bash, so `curl
-# 10.10.10.11;id` reaches 10.10.10.11 — the operator glued to the host must not hide
-# it from the scan (it did: the token `10.10.10.11;id` matched nothing).
-_SHELL_SPLIT_RE = re.compile(r"[\s;|&<>()`$]+")
+# Characters that are only special to bash OUTSIDE quotes. Inside quotes they are
+# literal data — `-d '{"email":"a@b.io"}'` or `--eval "db.getSiblingDB('x')"` is ONE
+# word, and splitting it would invent hosts (`b.io`, `db.getsiblingdb`) and DENY
+# legitimate commands. Quoted brace/comma characters are carried through the lexer as
+# placeholders so brace expansion — also unquoted-only — never touches them.
+_QUOTED = {"{": "\x00", "}": "\x01", ",": "\x02"}
+_UNQUOTED = {v: k for k, v in _QUOTED.items()}
+_OPERATOR_CHARS = set(";|&<>()")
+
+
+def _close_paren(text: str, i: int) -> int:
+    """Index of the ')' closing the '(' at text[i] (quote-aware), or len(text)."""
+    depth, quote, n = 0, None, len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"':
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def _lex(text: str, depth: int = 0) -> list[str]:
+    """Words of a shell line roughly as bash builds them: split on unquoted whitespace
+    and control operators (`curl 10.10.10.11;id` reaches 10.10.10.11 — the operator glued
+    to the host must not hide it); quotes and backslash escapes removed and adjacent
+    pieces joined (`10.10.10."11"` and `1\0.10.10.11` are 10.10.10.11 to bash); an
+    unquoted `$` ends a word (`curl${IFS}10.10.10.11`); and every command substitution
+    — `$(...)` or backticks, unquoted or inside double quotes — lexed as a command of
+    its own, so `echo "$(curl 10.10.10.11)"` still shows its host."""
+    words: list[str] = []
+    subs: list[str] = []
+    cur: list[str] = []
+    quote = None
+    i, n = 0, len(text or "")
+
+    def flush() -> None:
+        if cur:
+            words.append("".join(cur))
+            cur.clear()
+
+    while i < n:
+        ch = text[i]
+        if quote == "'":                              # single quotes: all literal
+            if ch == "'":
+                quote = None
+            else:
+                cur.append(_QUOTED.get(ch, ch))
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:                  # escape (unquoted or in "...")
+            nxt = text[i + 1]
+            cur.append(_QUOTED.get(nxt, nxt) if quote else nxt)
+            i += 2
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "(":
+            end = _close_paren(text, i + 1)
+            subs.append(text[i + 2:end])
+            flush()
+            i = end + 1
+            continue
+        if ch == "`":
+            end = text.find("`", i + 1)
+            end = n if end < 0 else end
+            subs.append(text[i + 1:end])
+            flush()
+            i = end + 1
+            continue
+        if quote == '"':                              # double quotes: literal but $( `
+            if ch == '"':
+                quote = None
+            else:
+                cur.append(_QUOTED.get(ch, ch))
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch.isspace() or ch in _OPERATOR_CHARS or ch == "$":
+            flush()
+        else:
+            cur.append(ch)
+        i += 1
+    flush()
+    if depth < 8:                                     # bounded: nesting is not a DoS
+        for sub in subs:
+            words.extend(_lex(sub, depth + 1))
+    return words
 
 
 def _tokens(text: str) -> list[str]:
-    """Split a command/session line into candidate tokens the way bash would see
-    the words that can name a host: on whitespace AND shell operators; with quotes
-    and backslashes removed inside a word (`10.10.10."11"` and `1\\0.10.10.11` are
-    10.10.10.11 to bash); and with numeric brace expansion rewritten as an nmap
-    octet spec (`10.10.10.{10,11}` -> `10.10.10.10,11`, `{10..20}` -> `10-20`) so
-    the range rule covers it. A word with any other brace list is also offered
-    split at `{`, `,` and `}`, so `{10.10.10.11,x}` still yields 10.10.10.11.
+    """Candidate host tokens of a command/session line: `_lex`'s words, with UNQUOTED
+    numeric brace expansion rewritten as an nmap octet spec (`10.10.10.{10,11}` ->
+    `10.10.10.10,11`, `{10..20}` -> `10-20`) so the range rule covers it, and a word
+    with any other unquoted brace list also offered split at `{`, `,`, `}` (so
+    `{10.10.10.11,x}` still yields 10.10.10.11).
+
+    The plain whitespace split the gate always used is ALSO offered (union): it is
+    what catches a host inside a quoted nested command (`bash -c 'curl 10.10.10.11'`,
+    `ssh box 'curl …'`), which the lexer rightly keeps as one quoted word. The union
+    means this function finds every host the original scan found (no governance
+    regression) plus the lexer-only cases, while the lexer — being quote-aware — adds
+    no hosts out of quoted data (no capability regression; replayed against the
+    historical ALLOWed-command corpus).
 
     This is word-level parsing, not a bash interpreter: a host assembled at run time
     from a variable or a decoded string is NOT visible here. For the session door
     that residual must be held by the cage's egress firewall, not by this module."""
-    out: list[str] = []
-    for word in _SHELL_SPLIT_RE.split(text or ""):
-        word = re.sub(r"[\"'\\]", "", word)
-        if not word:
+    out: list[str] = [w for w in re.split(r"\s+", text or "") if w]
+    for word in _lex(text):
+        # A lexer word holding whitespace came from a quoted string with spaces — a
+        # script or data (`python3 -c "…{'email':'a@b.io'}…"`), never ONE host argument.
+        # Hosts inside it are still seen by the whitespace view above, as they always were.
+        if any(c.isspace() for c in word):
             continue
         word = re.sub(r"\{([0-9]+)\.\.([0-9]+)\}", r"\1-\2", word)
         word = re.sub(r"\{([0-9,]+)\}", r"\1", word)
-        out.append(word)
-        if "{" in word:
-            out.extend(p for p in re.split(r"[{},]", word) if p)
+        pieces = [p for p in re.split(r"[{},]", word) if p] if "{" in word else []
+        for w in [word, *pieces]:
+            w = "".join(_UNQUOTED.get(c, c) for c in w)
+            if w:
+                out.append(w)
     return out
 
 
@@ -233,10 +339,14 @@ def extract_hosts(text: str) -> list[str]:
         #    exactly as `curl http://10.10.10.11/x` does. The host is everything
         #    before the first '/'. A token that STARTS like a filesystem path
         #    (/etc, ./x, ../x, ~/x) has no host part and is skipped.
-        if "/" in tok or "\\" in tok:
-            if tok[0] in "/.~\\":
+        #    A token with a backslash is skipped as before — that is an escape inside
+        #    quoted data (`-d "{\\"email\\":\\"a@b.io\\"}"`), not a path to a host.
+        if "\\" in tok:
+            continue
+        if "/" in tok:
+            if tok[0] in "/.~":
                 continue
-            tok = re.split(r"[/\\]", tok, maxsplit=1)[0]
+            tok = tok.split("/", 1)[0]
 
         # a single trailing :port on a host (evil.com:8080, 10.10.10.11:80, and the
         # scp form host:) -> keep the host.

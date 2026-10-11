@@ -140,3 +140,35 @@ def test_extract_hosts_reports_networks_and_path_hosts():
 def test_ordinary_paths_and_mime_types_yield_no_hosts():
     assert extract_hosts("cat /etc/passwd ./x/y wordlists/common.txt "
                          "application/json Mozilla/5.0 HTTP/1.1 1/2 */*") == []
+
+
+# Real commands from historical runs (runs/*.jsonl, ALLOWed/approved) that the first
+# SEC-001/002 tokenizer wrongly DENIED by splitting quoted data — found by replaying the
+# corpus (benchmarks/replay_gate_corpus.py). Quoted data is one word; it is not a host.
+HISTORICAL_LEGIT = [
+    'curl -X POST http://10.10.10.10/identity/api/auth/login -H "Content-Type: '
+    'application/json" -d \'{"email":"crapi@crapi.io","password":"crapi"}\'',
+    "mongosh --host 10.10.10.10 --port 27017 -u crapi -p crapi --authenticationDatabase "
+    "admin --eval \"db.getSiblingDB('admin').system.users.find()\"",
+    "mongosh --host 10.10.10.10 --port 27017 --eval "
+    "'db.adminCommand({listDatabases:1, nameOnly: true})'",
+    'sqlmap -u "http://10.10.10.10:3000/rest/user/login" '
+    '--data="{\\"email\\":\\"test@test.com\\",\\"password\\":\\"test\\"}"',
+    'curl -s -X POST http://10.10.10.10:3000/rest/user/login -H "Content-Type: '
+    'application/json" -d "{\\"email\\":\\"admin@juice-sh.op\\",\\"password\\":\\"x\\"}"',
+    'TOKEN=$(python3 -c "import base64,json; print(json.dumps({\'email\':\'a@juice-sh.op\'}))"); '
+    'echo $TOKEN',
+]
+
+
+@pytest.mark.parametrize("cmd", HISTORICAL_LEGIT)
+def test_quoted_data_in_historical_commands_is_not_a_host(cmd):
+    hosts = extract_hosts(cmd)
+    assert set(hosts) <= {IN}, hosts
+
+
+def test_quoted_nested_command_host_is_still_seen():
+    # The whitespace view (union) keeps catching a host inside a quoted nested command.
+    for line in (f"bash -c 'curl {OUT}'", f"ssh u@{IN} 'curl {OUT}'",
+                 f'echo "$(curl {OUT})"'):
+        assert OUT in extract_hosts(line), line
