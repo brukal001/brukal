@@ -93,6 +93,10 @@
 > never a push. Anything under "HUMAN-GATED" is NOT for the autonomous loop.
 
 ## TOP (do this next)
+- **Response visibility (Part 1 of "finish the chain") — SHIPPED 2026-10-12** on branch
+  `feat/response-visibility` (see DONE). What remains of this TOP is **Part 2 — chain state**
+  (values returned by a target reused in later steps + its approval rule): the maintainer's governance
+  decisions are in the vault; it needs a design pass WITH the maintainer before any build.
 - **Exploit-as-manual + multi-step chaining (capability milestone — needs a design pass with the
   maintainer first).** The two live runs show the ceiling is no longer the gate: the model identifies
   the payload but frames it as MANUAL ("next step is yours"), and nothing carries state from one step to
@@ -103,13 +107,6 @@
   through the gate; no LLM inside it.
 
 ## QUEUE (safe, tested, autonomous — promote to TOP when the current one lands)
-- **Capture size vs prover accuracy (needs data):** `capture._MAX_RESPONSE_KEPT = 4000` may cut a
-  PortSwigger UNION result page before the dumped rows (then `credential_disclosure_login` and the
-  boolean differential cannot see them); raising it also lets dynamic content (CSRF tokens) into the
-  boolean comparison. Measure on captured lab pages before changing. CORRECTION 2026-10-12: the
-  2026-10-01 UNION response was 4,447 B with the result near the END, so the 4,000-char capture
-  store DID cut it (and the model saw only `body[:600]`). Addressed by the response-visibility
-  design: `docs/superpowers/specs/2026-10-12-response-visibility-design.md`.
 - **Untrusted-data fence in strategist prompts:** raw target output is inlined under `RECENT
   ACTIVITY` next to `OPERATOR JUST SAID:` (`strategist.py:_context_parts`). Fence + label it — but
   ship only with the E2 A/B from `RESEARCH_FINDINGS.md` (human-gated live run), since it changes what
@@ -118,6 +115,16 @@
   from another run is distinguishable (recorded NOT-TESTABLE in `SECURITY_AUDIT.md`).
 
 ## DONE (most recent first — for the next session's context, not an action item)
+- **2026-10-12** Response visibility, Part 1 (branch `feat/response-visibility`, spec + plan under
+  `docs/superpowers/`): `d6a8e3e` new pure `brukal/response_view.py` (`salient_view`: changed region vs
+  an earlier 2xx response to the same endpoint, else head+tail; markers inside the budget; never
+  raises) · `0d3d8ba` capture store keeps head 2,400 + tail within the same 4,000 (bodies ≤ 4,000
+  byte-identical; redaction still on the full body; dynamic-tail trade-off pinned by a test) ·
+  `b0a09a1` model note (600) + vault summary (800) use the view, baselines in a bounded in-memory map
+  (≤ 64 endpoints × 3 bodies × 200k chars) · `7738380` one MANUAL rule in the strategist prompt. Suite
+  2669 pass / 1 skip / 1 xfail; four metrics unchanged; gate files untouched; replay 0 NEW / 0 LOST /
+  0 UNSEEN / 0 looser. Resolves the old QUEUE item "capture size vs prover accuracy". Build+self-test
+  only; no live run, no merge, no push.
 - **2026-10-11/12** Security-audit plan complete + follow-ups (branch `feat/security-audit-suite`):
   `2a59273` results harness · `8da7932`+`b21881c` SEC-001/002 (+ quote-aware lexer, regression caught by
   replay) · `5fe9f3a` SEC-007 · `4f4ccc0` SEC-006 · `db2f6e1` SEC-003 · `807d58d` principal-handle bug ·
@@ -246,6 +253,9 @@
   whole-branch review of the 14 commits before merging `feat/chrome-cdp-capture` to main; (b) if a from-
   scratch `docker build` of the new image is wanted, that rebuild per `docs/HANDOFF-chrome-cdp-bringup.md`.
   The loop must never do a live run on its own.
+- **Response visibility — live measurement.** A human-gated re-run on a self-hosted or sandboxed lab:
+  how often the model proposes the next step itself instead of MANUAL, before vs after
+  `feat/response-visibility` (same model, same brief). Not for the loop.
 - **SP-C real-internet containment** — slice-1 (proxy core) AND slice-2 (kernel-mandatory in-cage proxy)
   are BUILT + merged/committed. What remains is human-only: (a) operator rebuilds + `--force-recreate`s
   `brukal-kali` from the new image and pushes; (b) a real-target dry run — still needs explicit
